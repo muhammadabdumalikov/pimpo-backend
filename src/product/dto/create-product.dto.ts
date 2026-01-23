@@ -1,0 +1,72 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNumber, IsOptional, Min, MinLength, MaxLength } from 'class-validator';
+
+export class CreateProductDto {
+  @ApiProperty({
+    description: 'Product name',
+    example: 'ASUS ROG Gaming Laptop',
+  })
+  @IsString()
+  @MinLength(1)
+  name: string;
+
+  @ApiProperty({
+    description: 'Product code',
+    example: 'ASUS-001',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  code?: string;
+
+  @ApiProperty({
+    description: 'Product barcode (max 14 characters)',
+    example: '1234567890123',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(14, { message: 'Barcode must be at most 14 characters' })
+  barcode?: string;
+
+  @ApiProperty({
+    description: 'Purchase price (price in)',
+    example: '1800.00',
+  })
+  @IsString()
+  priceIn: string;
+
+  @ApiProperty({
+    description: 'Selling price (price out)',
+    example: '2199.00',
+  })
+  @IsString()
+  priceOut: string;
+
+  @ApiProperty({
+    description: 'Product quantity',
+    example: 10,
+    default: 0,
+  })
+  @IsNumber()
+  @Min(0)
+  quantity: number;
+
+  @ApiProperty({
+    description: 'Quantity type (kg, piece, others)',
+    example: 'piece',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  quantityType?: string;
+
+  @ApiProperty({
+    description: 'Product image URL',
+    example: '/images/product/product-01.jpg',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  image?: string;
+}

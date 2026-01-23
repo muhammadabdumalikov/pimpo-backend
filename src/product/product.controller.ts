@@ -1,0 +1,160 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiParam,
+  ApiQuery,
+} from '@nestjs/swagger';
+import { ProductService } from './product.service';
+import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { CurrentBusiness } from '../business/decorators/current-business.decorator';
+import { IBusiness } from '../business/types';
+import { CreateProductDto } from './dto/create-product.dto';
+import { UpdateProductDto } from './dto/update-product.dto';
+
+@ApiTags('products')
+@Controller('products')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('JWT-auth')
+export class ProductController {
+  constructor(private readonly productService: ProductService) {}
+
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a new product' })
+  @ApiResponse({
+    status: 201,
+    description: 'Product created successfully',
+  })
+  @ApiResponse({ status: 409, description: 'Product code already exists' })
+  async create(
+    @CurrentBusiness() business: IBusiness,
+    @Body() createProductDto: CreateProductDto,
+  ) {
+    const product = await this.productService.create(business.id, createProductDto);
+    return {
+      message: 'Product created successfully',
+      product,
+    };
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'Get all products for current business' })
+  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
+  @ApiQuery({ name: 'search', required: false, type: String, description: 'Search term' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of products',
+  })
+  async findAll(
+    @CurrentBusiness() business: IBusiness,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+  ) {
+    const result = await this.productService.findAll(business.id, {
+      page: page ? parseInt(page, 10) : undefined,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      search,
+    });
+    return result;
+  }
+
+  @Get('count')
+  @ApiOperation({ summary: 'Get total product count for current business' })
+  @ApiResponse({
+    status: 200,
+    description: 'Product count',
+  })
+  async getCount(@CurrentBusiness() business: IBusiness) {
+    const count = await this.productService.getCount(business.id);
+    return { count };
+  }
+
+  @Get('generate-code')
+  @ApiOperation({ summary: 'Generate a unique product code for current business' })
+  @ApiResponse({
+    status: 200,
+    description: 'Generated product code',
+  })
+  async generateCode(@CurrentBusiness() business: IBusiness) {
+    const code = await this.productService.generateProductCode(business.id);
+    return { code };
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get a product by ID' })
+  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Product details',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async findOne(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    const product = await this.productService.findOne(business.id, id);
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+    return product;
+  }
+
+  @Put(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update a product' })
+  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Product updated successfully',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiResponse({ status: 409, description: 'Product code already exists' })
+  async update(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Body() updateProductDto: UpdateProductDto,
+  ) {
+    const product = await this.productService.update(business.id, id, updateProductDto);
+    return {
+      message: 'Product updated successfully',
+      product,
+    };
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a product' })
+  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Product deleted successfully',
+  })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  async remove(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    await this.productService.remove(business.id, id);
+    return {
+      message: 'Product deleted successfully',
+    };
+  }
+}
