@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: pimpo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pimpo
+      POSTGRES_PASSWORD: pimpo
+      POSTGRES_DB: pimpo
+    ports:
+      - '5432:5432'
+    volumes:
+      - pimpo-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pimpo -d pimpo']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+    container_name: pimpo-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://pimpo:pimpo@postgres:5432/pimpo
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-604800}
+      # S3-compatible storage (optional — leave blank to disable uploads)
+      S3_BUCKET: ${S3_BUCKET:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      # Public store API: which business the storefront serves (optional)
+      STORE_BUSINESS_ID: ${STORE_BUSINESS_ID:-}
+    ports:
+      - '3000:3000'
+
+volumes:
+  pimpo-pgdata:
