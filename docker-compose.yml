@@ -26,7 +26,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      PORT: 3000
+      PORT: 3050
       DATABASE_URL: postgresql://pimpo:pimpo@postgres:5432/pimpo
       JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-604800}
