@@ -31,6 +31,21 @@
 $ pnpm install
 ```
 
+### Environment variables (optional)
+
+For **S3 file uploads** (product/category images), set:
+
+| Variable | Description |
+|----------|-------------|
+| `S3_BUCKET` | AWS S3 bucket name |
+| `AWS_ACCESS_KEY_ID` | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `AWS_REGION` or `S3_REGION` | AWS region (default: `us-east-1`) |
+| `S3_PUBLIC_BASE_URL` | Optional base URL for public links (e.g. CDN) |
+| `S3_ENDPOINT` | Optional custom endpoint (e.g. MinIO) |
+
+Upload endpoint: `POST /storage/upload` (multipart `file` + optional `prefix`), requires JWT.
+
 ## Compile and run the project
 
 ```bash

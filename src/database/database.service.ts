@@ -1,4 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import * as postgres from 'postgres';
 import * as schema from './schema';
@@ -9,9 +10,9 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private client: postgres.Sql;
   public db: ReturnType<typeof drizzle>;
 
-  constructor() {
+  constructor(private readonly configService: ConfigService) {
     this.connectionString =
-      process.env.DATABASE_URL ||
+      this.configService.get<string>('DATABASE_URL') ||
       'postgresql://postgres:oLCvicppN1ALpQDNyCpORztaAT22jUtcyBE5mJYrS47ujmsZ19mkYf1clU4TEpka@116.202.26.85:5454/pimpo';
   }
 

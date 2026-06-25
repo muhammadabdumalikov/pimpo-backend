@@ -76,4 +76,13 @@ export class UpdateProductDto {
   @IsString()
   @IsOptional()
   image?: string;
+
+  @ApiProperty({
+    description: 'Category ID for store catalog',
+    example: 'mix',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  categoryId?: string;
 }

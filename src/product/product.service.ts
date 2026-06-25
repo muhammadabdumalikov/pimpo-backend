@@ -17,6 +17,7 @@ export class ProductService {
     quantity: number;
     quantityType?: string;
     image?: string;
+    categoryId?: string;
   }): Promise<Product> {
     // Check if code already exists for this business
     if (data.code) {
@@ -47,6 +48,7 @@ export class ProductService {
       quantity: data.quantity,
       quantityType: data.quantityType || null,
       image: data.image || null,
+      categoryId: data.categoryId || null,
       isActive: true,
     };
 

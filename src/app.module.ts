@@ -1,23 +1,39 @@
 import { Module, Global } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DatabaseModule } from './database/database.module';
 import { BusinessModule } from './business/business.module';
 import { SubscriptionModule } from './subscription/subscription.module';
 import { ProductModule } from './product/product.module';
+import { CategoryModule } from './category/category.module';
+import { StoreModule } from './store/store.module';
 import { DebtModule } from './debt/debt.module';
 import { UserModule } from './user/user.module';
+import { StorageModule } from './storage/storage.module';
+import { RoleModule } from './role/role.module';
+import { StaffModule } from './staff/staff.module';
+import { OrderModule } from './order/order.module';
 import { JwtModule } from '@nestjs/jwt';
 
-// Global module for JWT - makes JwtService available everywhere
+// Global module for JWT - makes JwtService available everywhere.
+// Uses registerAsync so the secret is read from ConfigService AFTER
+// ConfigModule has loaded .env. A synchronous register() would read
+// process.env at import time, before .env is loaded.
 @Global()
 @Module({
   imports: [
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your-secret-key-change-in-production',
-      signOptions: {
-        expiresIn: Number(process.env.JWT_EXPIRES_IN) || 60 * 60 * 24 * 7,
-      },
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>(
+          'JWT_SECRET',
+          'your-secret-key-change-in-production',
+        ),
+        signOptions: {
+          expiresIn: Number(config.get('JWT_EXPIRES_IN')) || 60 * 60 * 24 * 7,
+        },
+      }),
     }),
   ],
   exports: [JwtModule],
@@ -26,13 +42,20 @@ class JwtGlobalModule {}
 
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
     JwtGlobalModule,
     DatabaseModule,
     BusinessModule,
     SubscriptionModule,
     ProductModule,
+    CategoryModule,
+    StoreModule,
     DebtModule,
     UserModule,
+    StorageModule,
+    RoleModule,
+    StaffModule,
+    OrderModule,
   ],
   controllers: [AppController],
   providers: [AppService],
