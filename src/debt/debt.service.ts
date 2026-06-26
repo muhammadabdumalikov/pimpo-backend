@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { userDebts, users, type UserDebt, type NewUserDebt, type User } from '../database/schema';
-import { eq, and, desc, ilike, or, count } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, count, lt } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { UserService } from '../user/user.service';
@@ -81,6 +81,23 @@ export class DebtService {
     } as any;
   }
 
+  /**
+   * Mark any of this business's still-"Pending" debts whose due date has passed
+   * as "Overdue". Idempotent; run on read so listings always reflect reality.
+   */
+  private async applyOverdue(businessId: string): Promise<void> {
+    await this.dbService.db
+      .update(userDebts)
+      .set({ status: 'Overdue', updatedAt: new Date() })
+      .where(
+        and(
+          eq(userDebts.businessId, businessId),
+          eq(userDebts.status, 'Pending'),
+          lt(userDebts.dueDate, new Date()),
+        ),
+      );
+  }
+
   async findAll(
     businessId: string,
     options?: {
@@ -90,6 +107,7 @@ export class DebtService {
       status?: string;
     },
   ): Promise<{ debts: (UserDebt & { user: User })[]; total: number; page: number; limit: number }> {
+    await this.applyOverdue(businessId);
     const page = options?.page || 1;
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
@@ -150,6 +168,7 @@ export class DebtService {
   }
 
   async findOne(businessId: string, debtId: string): Promise<(UserDebt & { user: User }) | null> {
+    await this.applyOverdue(businessId);
     const [result] = await this.dbService.db
       .select({
         debt: userDebts,
@@ -179,6 +198,7 @@ export class DebtService {
     businessId: string,
     userId: string,
   ): Promise<(UserDebt & { user: User })[]> {
+    await this.applyOverdue(businessId);
     const results = await this.dbService.db
       .select({
         debt: userDebts,

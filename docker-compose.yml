@@ -30,6 +30,8 @@ services:
       DATABASE_URL: postgresql://pimpo:pimpo@postgres:5432/pimpo
       JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-604800}
+      # Platform admin token for managing global subscription plans
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
       # S3-compatible storage (optional — leave blank to disable uploads)
       S3_BUCKET: ${S3_BUCKET:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}

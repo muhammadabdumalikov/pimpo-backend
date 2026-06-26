@@ -17,9 +17,11 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiParam,
+  ApiHeader,
 } from '@nestjs/swagger';
 import { SubscriptionService } from './subscription.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { PlatformAdminGuard } from './platform-admin.guard';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { IBusiness } from '../business/types';
 import { CreatePlanDto } from './dto/create-plan.dto';
@@ -199,10 +201,10 @@ export class SubscriptionController {
   // ============================================
 
   @Post('plans')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('JWT-auth')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a new subscription plan (admin only)' })
+  @ApiOperation({ summary: 'Create a new subscription plan (platform admin only)' })
   @ApiResponse({
     status: 201,
     description: 'Plan created successfully',
@@ -217,10 +219,10 @@ export class SubscriptionController {
   }
 
   @Put('plans/:id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('JWT-auth')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Update a subscription plan (admin only)' })
+  @ApiOperation({ summary: 'Update a subscription plan (platform admin only)' })
   @ApiParam({ name: 'id', description: 'Plan ID' })
   @ApiResponse({
     status: 200,
@@ -239,10 +241,10 @@ export class SubscriptionController {
   }
 
   @Delete('plans/:id')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth('JWT-auth')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Delete (deactivate) a subscription plan (admin only)' })
+  @ApiOperation({ summary: 'Delete (deactivate) a subscription plan (platform admin only)' })
   @ApiParam({ name: 'id', description: 'Plan ID' })
   @ApiResponse({
     status: 200,

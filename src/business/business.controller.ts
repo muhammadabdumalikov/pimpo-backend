@@ -9,6 +9,7 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -113,7 +114,7 @@ export class BusinessController {
   async findOne(@Param('id') id: string) {
     const business = await this.businessService.findById(id);
     if (!business) {
-      return { message: 'Business not found' };
+      throw new NotFoundException('Business not found');
     }
     // Remove password from response
     const { password: _, ...businessWithoutPassword } = business;
