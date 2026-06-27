@@ -78,6 +78,23 @@ export class OrderService {
 
     const orderId = generateId();
 
+    // Resolve the payment breakdown. Default to a single method covering the
+    // whole total when no explicit split is provided.
+    const payments =
+      dto.payments && dto.payments.length > 0
+        ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
+        : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
+    const methods = Array.from(new Set(payments.map((p) => p.method)));
+    const paymentMethod =
+      methods.length > 1 ? 'split' : (methods[0] ?? dto.paymentMethod ?? null);
+    // Cash tendered (defaults to the total when not provided); change is what we
+    // hand back over the cash portion.
+    const cashApplied = payments
+      .filter((p) => p.method === 'cash')
+      .reduce((sum, p) => sum + p.amount, 0);
+    const amountPaid = dto.amountPaid ?? cashApplied;
+    const changeAmount = Math.max(0, amountPaid - cashApplied);
+
     await this.dbService.db.transaction(async (tx) => {
       await tx.insert(orders).values({
         id: orderId,
@@ -87,7 +104,10 @@ export class OrderService {
         status: dto.status ?? 'Pending',
         totalAmount: money(total),
         itemCount,
-        paymentMethod: dto.paymentMethod ?? null,
+        paymentMethod,
+        payments,
+        amountPaid: money(amountPaid),
+        changeAmount: money(changeAmount),
         note: dto.note ?? null,
         source: dto.source ?? 'admin',
       });

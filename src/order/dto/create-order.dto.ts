@@ -1,10 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   IsString,
   IsOptional,
   IsArray,
   IsInt,
+  IsNumber,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -20,6 +21,18 @@ export class OrderItemDto {
   @IsInt()
   @Min(1)
   quantity: number;
+}
+
+export class PaymentSplitDto {
+  @ApiProperty({ description: 'Payment method', enum: ['cash', 'card'] })
+  @IsString()
+  @IsIn(['cash', 'card'])
+  method: string;
+
+  @ApiProperty({ description: 'Amount applied via this method' })
+  @IsNumber()
+  @Min(0)
+  amount: number;
 }
 
 export class CreateOrderDto {
@@ -54,6 +67,22 @@ export class CreateOrderDto {
   @IsString()
   @IsOptional()
   paymentMethod?: string;
+
+  @ApiPropertyOptional({
+    description: 'Per-method payment breakdown (for split payments)',
+    type: [PaymentSplitDto],
+  })
+  @IsArray()
+  @IsOptional()
+  @ValidateNested({ each: true })
+  @Type(() => PaymentSplitDto)
+  payments?: PaymentSplitDto[];
+
+  @ApiPropertyOptional({ description: 'Cash physically tendered by the customer' })
+  @IsNumber()
+  @IsOptional()
+  @Min(0)
+  amountPaid?: number;
 
   @ApiProperty({ description: 'Note', required: false })
   @IsString()

@@ -185,7 +185,14 @@ export const orders = pgTable('orders', {
     .notNull()
     .default('0'),
   itemCount: integer('item_count').notNull().default(0),
+  // Summary method: 'cash' | 'card' | 'split'.
   paymentMethod: varchar('payment_method', { length: 50 }),
+  // Per-method breakdown applied to the sale, summing to totalAmount.
+  // Shape: [{ method: 'cash' | 'card', amount: number }].
+  payments: jsonb('payments'),
+  // Cash physically tendered and change returned (for drawer reconciliation).
+  amountPaid: decimal('amount_paid', { precision: 12, scale: 2 }),
+  changeAmount: decimal('change_amount', { precision: 12, scale: 2 }),
   note: varchar('note', { length: 500 }),
   source: varchar('source', { length: 20 }).notNull().default('admin'), // 'admin' | 'store'
   createdAt: timestamp('created_at').defaultNow().notNull(),
