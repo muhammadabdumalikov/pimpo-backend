@@ -11,6 +11,7 @@ import {
   products,
   categories,
   users,
+  receiptSettings,
   type Order,
   type OrderItem,
 } from '../database/schema';
@@ -95,6 +96,21 @@ export class OrderService {
     const amountPaid = dto.amountPaid ?? cashApplied;
     const changeAmount = Math.max(0, amountPaid - cashApplied);
 
+    // VAT (QQS) is inclusive: break out the tax portion of the total without
+    // changing it. Rate comes from the business's settings.
+    const [settings] = await this.dbService.db
+      .select({
+        vatEnabled: receiptSettings.vatEnabled,
+        vatRate: receiptSettings.vatRate,
+      })
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    const vatEnabled = settings?.vatEnabled ?? false;
+    const vatRate = vatEnabled ? Number(settings?.vatRate ?? 0) : 0;
+    const taxAmount =
+      vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+
     await this.dbService.db.transaction(async (tx) => {
       await tx.insert(orders).values({
         id: orderId,
@@ -108,6 +124,8 @@ export class OrderService {
         payments,
         amountPaid: money(amountPaid),
         changeAmount: money(changeAmount),
+        taxRate: money(vatRate),
+        taxAmount: money(taxAmount),
         note: dto.note ?? null,
         source: dto.source ?? 'admin',
       });

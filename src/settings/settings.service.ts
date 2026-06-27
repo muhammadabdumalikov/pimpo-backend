@@ -8,6 +8,8 @@ const DEFAULTS = {
   receiptName: 'Standart',
   showLogo: true,
   logoUrl: null as string | null,
+  vatEnabled: false,
+  vatRate: '12',
 };
 
 @Injectable()
@@ -28,6 +30,8 @@ export class SettingsService {
       receiptName: DEFAULTS.receiptName,
       showLogo: DEFAULTS.showLogo,
       logoUrl: DEFAULTS.logoUrl,
+      vatEnabled: DEFAULTS.vatEnabled,
+      vatRate: DEFAULTS.vatRate,
       updatedAt: new Date(),
     };
   }
@@ -42,6 +46,8 @@ export class SettingsService {
       receiptName: dto.receiptName ?? current.receiptName,
       showLogo: dto.showLogo ?? current.showLogo,
       logoUrl: dto.logoUrl === undefined ? current.logoUrl : dto.logoUrl,
+      vatEnabled: dto.vatEnabled ?? current.vatEnabled,
+      vatRate: dto.vatRate !== undefined ? String(dto.vatRate) : current.vatRate,
     };
 
     await this.dbService.db

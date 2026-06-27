@@ -1,9 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
   ValidateIf,
 } from 'class-validator';
 
@@ -28,4 +31,16 @@ export class UpdateReceiptSettingsDto {
   @IsString()
   @MaxLength(500)
   logoUrl?: string | null;
+
+  @ApiPropertyOptional({ description: 'Whether VAT (QQS) is applied' })
+  @IsOptional()
+  @IsBoolean()
+  vatEnabled?: boolean;
+
+  @ApiPropertyOptional({ description: 'VAT (QQS) rate in percent', example: 12 })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  vatRate?: number;
 }

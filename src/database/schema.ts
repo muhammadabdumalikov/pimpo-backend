@@ -193,6 +193,9 @@ export const orders = pgTable('orders', {
   // Cash physically tendered and change returned (for drawer reconciliation).
   amountPaid: decimal('amount_paid', { precision: 12, scale: 2 }),
   changeAmount: decimal('change_amount', { precision: 12, scale: 2 }),
+  // VAT (QQS) portion of the (VAT-inclusive) total at sale time.
+  taxRate: decimal('tax_rate', { precision: 5, scale: 2 }),
+  taxAmount: decimal('tax_amount', { precision: 12, scale: 2 }),
   note: varchar('note', { length: 500 }),
   source: varchar('source', { length: 20 }).notNull().default('admin'), // 'admin' | 'store'
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -228,6 +231,10 @@ export const receiptSettings = pgTable('receipt_settings', {
     .default('Standart'),
   showLogo: boolean('show_logo').notNull().default(true),
   logoUrl: varchar('logo_url', { length: 500 }),
+  // VAT (QQS). Prices are VAT-inclusive, so this only breaks out the tax
+  // portion of the total on receipts/reports — it never changes the total.
+  vatEnabled: boolean('vat_enabled').notNull().default(false),
+  vatRate: decimal('vat_rate', { precision: 5, scale: 2 }).notNull().default('12'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
