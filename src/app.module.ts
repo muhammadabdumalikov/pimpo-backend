@@ -14,6 +14,7 @@ import { StorageModule } from './storage/storage.module';
 import { RoleModule } from './role/role.module';
 import { StaffModule } from './staff/staff.module';
 import { OrderModule } from './order/order.module';
+import { SettingsModule } from './settings/settings.module';
 import { JwtModule } from '@nestjs/jwt';
 
 // Global module for JWT - makes JwtService available everywhere.
@@ -56,6 +57,7 @@ class JwtGlobalModule {}
     RoleModule,
     StaffModule,
     OrderModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

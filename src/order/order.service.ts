@@ -3,12 +3,13 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, ilike, or, count, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, count, sql, gte, lte } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
 import {
   orders,
   orderItems,
   products,
+  categories,
   users,
   type Order,
   type OrderItem,
@@ -243,6 +244,84 @@ export class OrderService {
       .from(orders)
       .where(eq(orders.businessId, businessId));
     return result[0].count;
+  }
+
+  /**
+   * Per-product sales aggregation from completed orders. Units sold and revenue
+   * come from the order_items snapshots (so deleted products still count); cost
+   * and profit use the product's current `priceIn` (0 when the product is gone).
+   * Optional inclusive date range filters on the order's creation date.
+   */
+  async getProductPerformance(
+    businessId: string,
+    options?: { from?: string; to?: string },
+  ): Promise<
+    {
+      productId: string | null;
+      name: string;
+      code: string | null;
+      image: string | null;
+      category: string | null;
+      unitsSold: number;
+      revenue: number;
+      profit: number;
+      profitMargin: number;
+    }[]
+  > {
+    const where = [
+      eq(orderItems.businessId, businessId),
+      eq(orders.status, 'Completed'),
+    ];
+    if (options?.from) {
+      where.push(gte(orders.createdAt, new Date(options.from)));
+    }
+    if (options?.to) {
+      // Include the whole "to" day by pushing to end-of-day.
+      const to = new Date(options.to);
+      to.setHours(23, 59, 59, 999);
+      where.push(lte(orders.createdAt, to));
+    }
+
+    const rows = await this.dbService.db
+      .select({
+        productId: orderItems.productId,
+        name: sql<string>`MAX(${orderItems.productName})`,
+        code: sql<string | null>`MAX(${products.code})`,
+        image: sql<string | null>`MAX(${products.image})`,
+        category: sql<string | null>`MAX(${categories.name})`,
+        unitsSold: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${orderItems.lineTotal}), 0)`,
+        cost: sql<string>`COALESCE(SUM(${orderItems.quantity} * COALESCE(${products.priceIn}, 0)), 0)`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .leftJoin(
+        categories,
+        and(
+          eq(products.categoryId, categories.id),
+          eq(categories.businessId, businessId),
+        ),
+      )
+      .where(and(...where))
+      .groupBy(orderItems.productId)
+      .orderBy(desc(sql`SUM(${orderItems.lineTotal})`));
+
+    return rows.map((r) => {
+      const revenue = Number(r.revenue);
+      const profit = revenue - Number(r.cost);
+      return {
+        productId: r.productId,
+        name: r.name,
+        code: r.code,
+        image: r.image,
+        category: r.category,
+        unitsSold: Number(r.unitsSold),
+        revenue,
+        profit,
+        profitMargin: revenue > 0 ? (profit / revenue) * 100 : 0,
+      };
+    });
   }
 
   async getRevenue(businessId: string): Promise<number> {

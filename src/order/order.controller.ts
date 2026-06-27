@@ -78,6 +78,20 @@ export class OrderController {
     return { revenue: await this.orderService.getRevenue(business.id) };
   }
 
+  @Get('product-performance')
+  @ApiOperation({
+    summary: 'Per-product sales/revenue/profit from completed orders',
+  })
+  @ApiQuery({ name: 'from', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'to', required: false, description: 'ISO date (inclusive)' })
+  async getProductPerformance(
+    @CurrentBusiness() business: IBusiness,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.orderService.getProductPerformance(business.id, { from, to });
+  }
+
   @Get('user/:userId')
   @ApiOperation({ summary: 'Get orders for a specific customer' })
   @ApiParam({ name: 'userId', description: 'Customer ID' })

@@ -210,6 +210,20 @@ export const orderItems = pgTable('order_items', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Per-business receipt/printout configuration (one row per business).
+export const receiptSettings = pgTable('receipt_settings', {
+  businessId: varchar('business_id', { length: 36 })
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, { onDelete: 'cascade' }),
+  receiptName: varchar('receipt_name', { length: 255 })
+    .notNull()
+    .default('Standart'),
+  showLogo: boolean('show_logo').notNull().default(true),
+  logoUrl: varchar('logo_url', { length: 500 }),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const businessesRelations = relations(businesses, ({ one, many }) => ({
   subscription: one(businessSubscriptions, {
     fields: [businesses.id],
@@ -326,6 +340,8 @@ export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
 export type OrderItem = typeof orderItems.$inferSelect;
 export type NewOrderItem = typeof orderItems.$inferInsert;
+export type ReceiptSettings = typeof receiptSettings.$inferSelect;
+export type NewReceiptSettings = typeof receiptSettings.$inferInsert;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 export type NewSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
 export type BusinessSubscription = typeof businessSubscriptions.$inferSelect;
