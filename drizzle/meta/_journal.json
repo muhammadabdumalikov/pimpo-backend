@@ -43,6 +43,20 @@
       "when": 1782552633846,
       "tag": "0005_overjoyed_blue_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1782708298715,
+      "tag": "0006_overconfident_frog_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1782710288577,
+      "tag": "0007_fine_bushwacker",
+      "breakpoints": true
     }
   ]
 }

@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { eq, and, desc, ilike, or, count, sql, gte, lte } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
@@ -11,11 +12,14 @@ import {
   products,
   categories,
   users,
+  userDebts,
   receiptSettings,
   type Order,
   type OrderItem,
 } from '../database/schema';
 import { generateId } from '../utils/uuid';
+import { UserService } from '../user/user.service';
+import { SubscriptionService } from '../subscription/subscription.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 
 export type OrderWithItems = Order & { items: OrderItem[] };
@@ -26,11 +30,18 @@ function money(value: number): string {
 
 @Injectable()
 export class OrderService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly userService: UserService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   async create(businessId: string, dto: CreateOrderDto): Promise<OrderWithItems> {
+    const isDebt = dto.paymentMethod === 'debt';
+
     // Resolve optional customer.
     let customerName = dto.customerName ?? null;
+    let customerId: string | null = dto.userId ?? null;
     if (dto.userId) {
       const [user] = await this.dbService.db
         .select()
@@ -41,6 +52,42 @@ export class OrderService {
         throw new BadRequestException('Customer not found for this business');
       }
       if (!customerName) customerName = user.name;
+    }
+
+    // A debt sale ("give on credit") must be tied to a real customer so we can
+    // track who owes what, for which order. The due date is optional.
+    if (isDebt) {
+      // Respect the plan's debt limit (same rule as the standalone debt page).
+      const { debtsLimit } =
+        await this.subscriptionService.getSubscriptionLimits(businessId);
+      if (debtsLimit !== null) {
+        const [{ value: debtCount }] = await this.dbService.db
+          .select({ value: count() })
+          .from(userDebts)
+          .where(eq(userDebts.businessId, businessId));
+        if (debtCount >= debtsLimit) {
+          throw new ForbiddenException(
+            `Debt limit of ${debtsLimit} reached for your current plan.`,
+          );
+        }
+      }
+      // Resolve the customer: existing id, or find-or-create by name + phone.
+      if (!customerId) {
+        if (!customerName || !dto.phone) {
+          throw new BadRequestException(
+            'A customer name and phone are required for a debt sale',
+          );
+        }
+        const existing = await this.userService.findByPhone(businessId, dto.phone);
+        const user =
+          existing ??
+          (await this.userService.create(businessId, {
+            name: customerName,
+            phone: dto.phone,
+          }));
+        customerId = user.id;
+        if (!customerName) customerName = user.name;
+      }
     }
 
     // Load + snapshot each product, compute totals.
@@ -79,22 +126,45 @@ export class OrderService {
 
     const orderId = generateId();
 
-    // Resolve the payment breakdown. Default to a single method covering the
-    // whole total when no explicit split is provided.
-    const payments =
-      dto.payments && dto.payments.length > 0
-        ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
-        : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
-    const methods = Array.from(new Set(payments.map((p) => p.method)));
-    const paymentMethod =
-      methods.length > 1 ? 'split' : (methods[0] ?? dto.paymentMethod ?? null);
-    // Cash tendered (defaults to the total when not provided); change is what we
-    // hand back over the cash portion.
-    const cashApplied = payments
-      .filter((p) => p.method === 'cash')
-      .reduce((sum, p) => sum + p.amount, 0);
-    const amountPaid = dto.amountPaid ?? cashApplied;
-    const changeAmount = Math.max(0, amountPaid - cashApplied);
+    // Resolve the payment breakdown.
+    let payments: { method: string; amount: number }[];
+    let paymentMethod: string | null;
+    let amountPaid: number;
+    let changeAmount: number;
+    // For a debt sale this is the unpaid remainder owed by the customer.
+    let debtAmount = 0;
+
+    if (isDebt) {
+      // `payments` here is what the customer pays *now* (a down payment); the
+      // rest becomes the debt. An empty list means the whole total is owed.
+      payments = (dto.payments ?? []).map((p) => ({
+        method: p.method,
+        amount: p.amount,
+      }));
+      const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
+      debtAmount = Math.max(0, total - paidNow);
+      paymentMethod = 'debt';
+      const cashApplied = payments
+        .filter((p) => p.method === 'cash')
+        .reduce((sum, p) => sum + p.amount, 0);
+      amountPaid = dto.amountPaid ?? cashApplied;
+      changeAmount = 0;
+    } else {
+      // Default to a single method covering the whole total.
+      payments =
+        dto.payments && dto.payments.length > 0
+          ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
+          : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
+      const methods = Array.from(new Set(payments.map((p) => p.method)));
+      paymentMethod =
+        methods.length > 1 ? 'split' : (methods[0] ?? dto.paymentMethod ?? null);
+      // Cash tendered (defaults to the total); change is over the cash portion.
+      const cashApplied = payments
+        .filter((p) => p.method === 'cash')
+        .reduce((sum, p) => sum + p.amount, 0);
+      amountPaid = dto.amountPaid ?? cashApplied;
+      changeAmount = Math.max(0, amountPaid - cashApplied);
+    }
 
     // VAT (QQS) is inclusive: break out the tax portion of the total without
     // changing it. Rate comes from the business's settings.
@@ -115,7 +185,7 @@ export class OrderService {
       await tx.insert(orders).values({
         id: orderId,
         businessId,
-        userId: dto.userId ?? null,
+        userId: customerId,
         customerName,
         status: dto.status ?? 'Pending',
         totalAmount: money(total),
@@ -157,6 +227,24 @@ export class OrderService {
               eq(products.id, line.productId),
             ),
           );
+      }
+
+      // Debt sale: record the unpaid remainder as a credit, linked to this
+      // order + customer. (Skip if a down payment covered the whole total.)
+      if (isDebt && customerId && debtAmount > 0) {
+        const itemSummary = lines
+          .map((l) => `${l.productName} ×${l.quantity}`)
+          .join(', ');
+        await tx.insert(userDebts).values({
+          id: generateId(),
+          businessId,
+          userId: customerId,
+          orderId,
+          amount: money(debtAmount),
+          status: 'Pending',
+          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+          description: itemSummary.slice(0, 500),
+        });
       }
     });
 

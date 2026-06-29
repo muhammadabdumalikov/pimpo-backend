@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { userDebts, users, type UserDebt, type NewUserDebt, type User } from '../database/schema';
-import { eq, and, desc, ilike, or, count, lt } from 'drizzle-orm';
+import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, sql, inArray } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { UserService } from '../user/user.service';
@@ -105,6 +105,8 @@ export class DebtService {
       limit?: number;
       search?: string;
       status?: string;
+      dateFrom?: string;
+      dateTo?: string;
     },
   ): Promise<{ debts: (UserDebt & { user: User })[]; total: number; page: number; limit: number }> {
     await this.applyOverdue(businessId);
@@ -119,6 +121,16 @@ export class DebtService {
 
     if (status) {
       whereConditions.push(eq(userDebts.status, status as 'Paid' | 'Pending' | 'Overdue'));
+    }
+
+    // Date range on when the debt was created (inclusive).
+    if (options?.dateFrom) {
+      whereConditions.push(gte(userDebts.createdAt, new Date(options.dateFrom)));
+    }
+    if (options?.dateTo) {
+      const to = new Date(options.dateTo);
+      to.setHours(23, 59, 59, 999);
+      whereConditions.push(lte(userDebts.createdAt, to));
     }
 
     // Build search conditions for database query
@@ -165,6 +177,136 @@ export class DebtService {
       page,
       limit,
     };
+  }
+
+  /**
+   * Debts grouped by customer, aggregated + sorted + paginated entirely in the
+   * database. Each returned group also carries its (filtered) debts nested, so
+   * the UI can render and expand without a second round-trip.
+   */
+  async findGrouped(
+    businessId: string,
+    options?: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      status?: string;
+      dateFrom?: string;
+      dateTo?: string;
+      sortBy?: 'date' | 'amount' | 'count';
+      sortDir?: 'asc' | 'desc';
+    },
+  ): Promise<{
+    groups: {
+      userId: string;
+      userName: string;
+      phone: string;
+      totalDebt: number;
+      debtCount: number;
+      latestDate: Date | null;
+      debts: (UserDebt & { user: User })[];
+    }[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
+    await this.applyOverdue(businessId);
+    const page = options?.page || 1;
+    const limit = options?.limit || 10;
+    const offset = (page - 1) * limit;
+    const sortBy = options?.sortBy || 'date';
+    const sortDir = options?.sortDir === 'asc' ? 'asc' : 'desc';
+
+    // Shared filters (same as findAll).
+    const whereConditions = [eq(userDebts.businessId, businessId)];
+    if (options?.status) {
+      whereConditions.push(
+        eq(userDebts.status, options.status as 'Paid' | 'Pending' | 'Overdue'),
+      );
+    }
+    if (options?.dateFrom) {
+      whereConditions.push(gte(userDebts.createdAt, new Date(options.dateFrom)));
+    }
+    if (options?.dateTo) {
+      const to = new Date(options.dateTo);
+      to.setHours(23, 59, 59, 999);
+      whereConditions.push(lte(userDebts.createdAt, to));
+    }
+    if (options?.search) {
+      whereConditions.push(
+        or(
+          ilike(users.name, `%${options.search}%`),
+          ilike(users.phone, `%${options.search}%`),
+          ilike(userDebts.description, `%${options.search}%`),
+        )!,
+      );
+    }
+    const where = and(...whereConditions);
+
+    // Total number of distinct customers (groups) matching the filters.
+    const groupKeys = await this.dbService.db
+      .select({ userId: userDebts.userId })
+      .from(userDebts)
+      .innerJoin(users, eq(userDebts.userId, users.id))
+      .where(where)
+      .groupBy(userDebts.userId);
+    const total = groupKeys.length;
+
+    // Order by the chosen aggregate + direction.
+    const totalExpr = sql`SUM(${userDebts.amount})`;
+    const countExpr = sql`COUNT(*)`;
+    const latestExpr = sql`MAX(${userDebts.createdAt})`;
+    const sortExpr =
+      sortBy === 'amount' ? totalExpr : sortBy === 'count' ? countExpr : latestExpr;
+
+    const pageGroups = await this.dbService.db
+      .select({
+        userId: users.id,
+        userName: users.name,
+        phone: users.phone,
+        totalDebt: totalExpr.mapWith(Number),
+        debtCount: countExpr.mapWith(Number),
+        latestDate: latestExpr.mapWith((v) => (v ? new Date(v as string) : null)),
+      })
+      .from(userDebts)
+      .innerJoin(users, eq(userDebts.userId, users.id))
+      .where(where)
+      .groupBy(users.id, users.name, users.phone)
+      .orderBy(sortDir === 'asc' ? asc(sortExpr) : desc(sortExpr))
+      .limit(limit)
+      .offset(offset);
+
+    if (pageGroups.length === 0) {
+      return { groups: [], total, page, limit };
+    }
+
+    // Nest each group's debts (same filters, scoped to the page's customers).
+    const userIds = pageGroups.map((g) => g.userId);
+    const debtRows = await this.dbService.db
+      .select({ debt: userDebts, user: users })
+      .from(userDebts)
+      .innerJoin(users, eq(userDebts.userId, users.id))
+      .where(and(where, inArray(userDebts.userId, userIds)))
+      .orderBy(desc(userDebts.createdAt));
+
+    const byUser = new Map<string, (UserDebt & { user: User })[]>();
+    for (const row of debtRows) {
+      const list = byUser.get(row.debt.userId) ?? [];
+      list.push({ ...row.debt, user: row.user });
+      byUser.set(row.debt.userId, list);
+    }
+
+    const groups = pageGroups.map((g) => ({
+      userId: g.userId,
+      userName: g.userName,
+      phone: g.phone,
+      totalDebt: g.totalDebt,
+      debtCount: g.debtCount,
+      latestDate: g.latestDate,
+      debts: byUser.get(g.userId) ?? [],
+    }));
+
+    return { groups, total, page, limit };
   }
 
   async findOne(businessId: string, debtId: string): Promise<(UserDebt & { user: User }) | null> {

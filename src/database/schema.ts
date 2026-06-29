@@ -160,10 +160,16 @@ export const userDebts = pgTable('user_debts', {
   userId: varchar('user_id', { length: 36 })
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
+  // The POS sale this debt came from (null for manually-entered debts). Gives
+  // "what was bought, when" via the order + its items.
+  orderId: varchar('order_id', { length: 36 }).references(() => orders.id, {
+    onDelete: 'set null',
+  }),
 
   amount: decimal('amount', { precision: 10, scale: 2 }).notNull(),
   status: varchar('status', { length: 20 }).notNull().default('Pending'), // 'Paid' | 'Pending' | 'Overdue'
-  dueDate: timestamp('due_date', { withTimezone: true }).notNull(),
+  // Optional: a debt with no due date is open-ended and never auto-marks Overdue.
+  dueDate: timestamp('due_date', { withTimezone: true }),
   description: varchar('description', { length: 500 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

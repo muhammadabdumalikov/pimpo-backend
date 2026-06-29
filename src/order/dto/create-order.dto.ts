@@ -6,6 +6,7 @@ import {
   IsArray,
   IsInt,
   IsNumber,
+  IsDateString,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -83,6 +84,20 @@ export class CreateOrderDto {
   @IsOptional()
   @Min(0)
   amountPaid?: number;
+
+  @ApiPropertyOptional({
+    description: 'Customer phone (for a debt sale: find-or-create the customer)',
+  })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiPropertyOptional({
+    description: 'Debt due date (ISO). Required when paymentMethod is "debt".',
+  })
+  @IsDateString()
+  @IsOptional()
+  dueDate?: string;
 
   @ApiProperty({ description: 'Note', required: false })
   @IsString()

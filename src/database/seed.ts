@@ -1,7 +1,7 @@
 import * as dotenv from 'dotenv';
 import * as postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 import * as schema from './schema';
 import { DatabaseService } from './database.service';
@@ -148,7 +148,7 @@ async function seed() {
     console.log('✓ Categories created (5)');
 
     // 5. Products.
-    await db.insert(schema.products).values([
+    const productRows = await db.insert(schema.products).values([
       {
         id: generateId(),
         businessId,
@@ -241,7 +241,7 @@ async function seed() {
         quantityType: 'pcs',
         categoryId: CATEGORY.household,
       },
-    ]);
+    ]).returning();
     console.log('✓ Products created (8)');
 
     // 6. Users (customers).
@@ -264,43 +264,114 @@ async function seed() {
     await db.insert(schema.users).values(userRows);
     console.log(`✓ Users created (${userRows.length})`);
 
-    // 7. User debts (mix of statuses).
-    await db.insert(schema.userDebts).values([
-      {
+    // 7. User debts. Most come from real "sell on credit" POS sales (so they
+    // carry an order + items and show up under "View items"); a couple are
+    // manual tabs with no order.
+    const money = (n: number): string => n.toFixed(2);
+
+    // Creates a Completed POS order with items, decrements stock, and records
+    // the unpaid remainder as a debt linked to that order.
+    async function seedDebtSale(opts: {
+      user: (typeof userRows)[number];
+      lines: { product: (typeof productRows)[number]; qty: number }[];
+      paidNow: number;
+      method?: 'cash' | 'card';
+      dueInDays: number | null;
+    }) {
+      const orderId = generateId();
+      let total = 0;
+      let itemCount = 0;
+      const items = opts.lines.map(({ product, qty }) => {
+        const lineTotal = Number(product.priceOut) * qty;
+        total += lineTotal;
+        itemCount += qty;
+        return {
+          id: generateId(),
+          orderId,
+          businessId,
+          productId: product.id,
+          productName: product.name,
+          priceOut: money(Number(product.priceOut)),
+          quantity: qty,
+          lineTotal: money(lineTotal),
+        };
+      });
+      const paidNow = Math.min(opts.paidNow, total);
+      const payments = paidNow > 0 ? [{ method: opts.method ?? 'cash', amount: paidNow }] : [];
+
+      await db.insert(schema.orders).values({
+        id: orderId,
+        businessId,
+        userId: opts.user.id,
+        customerName: opts.user.name,
+        status: 'Completed',
+        totalAmount: money(total),
+        itemCount,
+        paymentMethod: 'debt',
+        payments,
+        amountPaid: money(paidNow),
+        changeAmount: money(0),
+        taxRate: money(0),
+        taxAmount: money(0),
+        source: 'admin',
+      });
+      await db.insert(schema.orderItems).values(items);
+      for (const it of items) {
+        await db
+          .update(schema.products)
+          .set({ quantity: sql`GREATEST(0, ${schema.products.quantity} - ${it.quantity})` })
+          .where(eq(schema.products.id, it.productId));
+      }
+      await db.insert(schema.userDebts).values({
         id: generateId(),
         businessId,
-        userId: userRows[0].id,
-        amount: '150000.00',
+        userId: opts.user.id,
+        orderId,
+        amount: money(total - paidNow),
         status: 'Pending',
-        dueDate: daysFromNow(14),
-        description: 'Weekly grocery tab',
-      },
-      {
-        id: generateId(),
-        businessId,
-        userId: userRows[1].id,
-        amount: '75000.00',
-        status: 'Paid',
-        dueDate: daysFromNow(-3),
-        description: 'Drinks order',
-      },
-      {
-        id: generateId(),
-        businessId,
-        userId: userRows[2].id,
-        amount: '220000.00',
-        status: 'Overdue',
-        dueDate: daysFromNow(-10),
-        description: 'Monthly supplies',
-      },
+        dueDate: opts.dueInDays == null ? null : daysFromNow(opts.dueInDays),
+        description: items.map((i) => `${i.productName} ×${i.quantity}`).join(', '),
+      });
+    }
+
+    // Akmal — partial debt (paid some now), due soon.
+    await seedDebtSale({
+      user: userRows[0],
+      lines: [
+        { product: productRows[0], qty: 2 },
+        { product: productRows[1], qty: 1 },
+      ],
+      paidNow: 20000,
+      dueInDays: 14,
+    });
+    // Dilnoza — full debt from a sale.
+    await seedDebtSale({
+      user: userRows[1],
+      lines: [
+        { product: productRows[2], qty: 3 },
+        { product: productRows[3], qty: 1 },
+      ],
+      paidNow: 0,
+      dueInDays: 7,
+    });
+    // Bobur — full debt from a sale, already overdue.
+    await seedDebtSale({
+      user: userRows[2],
+      lines: [{ product: productRows[4], qty: 4 }],
+      paidNow: 0,
+      dueInDays: -10,
+    });
+
+    // A couple of manual tabs (no order) for variety.
+    await db.insert(schema.userDebts).values([
       {
         id: generateId(),
         businessId,
         userId: userRows[3].id,
         amount: '48000.00',
         status: 'Pending',
-        dueDate: daysFromNow(7),
-        description: 'Dairy products',
+        dueDate: null, // open-ended
+        description: 'Informal tab',
       },
       {
         id: generateId(),
@@ -312,7 +383,7 @@ async function seed() {
         description: 'Household items',
       },
     ]);
-    console.log('✓ User debts created (5)');
+    console.log('✓ User debts created (3 from sales + 2 manual)');
 
     // 8. A demo "Cashier" role + staff account (sees only products & checkout).
     await ensureDemoStaff(db, businessId);

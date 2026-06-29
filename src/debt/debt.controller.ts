@@ -59,6 +59,8 @@ export class DebtController {
     @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
     @ApiQuery({ name: 'search', required: false, type: String, description: 'Search term' })
     @ApiQuery({ name: 'status', required: false, type: String, description: 'Filter by status (Paid, Pending, Overdue)' })
+    @ApiQuery({ name: 'dateFrom', required: false, type: String, description: 'Created from (ISO date, inclusive)' })
+    @ApiQuery({ name: 'dateTo', required: false, type: String, description: 'Created to (ISO date, inclusive)' })
     @ApiResponse({
         status: 200,
         description: 'List of debts',
@@ -69,12 +71,16 @@ export class DebtController {
         @Query('limit') limit?: string,
         @Query('search') search?: string,
         @Query('status') status?: string,
+        @Query('dateFrom') dateFrom?: string,
+        @Query('dateTo') dateTo?: string,
     ) {
         const result = await this.debtService.findAll(business.id, {
             page: page ? parseInt(page, 10) : undefined,
             limit: limit ? parseInt(limit, 10) : undefined,
             search,
             status,
+            dateFrom,
+            dateTo,
         });
         return result;
     }
@@ -88,6 +94,39 @@ export class DebtController {
     async getCount(@CurrentBusiness() business: IBusiness) {
         const count = await this.debtService.getCount(business.id);
         return { count };
+    }
+
+    @Get('grouped')
+    @ApiOperation({ summary: 'Debts grouped by customer (sorted + paginated server-side)' })
+    @ApiQuery({ name: 'page', required: false, type: Number })
+    @ApiQuery({ name: 'limit', required: false, type: Number })
+    @ApiQuery({ name: 'search', required: false, type: String })
+    @ApiQuery({ name: 'status', required: false, type: String })
+    @ApiQuery({ name: 'dateFrom', required: false, type: String })
+    @ApiQuery({ name: 'dateTo', required: false, type: String })
+    @ApiQuery({ name: 'sortBy', required: false, enum: ['date', 'amount', 'count'] })
+    @ApiQuery({ name: 'sortDir', required: false, enum: ['asc', 'desc'] })
+    async findGrouped(
+        @CurrentBusiness() business: IBusiness,
+        @Query('page') page?: string,
+        @Query('limit') limit?: string,
+        @Query('search') search?: string,
+        @Query('status') status?: string,
+        @Query('dateFrom') dateFrom?: string,
+        @Query('dateTo') dateTo?: string,
+        @Query('sortBy') sortBy?: 'date' | 'amount' | 'count',
+        @Query('sortDir') sortDir?: 'asc' | 'desc',
+    ) {
+        return this.debtService.findGrouped(business.id, {
+            page: page ? parseInt(page, 10) : undefined,
+            limit: limit ? parseInt(limit, 10) : undefined,
+            search,
+            status,
+            dateFrom,
+            dateTo,
+            sortBy,
+            sortDir,
+        });
     }
 
     @Get('user/:userId')
