@@ -226,6 +226,63 @@ export const orderItems = pgTable('order_items', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Suppliers (vendors) goods are received from. Scoped per business.
+export const suppliers = pgTable('suppliers', {
+  id: varchar('id', { length: 36 }).primaryKey().notNull(),
+  businessId: varchar('business_id', { length: 36 })
+    .notNull()
+    .references(() => businesses.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  phone: varchar('phone', { length: 50 }),
+  note: varchar('note', { length: 500 }),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Goods receipt ("приход товаров") — an inbound stock document, the inverse of
+// an order. Created as 'Completed' and immutable thereafter; corrections are a
+// new offsetting receipt. Saving one increments product stock and recomputes
+// each product's weighted-average priceIn (see receipt.service).
+export const goodsReceipts = pgTable('goods_receipts', {
+  id: varchar('id', { length: 36 }).primaryKey().notNull(),
+  businessId: varchar('business_id', { length: 36 })
+    .notNull()
+    .references(() => businesses.id, { onDelete: 'cascade' }),
+  // Optional: supplier may be deleted later; the receipt keeps its snapshot name.
+  supplierId: varchar('supplier_id', { length: 36 }).references(
+    () => suppliers.id,
+    { onDelete: 'set null' },
+  ),
+  supplierName: varchar('supplier_name', { length: 255 }),
+  status: varchar('status', { length: 20 }).notNull().default('Completed'), // 'Completed'
+  totalAmount: decimal('total_amount', { precision: 12, scale: 2 })
+    .notNull()
+    .default('0'),
+  itemCount: integer('item_count').notNull().default(0),
+  note: varchar('note', { length: 500 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const goodsReceiptItems = pgTable('goods_receipt_items', {
+  id: varchar('id', { length: 36 }).primaryKey().notNull(),
+  receiptId: varchar('receipt_id', { length: 36 })
+    .notNull()
+    .references(() => goodsReceipts.id, { onDelete: 'cascade' }),
+  businessId: varchar('business_id', { length: 36 })
+    .notNull()
+    .references(() => businesses.id, { onDelete: 'cascade' }),
+  // Loose reference (products may be deleted later); item keeps a name snapshot.
+  productId: varchar('product_id', { length: 36 }),
+  productName: varchar('product_name', { length: 255 }).notNull(),
+  // Unit cost paid on this receipt (feeds the weighted-average priceIn update).
+  priceIn: decimal('price_in', { precision: 10, scale: 2 }).notNull(),
+  quantity: integer('quantity').notNull(),
+  lineTotal: decimal('line_total', { precision: 12, scale: 2 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 // Per-business receipt/printout configuration (one row per business).
 export const receiptSettings = pgTable('receipt_settings', {
   businessId: varchar('business_id', { length: 36 })
@@ -256,6 +313,8 @@ export const businessesRelations = relations(businesses, ({ one, many }) => ({
   roles: many(roles),
   staff: many(staff),
   orders: many(orders),
+  suppliers: many(suppliers),
+  goodsReceipts: many(goodsReceipts),
 }));
 
 export const ordersRelations = relations(orders, ({ one, many }) => ({
@@ -339,6 +398,39 @@ export const usersRelations = relations(users, ({ one, many }) => ({
   debts: many(userDebts),
 }));
 
+export const suppliersRelations = relations(suppliers, ({ one, many }) => ({
+  business: one(businesses, {
+    fields: [suppliers.businessId],
+    references: [businesses.id],
+  }),
+  receipts: many(goodsReceipts),
+}));
+
+export const goodsReceiptsRelations = relations(
+  goodsReceipts,
+  ({ one, many }) => ({
+    business: one(businesses, {
+      fields: [goodsReceipts.businessId],
+      references: [businesses.id],
+    }),
+    supplier: one(suppliers, {
+      fields: [goodsReceipts.supplierId],
+      references: [suppliers.id],
+    }),
+    items: many(goodsReceiptItems),
+  }),
+);
+
+export const goodsReceiptItemsRelations = relations(
+  goodsReceiptItems,
+  ({ one }) => ({
+    receipt: one(goodsReceipts, {
+      fields: [goodsReceiptItems.receiptId],
+      references: [goodsReceipts.id],
+    }),
+  }),
+);
+
 export const userDebtsRelations = relations(userDebts, ({ one }) => ({
   business: one(businesses, {
     fields: [userDebts.businessId],
@@ -374,3 +466,9 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserDebt = typeof userDebts.$inferSelect;
 export type NewUserDebt = typeof userDebts.$inferInsert;
+export type Supplier = typeof suppliers.$inferSelect;
+export type NewSupplier = typeof suppliers.$inferInsert;
+export type GoodsReceipt = typeof goodsReceipts.$inferSelect;
+export type NewGoodsReceipt = typeof goodsReceipts.$inferInsert;
+export type GoodsReceiptItem = typeof goodsReceiptItems.$inferSelect;
+export type NewGoodsReceiptItem = typeof goodsReceiptItems.$inferInsert;
