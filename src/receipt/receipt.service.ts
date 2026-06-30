@@ -12,7 +12,7 @@ import {
   type GoodsReceipt,
   type GoodsReceiptItem,
 } from '../database/schema';
-import { eq, and, desc, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
 
@@ -54,56 +54,59 @@ export class ReceiptService {
       supplierName = supplier.name;
     }
 
-    // Load + snapshot each product, compute totals and the new average cost.
+    // Validate + snapshot each product's name once (products may repeat across
+    // lines). The receipt keeps every entered line as the document of record.
+    const productNames = new Map<string, string>();
+    // Per-product received totals — the same product across multiple lines is
+    // summed so a single stock/cost update applies the full received batch
+    // (otherwise a second line for the same product would overwrite the first).
+    const received = new Map<string, { qty: number; value: number }>();
     const lines: {
       productId: string;
       productName: string;
       priceIn: string;
       quantity: number;
       lineTotal: string;
-      newQuantity: number;
-      newPriceIn: string;
     }[] = [];
     let total = 0;
     let itemCount = 0;
 
     for (const item of dto.items) {
-      const [product] = await this.dbService.db
-        .select()
-        .from(products)
-        .where(
-          and(
-            eq(products.businessId, businessId),
-            eq(products.id, item.productId),
-          ),
-        )
-        .limit(1);
-      if (!product) {
-        throw new BadRequestException(`Product not found: ${item.productId}`);
+      let name = productNames.get(item.productId);
+      if (name === undefined) {
+        const [product] = await this.dbService.db
+          .select()
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.id, item.productId),
+            ),
+          )
+          .limit(1);
+        if (!product) {
+          throw new BadRequestException(`Product not found: ${item.productId}`);
+        }
+        name = product.name;
+        productNames.set(item.productId, name);
       }
 
       const lineTotal = item.priceIn * item.quantity;
       total += lineTotal;
       itemCount += item.quantity;
 
-      // Weighted-average cost: (oldQty*oldCost + recvQty*recvCost) / totalQty.
-      const oldQty = product.quantity;
-      const oldCost = Number(product.priceIn);
-      const newQuantity = oldQty + item.quantity;
-      const newPriceIn =
-        newQuantity > 0
-          ? (oldQty * oldCost + item.quantity * item.priceIn) / newQuantity
-          : item.priceIn;
-
       lines.push({
-        productId: product.id,
-        productName: product.name,
+        productId: item.productId,
+        productName: name,
         priceIn: money(item.priceIn),
         quantity: item.quantity,
         lineTotal: money(lineTotal),
-        newQuantity,
-        newPriceIn: money(newPriceIn),
       });
+
+      const agg = received.get(item.productId) ?? { qty: 0, value: 0 };
+      agg.qty += item.quantity;
+      agg.value += lineTotal;
+      received.set(item.productId, agg);
     }
 
     const receiptId = generateId();
@@ -133,19 +136,28 @@ export class ReceiptService {
         })),
       );
 
-      // Increment stock and update the weighted-average cost per product.
-      for (const line of lines) {
+      // One atomic update per product: add the received quantity and roll the
+      // purchase cost into a weighted average, computed in SQL against the
+      // live row so concurrent sales/receipts can't clobber the result.
+      // newPriceIn = (oldQty*oldCost + receivedValue) / (oldQty + receivedQty)
+      for (const [productId, agg] of received) {
         await tx
           .update(products)
           .set({
-            quantity: line.newQuantity,
-            priceIn: line.newPriceIn,
+            quantity: sql`${products.quantity} + ${agg.qty}`,
+            priceIn: sql`CASE WHEN ${products.quantity} + ${agg.qty} > 0
+              THEN ROUND(
+                (${products.quantity} * ${products.priceIn} + ${money(agg.value)})
+                / (${products.quantity} + ${agg.qty}),
+                2
+              )
+              ELSE ${products.priceIn} END`,
             updatedAt: new Date(),
           })
           .where(
             and(
               eq(products.businessId, businessId),
-              eq(products.id, line.productId),
+              eq(products.id, productId),
             ),
           );
       }
