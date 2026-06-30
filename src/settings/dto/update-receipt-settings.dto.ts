@@ -1,6 +1,7 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -43,4 +44,22 @@ export class UpdateReceiptSettingsDto {
   @Min(0)
   @Max(100)
   vatRate?: number;
+
+  @ApiPropertyOptional({
+    description: 'Inventory costing method for COGS',
+    enum: ['AVERAGE', 'FIFO'],
+  })
+  @IsOptional()
+  @IsIn(['AVERAGE', 'FIFO'])
+  costingMethod?: 'AVERAGE' | 'FIFO';
+
+  @ApiPropertyOptional({
+    description:
+      'What happens to existing stock selling price when a receipt arrives at a ' +
+      'higher price: keep old batches or reprice them up',
+    enum: ['KEEP_OLD', 'REPRICE_EXISTING'],
+  })
+  @IsOptional()
+  @IsIn(['KEEP_OLD', 'REPRICE_EXISTING'])
+  priceIncreaseMode?: 'KEEP_OLD' | 'REPRICE_EXISTING';
 }

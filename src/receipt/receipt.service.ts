@@ -7,12 +7,14 @@ import { DatabaseService } from '../database/database.service';
 import {
   goodsReceipts,
   goodsReceiptItems,
+  inventoryBatches,
   products,
   suppliers,
+  receiptSettings,
   type GoodsReceipt,
   type GoodsReceiptItem,
 } from '../database/schema';
-import { eq, and, desc, gte, lte, sql } from 'drizzle-orm';
+import { eq, and, asc, desc, gt, gte, lte, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
 
@@ -54,17 +56,32 @@ export class ReceiptService {
       supplierName = supplier.name;
     }
 
-    // Validate + snapshot each product's name once (products may repeat across
-    // lines). The receipt keeps every entered line as the document of record.
-    const productNames = new Map<string, string>();
+    // Default selling-price behaviour comes from the business settings, but a
+    // receipt line can override it per product.
+    const [settings] = await this.dbService.db
+      .select({ priceIncreaseMode: receiptSettings.priceIncreaseMode })
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    const repriceExistingDefault =
+      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
+
+    // Validate + snapshot each product once (products may repeat across lines).
+    // The receipt keeps every entered line as the document of record.
+    const productInfo = new Map<
+      string,
+      { name: string; priceOut: string; repriceOverride?: boolean }
+    >();
     // Per-product received totals — the same product across multiple lines is
     // summed so a single stock/cost update applies the full received batch
     // (otherwise a second line for the same product would overwrite the first).
     const received = new Map<string, { qty: number; value: number }>();
     const lines: {
+      itemId: string;
       productId: string;
       productName: string;
       priceIn: string;
+      priceOut: string;
       quantity: number;
       lineTotal: string;
     }[] = [];
@@ -72,8 +89,8 @@ export class ReceiptService {
     let itemCount = 0;
 
     for (const item of dto.items) {
-      let name = productNames.get(item.productId);
-      if (name === undefined) {
+      let info = productInfo.get(item.productId);
+      if (info === undefined) {
         const [product] = await this.dbService.db
           .select()
           .from(products)
@@ -87,18 +104,26 @@ export class ReceiptService {
         if (!product) {
           throw new BadRequestException(`Product not found: ${item.productId}`);
         }
-        name = product.name;
-        productNames.set(item.productId, name);
+        info = { name: product.name, priceOut: product.priceOut };
+        productInfo.set(item.productId, info);
+      }
+      // A per-line override (last one wins) controls repricing for the product.
+      if (item.repriceExisting !== undefined) {
+        info.repriceOverride = item.repriceExisting;
       }
 
+      // Selling price of this batch: explicit, else the product's current price.
+      const priceOut = item.priceOut ?? Number(info.priceOut);
       const lineTotal = item.priceIn * item.quantity;
       total += lineTotal;
       itemCount += item.quantity;
 
       lines.push({
+        itemId: generateId(),
         productId: item.productId,
-        productName: name,
+        productName: info.name,
         priceIn: money(item.priceIn),
+        priceOut: money(priceOut),
         quantity: item.quantity,
         lineTotal: money(lineTotal),
       });
@@ -125,7 +150,7 @@ export class ReceiptService {
 
       await tx.insert(goodsReceiptItems).values(
         lines.map((line) => ({
-          id: generateId(),
+          id: line.itemId,
           receiptId,
           businessId,
           productId: line.productId,
@@ -133,6 +158,21 @@ export class ReceiptService {
           priceIn: line.priceIn,
           quantity: line.quantity,
           lineTotal: line.lineTotal,
+        })),
+      );
+
+      // Open one inventory batch per line — the FIFO/cost source of truth. Same
+      // product at different prices stays as separate lots.
+      await tx.insert(inventoryBatches).values(
+        lines.map((line) => ({
+          id: generateId(),
+          businessId,
+          productId: line.productId,
+          receiptItemId: line.itemId,
+          priceIn: line.priceIn,
+          priceOut: line.priceOut,
+          qtyReceived: line.quantity,
+          qtyRemaining: line.quantity,
         })),
       );
 
@@ -160,6 +200,67 @@ export class ReceiptService {
               eq(products.id, productId),
             ),
           );
+      }
+
+      // Selling-price handling per product. When the new batch price is higher
+      // than the current price, either bump every open batch up to it
+      // (REPRICE_EXISTING) or leave old batches at their old price (KEEP_OLD).
+      // In all cases products.priceOut tracks the FIFO-front (next-to-sell) price.
+      for (const [productId, info] of productInfo) {
+        const currentPriceOut = Number(info.priceOut);
+        const newPriceOut = Math.max(
+          ...lines
+            .filter((l) => l.productId === productId)
+            .map((l) => Number(l.priceOut)),
+        );
+        const reprice = info.repriceOverride ?? repriceExistingDefault;
+
+        if (newPriceOut > currentPriceOut && reprice) {
+          await tx
+            .update(inventoryBatches)
+            .set({ priceOut: money(newPriceOut) })
+            .where(
+              and(
+                eq(inventoryBatches.businessId, businessId),
+                eq(inventoryBatches.productId, productId),
+                gt(inventoryBatches.qtyRemaining, 0),
+              ),
+            );
+          await tx
+            .update(products)
+            .set({ priceOut: money(newPriceOut), updatedAt: new Date() })
+            .where(
+              and(
+                eq(products.businessId, businessId),
+                eq(products.id, productId),
+              ),
+            );
+        } else {
+          // Track the oldest open batch's price as the displayed/next price.
+          const [front] = await tx
+            .select({ priceOut: inventoryBatches.priceOut })
+            .from(inventoryBatches)
+            .where(
+              and(
+                eq(inventoryBatches.businessId, businessId),
+                eq(inventoryBatches.productId, productId),
+                gt(inventoryBatches.qtyRemaining, 0),
+              ),
+            )
+            .orderBy(asc(inventoryBatches.createdAt))
+            .limit(1);
+          if (front) {
+            await tx
+              .update(products)
+              .set({ priceOut: front.priceOut, updatedAt: new Date() })
+              .where(
+                and(
+                  eq(products.businessId, businessId),
+                  eq(products.id, productId),
+                ),
+              );
+          }
+        }
       }
     });
 

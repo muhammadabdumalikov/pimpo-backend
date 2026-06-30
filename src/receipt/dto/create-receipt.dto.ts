@@ -6,6 +6,7 @@ import {
   IsArray,
   IsInt,
   IsNumber,
+  IsBoolean,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -26,6 +27,26 @@ export class ReceiptItemDto {
   @IsNumber()
   @Min(0)
   priceIn: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Unit selling price for this batch. Defaults to the product current priceOut.',
+    example: 6000,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  priceOut?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'When the new selling price is higher than the current one, whether to ' +
+      'also reprice the existing open batches up (true) or keep their old ' +
+      'price (false). Overrides the business priceIncreaseMode default.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  repriceExisting?: boolean;
 }
 
 export class CreateReceiptDto {

@@ -8,6 +8,7 @@ import {
   jsonb,
   uniqueIndex,
   primaryKey,
+  index,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
@@ -220,9 +221,17 @@ export const orderItems = pgTable('order_items', {
   // order keeps its name/price snapshot.
   productId: varchar('product_id', { length: 36 }),
   productName: varchar('product_name', { length: 255 }).notNull(),
+  // Weighted selling price of the line at sale time (lineTotal / quantity).
+  // With batch pricing a single line can span batches at different prices.
   priceOut: decimal('price_out', { precision: 10, scale: 2 }).notNull(),
   quantity: integer('quantity').notNull(),
   lineTotal: decimal('line_total', { precision: 12, scale: 2 }).notNull(),
+  // COGS snapshot at sale time (immutable history, independent of later price
+  // changes or the costing method). 0 for pre-migration rows.
+  costIn: decimal('cost_in', { precision: 10, scale: 2 }).notNull().default('0'),
+  costTotal: decimal('cost_total', { precision: 12, scale: 2 })
+    .notNull()
+    .default('0'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -283,6 +292,47 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// Inventory batches ("партии") — the lot ledger and source of truth for cost
+// and selling price. Each goods-receipt line opens one batch; a sale consumes
+// open batches oldest-first (FIFO) by createdAt. Invariant: SUM(qtyRemaining)
+// per product == products.quantity.
+export const inventoryBatches = pgTable(
+  'inventory_batches',
+  {
+    id: varchar('id', { length: 36 }).primaryKey().notNull(),
+    businessId: varchar('business_id', { length: 36 })
+      .notNull()
+      .references(() => businesses.id, { onDelete: 'cascade' }),
+    // Tight reference: batches are meaningless without their product.
+    productId: varchar('product_id', { length: 36 })
+      .notNull()
+      .references(() => products.id, { onDelete: 'cascade' }),
+    // Provenance of the batch; null for the opening batch seeded at migration.
+    receiptItemId: varchar('receipt_item_id', { length: 36 }).references(
+      () => goodsReceiptItems.id,
+      { onDelete: 'set null' },
+    ),
+    // Unit purchase cost of this batch (immutable).
+    priceIn: decimal('price_in', { precision: 10, scale: 2 }).notNull(),
+    // Unit selling price of this batch (may be bumped by a later receipt when
+    // priceIncreaseMode = 'REPRICE_EXISTING').
+    priceOut: decimal('price_out', { precision: 10, scale: 2 }).notNull(),
+    // Original quantity received (immutable, for audit).
+    qtyReceived: integer('qty_received').notNull(),
+    // Units left in this batch; decremented as it is sold. FIFO consumes this.
+    qtyRemaining: integer('qty_remaining').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    // Fast scan of a product's open batches in FIFO order.
+    openBatchesIdx: index('inventory_batches_open_idx').on(
+      table.businessId,
+      table.productId,
+      table.qtyRemaining,
+    ),
+  }),
+);
+
 // Per-business receipt/printout configuration (one row per business).
 export const receiptSettings = pgTable('receipt_settings', {
   businessId: varchar('business_id', { length: 36 })
@@ -298,6 +348,15 @@ export const receiptSettings = pgTable('receipt_settings', {
   // portion of the total on receipts/reports — it never changes the total.
   vatEnabled: boolean('vat_enabled').notNull().default(false),
   vatRate: decimal('vat_rate', { precision: 5, scale: 2 }).notNull().default('12'),
+  // Inventory costing method used to value COGS on a sale.
+  costingMethod: varchar('costing_method', { length: 10 })
+    .notNull()
+    .default('AVERAGE'), // 'AVERAGE' | 'FIFO'
+  // What happens to existing stock's selling price when a receipt arrives with a
+  // higher selling price: keep old batches at their price, or reprice them up.
+  priceIncreaseMode: varchar('price_increase_mode', { length: 20 })
+    .notNull()
+    .default('KEEP_OLD'), // 'KEEP_OLD' | 'REPRICE_EXISTING'
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
@@ -431,6 +490,24 @@ export const goodsReceiptItemsRelations = relations(
   }),
 );
 
+export const inventoryBatchesRelations = relations(
+  inventoryBatches,
+  ({ one }) => ({
+    business: one(businesses, {
+      fields: [inventoryBatches.businessId],
+      references: [businesses.id],
+    }),
+    product: one(products, {
+      fields: [inventoryBatches.productId],
+      references: [products.id],
+    }),
+    receiptItem: one(goodsReceiptItems, {
+      fields: [inventoryBatches.receiptItemId],
+      references: [goodsReceiptItems.id],
+    }),
+  }),
+);
+
 export const userDebtsRelations = relations(userDebts, ({ one }) => ({
   business: one(businesses, {
     fields: [userDebts.businessId],
@@ -472,3 +549,5 @@ export type GoodsReceipt = typeof goodsReceipts.$inferSelect;
 export type NewGoodsReceipt = typeof goodsReceipts.$inferInsert;
 export type GoodsReceiptItem = typeof goodsReceiptItems.$inferSelect;
 export type NewGoodsReceiptItem = typeof goodsReceiptItems.$inferInsert;
+export type InventoryBatch = typeof inventoryBatches.$inferSelect;
+export type NewInventoryBatch = typeof inventoryBatches.$inferInsert;

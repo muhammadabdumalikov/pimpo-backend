@@ -21,6 +21,7 @@ import { generateId } from '../utils/uuid';
 import { UserService } from '../user/user.service';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { consumeBatches, type CostingMethod } from './costing';
 
 export type OrderWithItems = Order & { items: OrderItem[] };
 
@@ -90,15 +91,17 @@ export class OrderService {
       }
     }
 
-    // Load + snapshot each product, compute totals.
-    const lines: {
+    // Validate + snapshot each product. Cost and revenue are valued from the
+    // inventory batches inside the transaction below (selling price is per
+    // batch), so here we only capture each product's id/name and its current
+    // priceIn/priceOut to use as the oversell fallback.
+    const planned: {
       productId: string;
       productName: string;
-      priceOut: string;
+      priceIn: number;
+      priceOut: number;
       quantity: number;
-      lineTotal: string;
     }[] = [];
-    let total = 0;
     let itemCount = 0;
 
     for (const item of dto.items) {
@@ -112,76 +115,116 @@ export class OrderService {
       if (!product) {
         throw new BadRequestException(`Product not found: ${item.productId}`);
       }
-      const lineTotal = Number(product.priceOut) * item.quantity;
-      total += lineTotal;
-      itemCount += item.quantity;
-      lines.push({
+      planned.push({
         productId: product.id,
         productName: product.name,
-        priceOut: product.priceOut,
+        priceIn: Number(product.priceIn),
+        priceOut: Number(product.priceOut),
         quantity: item.quantity,
-        lineTotal: money(lineTotal),
       });
+      itemCount += item.quantity;
     }
 
-    const orderId = generateId();
-
-    // Resolve the payment breakdown.
-    let payments: { method: string; amount: number }[];
-    let paymentMethod: string | null;
-    let amountPaid: number;
-    let changeAmount: number;
-    // For a debt sale this is the unpaid remainder owed by the customer.
-    let debtAmount = 0;
-
-    if (isDebt) {
-      // `payments` here is what the customer pays *now* (a down payment); the
-      // rest becomes the debt. An empty list means the whole total is owed.
-      payments = (dto.payments ?? []).map((p) => ({
-        method: p.method,
-        amount: p.amount,
-      }));
-      const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
-      debtAmount = Math.max(0, total - paidNow);
-      paymentMethod = 'debt';
-      const cashApplied = payments
-        .filter((p) => p.method === 'cash')
-        .reduce((sum, p) => sum + p.amount, 0);
-      amountPaid = dto.amountPaid ?? cashApplied;
-      changeAmount = 0;
-    } else {
-      // Default to a single method covering the whole total.
-      payments =
-        dto.payments && dto.payments.length > 0
-          ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
-          : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
-      const methods = Array.from(new Set(payments.map((p) => p.method)));
-      paymentMethod =
-        methods.length > 1 ? 'split' : (methods[0] ?? dto.paymentMethod ?? null);
-      // Cash tendered (defaults to the total); change is over the cash portion.
-      const cashApplied = payments
-        .filter((p) => p.method === 'cash')
-        .reduce((sum, p) => sum + p.amount, 0);
-      amountPaid = dto.amountPaid ?? cashApplied;
-      changeAmount = Math.max(0, amountPaid - cashApplied);
-    }
-
-    // VAT (QQS) is inclusive: break out the tax portion of the total without
-    // changing it. Rate comes from the business's settings.
+    // VAT (QQS, inclusive) + costing method come from the business settings.
     const [settings] = await this.dbService.db
       .select({
         vatEnabled: receiptSettings.vatEnabled,
         vatRate: receiptSettings.vatRate,
+        costingMethod: receiptSettings.costingMethod,
       })
       .from(receiptSettings)
       .where(eq(receiptSettings.businessId, businessId))
       .limit(1);
     const vatEnabled = settings?.vatEnabled ?? false;
     const vatRate = vatEnabled ? Number(settings?.vatRate ?? 0) : 0;
-    const taxAmount =
-      vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+    const method: CostingMethod =
+      settings?.costingMethod === 'FIFO' ? 'FIFO' : 'AVERAGE';
+
+    const orderId = generateId();
 
     await this.dbService.db.transaction(async (tx) => {
+      // Value each line against the FIFO batch queue (locks batches FOR UPDATE),
+      // producing the COGS + batch-priced revenue snapshot. `total` is the sum of
+      // the real per-batch revenue, so it must be computed here, before payments.
+      const lines: {
+        productId: string;
+        productName: string;
+        priceOut: string;
+        quantity: number;
+        lineTotal: string;
+        costIn: string;
+        costTotal: string;
+        frontPriceOut: string | null;
+      }[] = [];
+      let total = 0;
+
+      for (const p of planned) {
+        const c = await consumeBatches(
+          tx,
+          businessId,
+          p.productId,
+          p.quantity,
+          method,
+          p.priceIn,
+          p.priceOut,
+        );
+        total += c.revenueTotal;
+        lines.push({
+          productId: p.productId,
+          productName: p.productName,
+          priceOut: money(c.priceOut),
+          quantity: p.quantity,
+          lineTotal: money(c.revenueTotal),
+          costIn: money(c.costIn),
+          costTotal: money(c.costTotal),
+          frontPriceOut: c.frontPriceOut,
+        });
+      }
+
+      // Resolve the payment breakdown against the batch-priced total.
+      let payments: { method: string; amount: number }[];
+      let paymentMethod: string | null;
+      let amountPaid: number;
+      let changeAmount: number;
+      // For a debt sale this is the unpaid remainder owed by the customer.
+      let debtAmount = 0;
+
+      if (isDebt) {
+        // `payments` here is what the customer pays *now* (a down payment); the
+        // rest becomes the debt. An empty list means the whole total is owed.
+        payments = (dto.payments ?? []).map((p) => ({
+          method: p.method,
+          amount: p.amount,
+        }));
+        const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
+        debtAmount = Math.max(0, total - paidNow);
+        paymentMethod = 'debt';
+        const cashApplied = payments
+          .filter((p) => p.method === 'cash')
+          .reduce((sum, p) => sum + p.amount, 0);
+        amountPaid = dto.amountPaid ?? cashApplied;
+        changeAmount = 0;
+      } else {
+        // Default to a single method covering the whole total.
+        payments =
+          dto.payments && dto.payments.length > 0
+            ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
+            : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
+        const methods = Array.from(new Set(payments.map((p) => p.method)));
+        paymentMethod =
+          methods.length > 1
+            ? 'split'
+            : (methods[0] ?? dto.paymentMethod ?? null);
+        // Cash tendered (defaults to the total); change is over the cash portion.
+        const cashApplied = payments
+          .filter((p) => p.method === 'cash')
+          .reduce((sum, p) => sum + p.amount, 0);
+        amountPaid = dto.amountPaid ?? cashApplied;
+        changeAmount = Math.max(0, amountPaid - cashApplied);
+      }
+
+      const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+
       await tx.insert(orders).values({
         id: orderId,
         businessId,
@@ -210,15 +253,21 @@ export class OrderService {
           priceOut: line.priceOut,
           quantity: line.quantity,
           lineTotal: line.lineTotal,
+          costIn: line.costIn,
+          costTotal: line.costTotal,
         })),
       );
 
-      // Decrement stock, never below zero.
+      // Decrement stock (never below zero) and keep the displayed selling price
+      // tracking the new FIFO-front batch (the next unit to be sold).
       for (const line of lines) {
         await tx
           .update(products)
           .set({
             quantity: sql`GREATEST(0, ${products.quantity} - ${line.quantity})`,
+            ...(line.frontPriceOut !== null
+              ? { priceOut: line.frontPriceOut }
+              : {}),
             updatedAt: new Date(),
           })
           .where(
@@ -373,9 +422,10 @@ export class OrderService {
   }
 
   /**
-   * Per-product sales aggregation from completed orders. Units sold and revenue
-   * come from the order_items snapshots (so deleted products still count); cost
-   * and profit use the product's current `priceIn` (0 when the product is gone).
+   * Per-product sales aggregation from completed orders. Units sold, revenue and
+   * cost all come from the order_items snapshots (so deleted products still count
+   * and COGS reflects the cost at sale time, not the current price). Pre-migration
+   * rows have costTotal=0 and fall back to the product's current `priceIn`.
    * Optional inclusive date range filters on the order's creation date.
    */
   async getProductPerformance(
@@ -417,7 +467,14 @@ export class OrderService {
         category: sql<string | null>`MAX(${categories.name})`,
         unitsSold: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
         revenue: sql<string>`COALESCE(SUM(${orderItems.lineTotal}), 0)`,
-        cost: sql<string>`COALESCE(SUM(${orderItems.quantity} * COALESCE(${products.priceIn}, 0)), 0)`,
+        // COGS from the per-sale snapshot (accurate after price changes). Falls
+        // back to current priceIn for pre-migration rows where costTotal is 0.
+        cost: sql<string>`COALESCE(SUM(
+          CASE WHEN ${orderItems.costTotal} > 0
+            THEN ${orderItems.costTotal}
+            ELSE ${orderItems.quantity} * COALESCE(${products.priceIn}, 0)
+          END
+        ), 0)`,
       })
       .from(orderItems)
       .innerJoin(orders, eq(orderItems.orderId, orders.id))

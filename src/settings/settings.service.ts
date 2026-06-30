@@ -10,6 +10,8 @@ const DEFAULTS = {
   logoUrl: null as string | null,
   vatEnabled: false,
   vatRate: '12',
+  costingMethod: 'AVERAGE',
+  priceIncreaseMode: 'KEEP_OLD',
 };
 
 @Injectable()
@@ -32,6 +34,8 @@ export class SettingsService {
       logoUrl: DEFAULTS.logoUrl,
       vatEnabled: DEFAULTS.vatEnabled,
       vatRate: DEFAULTS.vatRate,
+      costingMethod: DEFAULTS.costingMethod,
+      priceIncreaseMode: DEFAULTS.priceIncreaseMode,
       updatedAt: new Date(),
     };
   }
@@ -48,6 +52,8 @@ export class SettingsService {
       logoUrl: dto.logoUrl === undefined ? current.logoUrl : dto.logoUrl,
       vatEnabled: dto.vatEnabled ?? current.vatEnabled,
       vatRate: dto.vatRate !== undefined ? String(dto.vatRate) : current.vatRate,
+      costingMethod: dto.costingMethod ?? current.costingMethod,
+      priceIncreaseMode: dto.priceIncreaseMode ?? current.priceIncreaseMode,
     };
 
     await this.dbService.db

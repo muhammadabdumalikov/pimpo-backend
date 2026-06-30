@@ -1,6 +1,11 @@
 import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { products, type Product, type NewProduct } from '../database/schema';
+import {
+  products,
+  inventoryBatches,
+  type Product,
+  type NewProduct,
+} from '../database/schema';
 import { eq, and, desc, ilike, or } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 
@@ -52,10 +57,26 @@ export class ProductService {
       isActive: true,
     };
 
-    const [product] = await this.dbService.db
-      .insert(products)
-      .values(newProduct)
-      .returning();
+    const product = await this.dbService.db.transaction(async (tx) => {
+      const [created] = await tx.insert(products).values(newProduct).returning();
+
+      // Open an inventory batch for any initial stock so the FIFO queue stays in
+      // sync with products.quantity (sales value COGS from batches).
+      if (data.quantity > 0) {
+        await tx.insert(inventoryBatches).values({
+          id: generateId(),
+          businessId,
+          productId: created.id,
+          receiptItemId: null,
+          priceIn: data.priceIn,
+          priceOut: data.priceOut,
+          qtyReceived: data.quantity,
+          qtyRemaining: data.quantity,
+        });
+      }
+
+      return created;
+    });
 
     return product;
   }
