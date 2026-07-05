@@ -14,7 +14,7 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       price: '0',
       isActive: true,
       debtsLimit: 20,
-      productsLimit: 150,
+      productsLimit: 100,
     },
     {
       id: generateId(),
@@ -24,7 +24,7 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       price: '99000',
       isActive: true,
       debtsLimit: null,
-      productsLimit: 3000,
+      productsLimit: 1500,
     },
     {
       id: generateId(),

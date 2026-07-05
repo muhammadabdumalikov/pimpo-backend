@@ -121,7 +121,7 @@ export class SubscriptionService implements OnModuleInit {
       // Default to free plan limits
       return {
         debtsLimit: 20,
-        productsLimit: 150,
+        productsLimit: 100,
       };
     }
 
