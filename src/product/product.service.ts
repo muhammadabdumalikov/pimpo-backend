@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import {
   products,
@@ -8,10 +13,14 @@ import {
 } from '../database/schema';
 import { eq, and, desc, ilike, or } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 @Injectable()
 export class ProductService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   async create(businessId: string, data: {
     name: string;
@@ -24,6 +33,18 @@ export class ProductService {
     image?: string;
     categoryId?: string;
   }): Promise<Product> {
+    // Enforce the plan's product limit (null = unlimited).
+    const { productsLimit } =
+      await this.subscriptionService.getSubscriptionLimits(businessId);
+    if (productsLimit !== null) {
+      const currentCount = await this.getCount(businessId);
+      if (currentCount >= productsLimit) {
+        throw new ForbiddenException(
+          `Product limit of ${productsLimit} reached for your current plan.`,
+        );
+      }
+    }
+
     // Check if code already exists for this business
     if (data.code) {
       const existing = await this.dbService.db
