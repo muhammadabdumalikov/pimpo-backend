@@ -78,6 +78,23 @@ export class OrderController {
     return { revenue: await this.orderService.getRevenue(business.id) };
   }
 
+  @Get('monthly-sales')
+  @ApiOperation({
+    summary: 'Completed-order revenue per month for a year (12 values)',
+  })
+  @ApiQuery({ name: 'year', required: false, description: 'Defaults to current year' })
+  async getMonthlySales(
+    @CurrentBusiness() business: IBusiness,
+    @Query('year') year?: string,
+  ) {
+    const parsed = year ? parseInt(year, 10) : NaN;
+    const y = Number.isFinite(parsed) ? parsed : new Date().getFullYear();
+    return {
+      year: y,
+      monthly: await this.orderService.getMonthlySales(business.id, y),
+    };
+  }
+
   @Get('product-performance')
   @ApiOperation({
     summary: 'Per-product sales/revenue/profit from completed orders',

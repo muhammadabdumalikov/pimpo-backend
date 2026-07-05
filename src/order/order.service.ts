@@ -518,4 +518,32 @@ export class OrderService {
       );
     return Number(row?.sum ?? 0);
   }
+
+  /**
+   * Completed-order revenue grouped by calendar month for a given year.
+   * Returns exactly 12 numbers (Jan..Dec); months with no sales are 0.
+   */
+  async getMonthlySales(businessId: string, year: number): Promise<number[]> {
+    const rows = await this.dbService.db
+      .select({
+        month: sql<number>`EXTRACT(MONTH FROM ${orders.createdAt})`,
+        sum: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          sql`EXTRACT(YEAR FROM ${orders.createdAt}) = ${year}`,
+        ),
+      )
+      .groupBy(sql`EXTRACT(MONTH FROM ${orders.createdAt})`);
+
+    const monthly = new Array<number>(12).fill(0);
+    for (const r of rows) {
+      const m = Number(r.month);
+      if (m >= 1 && m <= 12) monthly[m - 1] = Number(r.sum);
+    }
+    return monthly;
+  }
 }
