@@ -8,18 +8,21 @@ import { DatabaseService } from '../database/database.service';
 import {
   products,
   inventoryBatches,
+  globalBarcodes,
   type Product,
   type NewProduct,
 } from '../database/schema';
-import { eq, and, desc, ilike, or } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { BarcodeLookupService } from './barcode-lookup.service';
 
 @Injectable()
 export class ProductService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly barcodeLookupService: BarcodeLookupService,
   ) {}
 
   async create(businessId: string, data: {
@@ -94,6 +97,29 @@ export class ProductService {
           qtyReceived: data.quantity,
           qtyRemaining: data.quantity,
         });
+      }
+
+      // Contribute this barcode to the shared catalog so other businesses that
+      // scan it later can auto-fill the name/image. First contributor's name
+      // sticks; repeat scans just bump the usage counter.
+      if (created.barcode) {
+        await tx
+          .insert(globalBarcodes)
+          .values({
+            barcode: created.barcode,
+            name: created.name,
+            image: created.image,
+            source: 'community',
+          })
+          .onConflictDoUpdate({
+            target: globalBarcodes.barcode,
+            set: {
+              timesUsed: sql`${globalBarcodes.timesUsed} + 1`,
+              // Backfill an image only if the catalog entry never had one.
+              image: sql`coalesce(${globalBarcodes.image}, ${created.image ?? null})`,
+              updatedAt: new Date(),
+            },
+          });
       }
 
       return created;
@@ -247,6 +273,109 @@ export class ProductService {
       );
 
     return result.length;
+  }
+
+  /**
+   * Look up a scanned barcode to pre-fill a new product.
+   *
+   * Priority: the business's own catalog first (so we can flag "you already have
+   * this"), then the shared community catalog built from all businesses.
+   */
+  async lookupBarcode(
+    businessId: string,
+    barcode: string,
+  ): Promise<{
+    found: boolean;
+    source: 'own' | 'community' | null;
+    name: string | null;
+    image: string | null;
+    categoryName: string | null;
+    existsInBusiness: boolean;
+    productId: string | null;
+  }> {
+    const empty = {
+      found: false,
+      source: null,
+      name: null,
+      image: null,
+      categoryName: null,
+      existsInBusiness: false,
+      productId: null,
+    };
+
+    if (!barcode) return empty;
+
+    // The business may already stock this exact barcode.
+    const [own] = await this.dbService.db
+      .select()
+      .from(products)
+      .where(
+        and(
+          eq(products.businessId, businessId),
+          eq(products.barcode, barcode),
+          eq(products.isActive, true),
+        ),
+      )
+      .limit(1);
+
+    if (own) {
+      return {
+        found: true,
+        source: 'own',
+        name: own.name,
+        image: own.image,
+        categoryName: null,
+        existsInBusiness: true,
+        productId: own.id,
+      };
+    }
+
+    // Fall back to the shared community catalog.
+    const [global] = await this.dbService.db
+      .select()
+      .from(globalBarcodes)
+      .where(eq(globalBarcodes.barcode, barcode))
+      .limit(1);
+
+    if (global) {
+      return {
+        found: true,
+        source: 'community',
+        name: global.name,
+        image: global.image,
+        categoryName: global.categoryName,
+        existsInBusiness: false,
+        productId: null,
+      };
+    }
+
+    // Last resort: query external providers (GS1 / Open Food Facts) and cache any
+    // hit into the shared catalog, so this barcode is instant (and offline) next time.
+    const external = await this.barcodeLookupService.lookup(barcode);
+    if (external) {
+      await this.dbService.db
+        .insert(globalBarcodes)
+        .values({
+          barcode,
+          name: external.name,
+          image: external.image,
+          categoryName: external.categoryName,
+          source: external.source,
+        })
+        .onConflictDoNothing();
+
+      return {
+        found: true,
+        source: 'community',
+        name: external.name,
+        image: external.image,
+        categoryName: external.categoryName,
+        existsInBusiness: false,
+        productId: null,
+      };
+    }
+
+    return empty;
   }
 
   async generateProductCode(businessId: string): Promise<string> {

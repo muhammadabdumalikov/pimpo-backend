@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -96,6 +97,23 @@ export class ProductController {
   async generateCode(@CurrentBusiness() business: IBusiness) {
     const code = await this.productService.generateProductCode(business.id);
     return { code };
+  }
+
+  @Get('lookup')
+  @ApiOperation({
+    summary: 'Look up a scanned barcode against own + shared community catalog',
+  })
+  @ApiQuery({ name: 'barcode', required: true, type: String, description: 'Barcode to look up' })
+  @ApiResponse({ status: 200, description: 'Barcode lookup result' })
+  async lookup(
+    @CurrentBusiness() business: IBusiness,
+    @Query('barcode') barcode?: string,
+  ) {
+    const trimmed = barcode?.trim();
+    if (!trimmed) {
+      throw new BadRequestException('barcode query parameter is required');
+    }
+    return this.productService.lookupBarcode(business.id, trimmed);
   }
 
   @Get(':id')

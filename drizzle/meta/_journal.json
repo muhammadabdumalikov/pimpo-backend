@@ -78,6 +78,13 @@
       "when": 1783324914561,
       "tag": "0010_aberrant_yellow_claw",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783332824823,
+      "tag": "0011_loose_ares",
+      "breakpoints": true
     }
   ]
 }

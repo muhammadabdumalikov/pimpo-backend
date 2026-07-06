@@ -112,6 +112,21 @@ export const products = pgTable('products', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Shared, cross-business barcode catalog. Populated whenever any business creates
+// a product with a barcode, so other businesses that scan the same barcode can
+// auto-fill name/image instead of typing everything by hand (our "GS1"-style
+// lookup, built from community data). Keyed by barcode; not scoped to a business.
+export const globalBarcodes = pgTable('global_barcodes', {
+  barcode: varchar('barcode', { length: 100 }).primaryKey().notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  categoryName: varchar('category_name', { length: 255 }),
+  image: varchar('image', { length: 500 }),
+  source: varchar('source', { length: 50 }).default('community').notNull(),
+  timesUsed: integer('times_used').default(1).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const categories = pgTable(
   'categories',
   {
@@ -542,6 +557,8 @@ export type BusinessSubscription = typeof businessSubscriptions.$inferSelect;
 export type NewBusinessSubscription = typeof businessSubscriptions.$inferInsert;
 export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
+export type GlobalBarcode = typeof globalBarcodes.$inferSelect;
+export type NewGlobalBarcode = typeof globalBarcodes.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
 export type User = typeof users.$inferSelect;

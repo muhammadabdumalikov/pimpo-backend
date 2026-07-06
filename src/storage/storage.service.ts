@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common';
 import {
-  S3Client,
-  PutObjectCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
 } from '@aws-sdk/client-s3';
+import {Injectable} from '@nestjs/common';
 
 export interface UploadOptions {
   /** S3 key (path) for the object. If not set, a key is generated. */
@@ -17,7 +17,7 @@ export interface UploadOptions {
 
 // Default S3 config (override via env later)
 const DEFAULT_S3 = {
-  bucket: 'pimpo',
+  bucket: 'KPOS',
   region: 'us-east-1',
   endpoint: 'https://fsn1.your-objectstorage.com',
   accessKeyId: '0LP3ETM9ZQHUFVHMA88G',
@@ -51,7 +51,7 @@ export class StorageService {
     if (this.enabled) {
       this.client = new S3Client({
         region: this.region,
-        credentials: { accessKeyId, secretAccessKey },
+        credentials: {accessKeyId, secretAccessKey},
         endpoint,
         forcePathStyle: true,
       });
@@ -68,7 +68,7 @@ export class StorageService {
   async upload(
     buffer: Buffer,
     options: UploadOptions = {},
-  ): Promise<{ url: string; key: string }> {
+  ): Promise<{url: string; key: string}> {
     if (!this.enabled || !this.client) {
       throw new Error(
         'S3 storage is not configured. Set S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.',
@@ -87,7 +87,7 @@ export class StorageService {
       }),
     );
 
-    return { url: this.getUrl(key), key };
+    return {url: this.getUrl(key), key};
   }
 
   /**
