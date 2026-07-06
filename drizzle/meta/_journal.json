@@ -71,6 +71,13 @@
       "when": 1782811684150,
       "tag": "0009_batch_costing",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783324914561,
+      "tag": "0010_aberrant_yellow_claw",
+      "breakpoints": true
     }
   ]
 }

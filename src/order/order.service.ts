@@ -14,6 +14,8 @@ import {
   users,
   userDebts,
   receiptSettings,
+  staff,
+  businesses,
   type Order,
   type OrderItem,
 } from '../database/schema';
@@ -21,6 +23,7 @@ import { generateId } from '../utils/uuid';
 import { UserService } from '../user/user.service';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { IAccount } from '../business/types';
 import { consumeBatches, type CostingMethod } from './costing';
 
 export type OrderWithItems = Order & { items: OrderItem[] };
@@ -37,8 +40,34 @@ export class OrderService {
     private readonly subscriptionService: SubscriptionService,
   ) {}
 
-  async create(businessId: string, dto: CreateOrderDto): Promise<OrderWithItems> {
+  // Resolve the acting account into a snapshotted cashier (id + display name).
+  private async resolveCashier(
+    account?: IAccount,
+  ): Promise<{ id: string | null; name: string | null }> {
+    if (!account) return { id: null, name: null };
+    if (account.type === 'staff') {
+      const [row] = await this.dbService.db
+        .select({ name: staff.name })
+        .from(staff)
+        .where(eq(staff.id, account.id))
+        .limit(1);
+      return { id: account.id, name: row?.name ?? null };
+    }
+    const [row] = await this.dbService.db
+      .select({ name: businesses.name })
+      .from(businesses)
+      .where(eq(businesses.id, account.id))
+      .limit(1);
+    return { id: account.id, name: row?.name ?? null };
+  }
+
+  async create(
+    businessId: string,
+    dto: CreateOrderDto,
+    account?: IAccount,
+  ): Promise<OrderWithItems> {
     const isDebt = dto.paymentMethod === 'debt';
+    const cashier = await this.resolveCashier(account);
 
     // Resolve optional customer.
     let customerName = dto.customerName ?? null;
@@ -241,6 +270,8 @@ export class OrderService {
         taxAmount: money(taxAmount),
         note: dto.note ?? null,
         source: dto.source ?? 'admin',
+        cashierId: cashier.id,
+        cashierName: cashier.name,
       });
 
       await tx.insert(orderItems).values(
@@ -545,5 +576,53 @@ export class OrderService {
       if (m >= 1 && m <= 12) monthly[m - 1] = Number(r.sum);
     }
     return monthly;
+  }
+
+  /**
+   * Completed-order sales grouped by the cashier (acting account) who rang them
+   * up. `cashierId === null` covers storefront/guest and pre-migration orders.
+   */
+  async getSalesByEmployee(
+    businessId: string,
+    options: { from?: string; to?: string } = {},
+  ): Promise<
+    Array<{
+      cashierId: string | null;
+      cashierName: string | null;
+      orderCount: number;
+      revenue: number;
+    }>
+  > {
+    const where = [
+      eq(orders.businessId, businessId),
+      eq(orders.status, 'Completed'),
+    ];
+    if (options.from) {
+      where.push(gte(orders.createdAt, new Date(options.from)));
+    }
+    if (options.to) {
+      const to = new Date(options.to);
+      to.setHours(23, 59, 59, 999);
+      where.push(lte(orders.createdAt, to));
+    }
+
+    const rows = await this.dbService.db
+      .select({
+        cashierId: orders.cashierId,
+        cashierName: sql<string | null>`MAX(${orders.cashierName})`,
+        orderCount: count(),
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(and(...where))
+      .groupBy(orders.cashierId)
+      .orderBy(desc(sql`COALESCE(SUM(${orders.totalAmount}), 0)`));
+
+    return rows.map((r) => ({
+      cashierId: r.cashierId,
+      cashierName: r.cashierName ?? null,
+      orderCount: Number(r.orderCount),
+      revenue: Number(r.revenue),
+    }));
   }
 }

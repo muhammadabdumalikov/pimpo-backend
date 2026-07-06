@@ -22,7 +22,8 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
-import { IBusiness } from '../business/types';
+import { CurrentAccount } from '../business/decorators/current-account.decorator';
+import { IBusiness, IAccount } from '../business/types';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrderService } from './order.service';
@@ -40,9 +41,10 @@ export class OrderController {
   @ApiResponse({ status: 201, description: 'Order created' })
   async create(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Body() dto: CreateOrderDto,
   ) {
-    return this.orderService.create(business.id, dto);
+    return this.orderService.create(business.id, dto, account);
   }
 
   @Get()
@@ -107,6 +109,20 @@ export class OrderController {
     @Query('to') to?: string,
   ) {
     return this.orderService.getProductPerformance(business.id, { from, to });
+  }
+
+  @Get('sales-by-employee')
+  @ApiOperation({
+    summary: 'Completed-order sales grouped by cashier (employee)',
+  })
+  @ApiQuery({ name: 'from', required: false, description: 'ISO date (inclusive)' })
+  @ApiQuery({ name: 'to', required: false, description: 'ISO date (inclusive)' })
+  async getSalesByEmployee(
+    @CurrentBusiness() business: IBusiness,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.orderService.getSalesByEmployee(business.id, { from, to });
   }
 
   @Get('user/:userId')

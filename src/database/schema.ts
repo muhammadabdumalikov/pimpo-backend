@@ -205,6 +205,11 @@ export const orders = pgTable('orders', {
   taxAmount: decimal('tax_amount', { precision: 12, scale: 2 }),
   note: varchar('note', { length: 500 }),
   source: varchar('source', { length: 20 }).notNull().default('admin'), // 'admin' | 'store'
+  // Who rang up the sale (the acting account): business owner id or staff id.
+  // Null for storefront/guest orders and pre-migration rows. Name is snapshotted
+  // so the report survives staff renames/deletions.
+  cashierId: varchar('cashier_id', { length: 36 }),
+  cashierName: varchar('cashier_name', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
