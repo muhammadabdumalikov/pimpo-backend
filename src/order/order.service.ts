@@ -210,6 +210,24 @@ export class OrderService {
         });
       }
 
+      // Apply the manual whole-receipt discount (fixed soʻm or percent) to the
+      // gross subtotal. COGS is untouched, so profit = discounted revenue - cost.
+      // Everything below (payments, VAT, debt, totalAmount) keys off the net total.
+      const subtotal = total;
+      let discountType: string | null = null;
+      let discountValue: number | null = null;
+      let discountAmount = 0;
+      if (dto.discountType && dto.discountValue && dto.discountValue > 0) {
+        discountType = dto.discountType;
+        discountValue = dto.discountValue;
+        const raw =
+          dto.discountType === 'percent'
+            ? (subtotal * Math.min(dto.discountValue, 100)) / 100
+            : dto.discountValue;
+        discountAmount = Math.max(0, Math.min(raw, subtotal));
+      }
+      total = subtotal - discountAmount;
+
       // Resolve the payment breakdown against the batch-priced total.
       let payments: { method: string; amount: number }[];
       let paymentMethod: string | null;
@@ -261,6 +279,10 @@ export class OrderService {
         customerName,
         status: dto.status ?? 'Pending',
         totalAmount: money(total),
+        subtotalAmount: money(subtotal),
+        discountType,
+        discountValue: discountValue !== null ? money(discountValue) : null,
+        discountAmount: money(discountAmount),
         itemCount,
         paymentMethod,
         payments,

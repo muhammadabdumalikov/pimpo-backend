@@ -206,6 +206,18 @@ export const orders = pgTable('orders', {
   totalAmount: decimal('total_amount', { precision: 12, scale: 2 })
     .notNull()
     .default('0'),
+  // Gross total before any whole-receipt discount (= sum of line totals).
+  subtotalAmount: decimal('subtotal_amount', { precision: 12, scale: 2 })
+    .notNull()
+    .default('0'),
+  // Manual whole-receipt discount applied at checkout. `discountType` is
+  // 'amount' (fixed soʻm) or 'percent'; `discountValue` is what the cashier
+  // typed; `discountAmount` is the resolved soʻm reduction (subtotal - total).
+  discountType: varchar('discount_type', { length: 10 }),
+  discountValue: decimal('discount_value', { precision: 12, scale: 2 }),
+  discountAmount: decimal('discount_amount', { precision: 12, scale: 2 })
+    .notNull()
+    .default('0'),
   itemCount: integer('item_count').notNull().default(0),
   // Summary method: 'cash' | 'card' | 'split'.
   paymentMethod: varchar('payment_method', { length: 50 }),

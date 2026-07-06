@@ -99,6 +99,24 @@ export class CreateOrderDto {
   @IsOptional()
   dueDate?: string;
 
+  @ApiPropertyOptional({
+    description: 'Whole-receipt manual discount type',
+    enum: ['amount', 'percent'],
+  })
+  @IsString()
+  @IsIn(['amount', 'percent'])
+  @IsOptional()
+  discountType?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Discount value: a fixed soʻm amount, or a percent (0-100) when discountType is "percent"',
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  discountValue?: number;
+
   @ApiProperty({ description: 'Note', required: false })
   @IsString()
   @IsOptional()

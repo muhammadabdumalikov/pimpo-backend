@@ -85,6 +85,13 @@
       "when": 1783332824823,
       "tag": "0011_loose_ares",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1783335296914,
+      "tag": "0012_known_calypso",
+      "breakpoints": true
     }
   ]
 }
