@@ -26,6 +26,7 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreateDebtDto } from './dto/create-debt.dto';
 import { UpdateDebtDto } from './dto/update-debt.dto';
+import { CreatePaymentDto } from './dto/create-payment.dto';
 
 @ApiTags('debts')
 @Controller('debts')
@@ -200,6 +201,60 @@ export class DebtController {
         await this.debtService.remove(business.id, id);
         return {
             message: 'Debt deleted successfully',
+        };
+    }
+
+    // ─── Installment payments (Pro tier) ─────────────────────────────────────
+
+    @Post(':id/payments')
+    @HttpCode(HttpStatus.CREATED)
+    @ApiOperation({ summary: 'Record an installment payment against a debt (Pro)' })
+    @ApiParam({ name: 'id', description: 'Debt ID' })
+    @ApiResponse({ status: 201, description: 'Payment recorded' })
+    @ApiResponse({ status: 400, description: 'Payment exceeds remaining balance' })
+    @ApiResponse({ status: 403, description: 'Pro plan required' })
+    @ApiResponse({ status: 404, description: 'Debt not found' })
+    async addPayment(
+        @CurrentBusiness() business: IBusiness,
+        @Param('id') id: string,
+        @Body() createPaymentDto: CreatePaymentDto,
+    ) {
+        const result = await this.debtService.addPayment(business.id, id, createPaymentDto);
+        return {
+            message: 'Payment recorded successfully',
+            ...result,
+        };
+    }
+
+    @Get(':id/payments')
+    @ApiOperation({ summary: 'List installment payments for a debt (Pro)' })
+    @ApiParam({ name: 'id', description: 'Debt ID' })
+    @ApiResponse({ status: 200, description: 'Payment history' })
+    @ApiResponse({ status: 403, description: 'Pro plan required' })
+    async listPayments(
+        @CurrentBusiness() business: IBusiness,
+        @Param('id') id: string,
+    ) {
+        const payments = await this.debtService.listPayments(business.id, id);
+        return { payments };
+    }
+
+    @Delete(':id/payments/:paymentId')
+    @HttpCode(HttpStatus.OK)
+    @ApiOperation({ summary: 'Delete an installment payment (Pro)' })
+    @ApiParam({ name: 'id', description: 'Debt ID' })
+    @ApiParam({ name: 'paymentId', description: 'Payment ID' })
+    @ApiResponse({ status: 200, description: 'Payment deleted' })
+    @ApiResponse({ status: 403, description: 'Pro plan required' })
+    @ApiResponse({ status: 404, description: 'Payment not found' })
+    async deletePayment(
+        @CurrentBusiness() business: IBusiness,
+        @Param('id') id: string,
+        @Param('paymentId') paymentId: string,
+    ) {
+        await this.debtService.deletePayment(business.id, id, paymentId);
+        return {
+            message: 'Payment deleted successfully',
         };
     }
 }

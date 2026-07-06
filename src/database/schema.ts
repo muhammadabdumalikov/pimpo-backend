@@ -191,6 +191,23 @@ export const userDebts = pgTable('user_debts', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Installment payments made against a debt. A debt's remaining balance is
+// `user_debts.amount - SUM(debt_payments.amount)`; status is derived from that
+// (Paid when remaining <= 0, Partial when some paid, else Pending/Overdue).
+export const debtPayments = pgTable('debt_payments', {
+  id: varchar('id', { length: 36 }).primaryKey().notNull(),
+  businessId: varchar('business_id', { length: 36 })
+    .notNull()
+    .references(() => businesses.id, { onDelete: 'cascade' }),
+  debtId: varchar('debt_id', { length: 36 })
+    .notNull()
+    .references(() => userDebts.id, { onDelete: 'cascade' }),
+  amount: decimal('amount', { precision: 10, scale: 2 }).notNull(),
+  method: varchar('method', { length: 20 }).notNull().default('cash'), // 'cash' | 'card'
+  note: varchar('note', { length: 500 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const orders = pgTable('orders', {
   id: varchar('id', { length: 36 }).primaryKey().notNull(),
   businessId: varchar('business_id', { length: 36 })
@@ -540,7 +557,7 @@ export const inventoryBatchesRelations = relations(
   }),
 );
 
-export const userDebtsRelations = relations(userDebts, ({ one }) => ({
+export const userDebtsRelations = relations(userDebts, ({ one, many }) => ({
   business: one(businesses, {
     fields: [userDebts.businessId],
     references: [businesses.id],
@@ -548,6 +565,18 @@ export const userDebtsRelations = relations(userDebts, ({ one }) => ({
   user: one(users, {
     fields: [userDebts.userId],
     references: [users.id],
+  }),
+  payments: many(debtPayments),
+}));
+
+export const debtPaymentsRelations = relations(debtPayments, ({ one }) => ({
+  debt: one(userDebts, {
+    fields: [debtPayments.debtId],
+    references: [userDebts.id],
+  }),
+  business: one(businesses, {
+    fields: [debtPayments.businessId],
+    references: [businesses.id],
   }),
 }));
 
@@ -577,6 +606,8 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserDebt = typeof userDebts.$inferSelect;
 export type NewUserDebt = typeof userDebts.$inferInsert;
+export type DebtPayment = typeof debtPayments.$inferSelect;
+export type NewDebtPayment = typeof debtPayments.$inferInsert;
 export type Supplier = typeof suppliers.$inferSelect;
 export type NewSupplier = typeof suppliers.$inferInsert;
 export type GoodsReceipt = typeof goodsReceipts.$inferSelect;

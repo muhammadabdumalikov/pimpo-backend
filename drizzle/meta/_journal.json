@@ -92,6 +92,13 @@
       "when": 1783335296914,
       "tag": "0012_known_calypso",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783339553045,
+      "tag": "0013_bent_christian_walker",
+      "breakpoints": true
     }
   ]
 }

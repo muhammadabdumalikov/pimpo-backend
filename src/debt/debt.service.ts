@@ -1,6 +1,6 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { userDebts, users, type UserDebt, type NewUserDebt, type User } from '../database/schema';
+import { userDebts, debtPayments, users, type UserDebt, type NewDebtPayment, type DebtPayment, type NewUserDebt, type User } from '../database/schema';
 import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, sql, inArray } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
@@ -202,9 +202,10 @@ export class DebtService {
       userName: string;
       phone: string;
       totalDebt: number;
+      totalRemaining: number;
       debtCount: number;
       latestDate: Date | null;
-      debts: (UserDebt & { user: User })[];
+      debts: (UserDebt & { user: User; paid: number; remaining: number })[];
     }[];
     total: number;
     page: number;
@@ -289,22 +290,38 @@ export class DebtService {
       .where(and(where, inArray(userDebts.userId, userIds)))
       .orderBy(desc(userDebts.createdAt));
 
-    const byUser = new Map<string, (UserDebt & { user: User })[]>();
+    // How much has been paid on each debt so far (installment payments).
+    const paidByDebt = await this.getPaidByDebt(
+      businessId,
+      debtRows.map((r) => r.debt.id),
+    );
+
+    const byUser = new Map<
+      string,
+      (UserDebt & { user: User; paid: number; remaining: number })[]
+    >();
     for (const row of debtRows) {
+      const paid = paidByDebt.get(row.debt.id) ?? 0;
+      const remaining = Number(row.debt.amount) - paid;
       const list = byUser.get(row.debt.userId) ?? [];
-      list.push({ ...row.debt, user: row.user });
+      list.push({ ...row.debt, user: row.user, paid, remaining });
       byUser.set(row.debt.userId, list);
     }
 
-    const groups = pageGroups.map((g) => ({
-      userId: g.userId,
-      userName: g.userName,
-      phone: g.phone,
-      totalDebt: g.totalDebt,
-      debtCount: g.debtCount,
-      latestDate: g.latestDate,
-      debts: byUser.get(g.userId) ?? [],
-    }));
+    const groups = pageGroups.map((g) => {
+      const debts = byUser.get(g.userId) ?? [];
+      const totalRemaining = debts.reduce((sum, d) => sum + d.remaining, 0);
+      return {
+        userId: g.userId,
+        userName: g.userName,
+        phone: g.phone,
+        totalDebt: g.totalDebt,
+        totalRemaining,
+        debtCount: g.debtCount,
+        latestDate: g.latestDate,
+        debts,
+      };
+    });
 
     return { groups, total, page, limit };
   }
@@ -464,5 +481,174 @@ export class DebtService {
       .where(eq(userDebts.businessId, businessId));
 
     return result[0].count;
+  }
+
+  // ─── Installment payments (Pro tier) ───────────────────────────────────────
+
+  /** Partial debt repayment + payment history are a Pro-plan feature. */
+  private async requirePro(businessId: string): Promise<void> {
+    const subscription =
+      await this.subscriptionService.getBusinessSubscription(businessId);
+    const tier = subscription?.plan.tier ?? 'free';
+    if (tier !== 'pro') {
+      throw new ForbiddenException(
+        'Installment debt payments are available on the Pro plan.',
+      );
+    }
+  }
+
+  /** Total paid per debt id → Map(debtId, paidAmount). */
+  private async getPaidByDebt(
+    businessId: string,
+    debtIds: string[],
+  ): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    if (debtIds.length === 0) return map;
+    const rows = await this.dbService.db
+      .select({
+        debtId: debtPayments.debtId,
+        paid: sql`SUM(${debtPayments.amount})`.mapWith(Number),
+      })
+      .from(debtPayments)
+      .where(
+        and(
+          eq(debtPayments.businessId, businessId),
+          inArray(debtPayments.debtId, debtIds),
+        ),
+      )
+      .groupBy(debtPayments.debtId);
+    for (const r of rows) map.set(r.debtId, r.paid ?? 0);
+    return map;
+  }
+
+  /**
+   * Derive and persist a debt's status from amount vs total paid:
+   * Paid (fully covered) → Partial (some paid) → Overdue (past due) → Pending.
+   */
+  private async recomputeDebtStatus(
+    businessId: string,
+    debt: UserDebt,
+  ): Promise<string> {
+    const paidMap = await this.getPaidByDebt(businessId, [debt.id]);
+    const paid = paidMap.get(debt.id) ?? 0;
+    const total = Number(debt.amount);
+    let status: string;
+    if (paid >= total) status = 'Paid';
+    else if (paid > 0) status = 'Partial';
+    else if (debt.dueDate && new Date(debt.dueDate) < new Date())
+      status = 'Overdue';
+    else status = 'Pending';
+
+    await this.dbService.db
+      .update(userDebts)
+      .set({ status: status as any, updatedAt: new Date() })
+      .where(
+        and(eq(userDebts.id, debt.id), eq(userDebts.businessId, businessId)),
+      );
+    return status;
+  }
+
+  /** Record an installment payment against a debt (capped at the remaining balance). */
+  async addPayment(
+    businessId: string,
+    debtId: string,
+    data: { amount: string; method?: 'cash' | 'card'; note?: string },
+  ): Promise<{
+    debt: UserDebt & { user: User; paid: number; remaining: number };
+    payment: DebtPayment;
+  }> {
+    await this.requirePro(businessId);
+    const debt = await this.findOne(businessId, debtId);
+    if (!debt) throw new NotFoundException('Debt not found');
+
+    const paidMap = await this.getPaidByDebt(businessId, [debtId]);
+    const alreadyPaid = paidMap.get(debtId) ?? 0;
+    const total = Number(debt.amount);
+    const remaining = total - alreadyPaid;
+    const amount = Number(data.amount);
+
+    if (!(amount > 0)) {
+      throw new BadRequestException('Payment amount must be greater than 0.');
+    }
+    // Small epsilon so exact-to-the-cent full payments aren't rejected.
+    if (amount > remaining + 1e-9) {
+      throw new BadRequestException(
+        `Payment exceeds the remaining balance (${remaining.toFixed(2)}).`,
+      );
+    }
+
+    const newPayment: NewDebtPayment = {
+      id: generateId(),
+      businessId,
+      debtId,
+      amount: data.amount,
+      method: data.method || 'cash',
+      note: data.note || null,
+    };
+    const [payment] = await this.dbService.db
+      .insert(debtPayments)
+      .values(newPayment)
+      .returning();
+
+    const status = await this.recomputeDebtStatus(businessId, debt);
+    const newPaid = alreadyPaid + amount;
+    return {
+      debt: {
+        ...debt,
+        status: status as any,
+        paid: newPaid,
+        remaining: total - newPaid,
+      },
+      payment,
+    };
+  }
+
+  /** Payment history for a debt (newest first). */
+  async listPayments(
+    businessId: string,
+    debtId: string,
+  ): Promise<DebtPayment[]> {
+    await this.requirePro(businessId);
+    const debt = await this.findOne(businessId, debtId);
+    if (!debt) throw new NotFoundException('Debt not found');
+    return this.dbService.db
+      .select()
+      .from(debtPayments)
+      .where(
+        and(
+          eq(debtPayments.businessId, businessId),
+          eq(debtPayments.debtId, debtId),
+        ),
+      )
+      .orderBy(desc(debtPayments.createdAt));
+  }
+
+  /** Remove a payment (e.g. entered by mistake) and recompute the debt status. */
+  async deletePayment(
+    businessId: string,
+    debtId: string,
+    paymentId: string,
+  ): Promise<void> {
+    await this.requirePro(businessId);
+    const debt = await this.findOne(businessId, debtId);
+    if (!debt) throw new NotFoundException('Debt not found');
+
+    const [existing] = await this.dbService.db
+      .select()
+      .from(debtPayments)
+      .where(
+        and(
+          eq(debtPayments.id, paymentId),
+          eq(debtPayments.debtId, debtId),
+          eq(debtPayments.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!existing) throw new NotFoundException('Payment not found');
+
+    await this.dbService.db
+      .delete(debtPayments)
+      .where(eq(debtPayments.id, paymentId));
+    await this.recomputeDebtStatus(businessId, debt);
   }
 }
