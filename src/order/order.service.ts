@@ -4,8 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
-import { eq, and, desc, ilike, or, count, sql, gte, lte } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service';
+import {eq, and, desc, ilike, or, count, sql, gte, lte, inArray} from 'drizzle-orm';
+import {DatabaseService} from '../database/database.service';
 import {
   orders,
   orderItems,
@@ -16,20 +16,43 @@ import {
   receiptSettings,
   staff,
   businesses,
+  cashShifts,
+  cashRegisters,
   type Order,
   type OrderItem,
 } from '../database/schema';
-import { generateId } from '../utils/uuid';
-import { UserService } from '../user/user.service';
-import { SubscriptionService } from '../subscription/subscription.service';
-import { CreateOrderDto } from './dto/create-order.dto';
-import { IAccount } from '../business/types';
-import { consumeBatches, type CostingMethod } from './costing';
+import {generateId} from '../utils/uuid';
+import {UserService} from '../user/user.service';
+import {SubscriptionService} from '../subscription/subscription.service';
+import {CreateOrderDto} from './dto/create-order.dto';
+import {HoldOrderDto} from './dto/hold-order.dto';
+import {UpdateOrderDto} from './dto/update-order.dto';
+import {IAccount} from '../business/types';
+import {consumeBatches, type CostingMethod} from './costing';
 
-export type OrderWithItems = Order & { items: OrderItem[] };
+export type OrderWithItems = Order & {items: OrderItem[]};
+
+// Per-order outcome for a batch (offline-sync) create. Errors are captured per
+// order so one rejected sale doesn't fail the others.
+export interface BatchOrderResult {
+  clientId: string | null;
+  status: 'ok' | 'error';
+  orderId?: string;
+  error?: string;
+}
 
 function money(value: number): string {
   return value.toFixed(2);
+}
+
+// Postgres unique-violation SQLSTATE. Raised when two concurrent retries of the
+// same offline sale race on the (business_id, client_id) index.
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as {code?: string}).code === '23505'
+  );
 }
 
 @Injectable()
@@ -43,22 +66,96 @@ export class OrderService {
   // Resolve the acting account into a snapshotted cashier (id + display name).
   private async resolveCashier(
     account?: IAccount,
-  ): Promise<{ id: string | null; name: string | null }> {
-    if (!account) return { id: null, name: null };
+  ): Promise<{id: string | null; name: string | null}> {
+    if (!account) return {id: null, name: null};
     if (account.type === 'staff') {
       const [row] = await this.dbService.db
-        .select({ name: staff.name })
+        .select({name: staff.name})
         .from(staff)
         .where(eq(staff.id, account.id))
         .limit(1);
-      return { id: account.id, name: row?.name ?? null };
+      return {id: account.id, name: row?.name ?? null};
     }
     const [row] = await this.dbService.db
-      .select({ name: businesses.name })
+      .select({name: businesses.name})
       .from(businesses)
       .where(eq(businesses.id, account.id))
       .limit(1);
-    return { id: account.id, name: row?.name ?? null };
+    return {id: account.id, name: row?.name ?? null};
+  }
+
+  // Resolve which cashier shift an admin sale belongs to, enforcing the "a shift
+  // must be open" rule. Returns the shift id to stamp on the order.
+  //   - An offline sale may carry the exact `shiftId` it was rung under; we trust
+  //     it (after verifying it belongs to the business) so a post-sync close race
+  //     doesn't reject an already-completed sale.
+  //   - Otherwise we pick the register (explicit `registerId`, or the business's
+  //     sole register) and require it to have an open shift; if none, the sale is
+  //     blocked with a clear message.
+  private async resolveShiftForSale(
+    businessId: string,
+    dto: CreateOrderDto,
+  ): Promise<string> {
+    if (dto.shiftId) {
+      const [shift] = await this.dbService.db
+        .select({id: cashShifts.id})
+        .from(cashShifts)
+        .where(
+          and(
+            eq(cashShifts.id, dto.shiftId),
+            eq(cashShifts.businessId, businessId),
+          ),
+        )
+        .limit(1);
+      if (!shift) {
+        throw new BadRequestException('Shift not found for this business');
+      }
+      return shift.id;
+    }
+
+    // Pick the register: explicit, or the only active one.
+    let registerId = dto.registerId ?? null;
+    if (!registerId) {
+      const activeRegisters = await this.dbService.db
+        .select({id: cashRegisters.id})
+        .from(cashRegisters)
+        .where(
+          and(
+            eq(cashRegisters.businessId, businessId),
+            eq(cashRegisters.isActive, true),
+          ),
+        )
+        .limit(2);
+      if (activeRegisters.length === 1) {
+        registerId = activeRegisters[0].id;
+      } else if (activeRegisters.length === 0) {
+        throw new BadRequestException(
+          'No cash register found. Open a cash shift before selling.',
+        );
+      } else {
+        throw new BadRequestException(
+          'Multiple registers exist — specify registerId for the sale.',
+        );
+      }
+    }
+
+    const [openShift] = await this.dbService.db
+      .select({id: cashShifts.id})
+      .from(cashShifts)
+      .where(
+        and(
+          eq(cashShifts.businessId, businessId),
+          eq(cashShifts.registerId, registerId),
+          eq(cashShifts.status, 'open'),
+        ),
+      )
+      .limit(1);
+    if (!openShift) {
+      throw new BadRequestException(
+        'No open cash shift for this register. Open a shift before selling.',
+      );
+    }
+    return openShift.id;
   }
 
   async create(
@@ -66,8 +163,24 @@ export class OrderService {
     dto: CreateOrderDto,
     account?: IAccount,
   ): Promise<OrderWithItems> {
+    // Idempotency: an offline sale may be re-sent from the client's outbox over
+    // a flaky connection. If this clientId was already stored, return that order
+    // instead of ringing up a duplicate. The unique index is the real guard
+    // (see the catch below); this is just the fast path for a settled retry.
+    if (dto.clientId) {
+      const existing = await this.findByClientId(businessId, dto.clientId);
+      if (existing) return existing;
+    }
+
     const isDebt = dto.paymentMethod === 'debt';
     const cashier = await this.resolveCashier(account);
+
+    // Admin sales must be rung up against an open cash shift (store/guest sales
+    // have no cashier and are exempt). This blocks selling with no shift open.
+    const isStoreSale = (dto.source ?? 'admin') === 'store';
+    const shiftId = isStoreSale
+      ? null
+      : await this.resolveShiftForSale(businessId, dto);
 
     // Resolve optional customer.
     let customerName = dto.customerName ?? null;
@@ -88,11 +201,11 @@ export class OrderService {
     // track who owes what, for which order. The due date is optional.
     if (isDebt) {
       // Respect the plan's debt limit (same rule as the standalone debt page).
-      const { debtsLimit } =
+      const {debtsLimit} =
         await this.subscriptionService.getSubscriptionLimits(businessId);
       if (debtsLimit !== null) {
-        const [{ value: debtCount }] = await this.dbService.db
-          .select({ value: count() })
+        const [{value: debtCount}] = await this.dbService.db
+          .select({value: count()})
           .from(userDebts)
           .where(eq(userDebts.businessId, businessId));
         if (debtCount >= debtsLimit) {
@@ -108,7 +221,10 @@ export class OrderService {
             'A customer name and phone are required for a debt sale',
           );
         }
-        const existing = await this.userService.findByPhone(businessId, dto.phone);
+        const existing = await this.userService.findByPhone(
+          businessId,
+          dto.phone,
+        );
         const user =
           existing ??
           (await this.userService.create(businessId, {
@@ -138,7 +254,10 @@ export class OrderService {
         .select()
         .from(products)
         .where(
-          and(eq(products.businessId, businessId), eq(products.id, item.productId)),
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, item.productId),
+          ),
         )
         .limit(1);
       if (!product) {
@@ -171,131 +290,324 @@ export class OrderService {
 
     const orderId = generateId();
 
-    await this.dbService.db.transaction(async (tx) => {
-      // Value each line against the FIFO batch queue (locks batches FOR UPDATE),
-      // producing the COGS + batch-priced revenue snapshot. `total` is the sum of
-      // the real per-batch revenue, so it must be computed here, before payments.
-      const lines: {
-        productId: string;
-        productName: string;
-        priceOut: string;
-        quantity: number;
-        lineTotal: string;
-        costIn: string;
-        costTotal: string;
-        frontPriceOut: string | null;
-      }[] = [];
-      let total = 0;
+    try {
+      await this.dbService.db.transaction(async (tx) => {
+        // Value each line against the FIFO batch queue (locks batches FOR UPDATE),
+        // producing the COGS + batch-priced revenue snapshot. `total` is the sum of
+        // the real per-batch revenue, so it must be computed here, before payments.
+        const lines: {
+          productId: string;
+          productName: string;
+          priceOut: string;
+          quantity: number;
+          lineTotal: string;
+          costIn: string;
+          costTotal: string;
+          frontPriceOut: string | null;
+        }[] = [];
+        let total = 0;
 
-      for (const p of planned) {
-        const c = await consumeBatches(
-          tx,
+        for (const p of planned) {
+          const c = await consumeBatches(
+            tx,
+            businessId,
+            p.productId,
+            p.quantity,
+            method,
+            p.priceIn,
+            p.priceOut,
+          );
+          total += c.revenueTotal;
+          lines.push({
+            productId: p.productId,
+            productName: p.productName,
+            priceOut: money(c.priceOut),
+            quantity: p.quantity,
+            lineTotal: money(c.revenueTotal),
+            costIn: money(c.costIn),
+            costTotal: money(c.costTotal),
+            frontPriceOut: c.frontPriceOut,
+          });
+        }
+
+        // Apply the manual whole-receipt discount (fixed soʻm or percent) to the
+        // gross subtotal. COGS is untouched, so profit = discounted revenue - cost.
+        // Everything below (payments, VAT, debt, totalAmount) keys off the net total.
+        const subtotal = total;
+        let discountType: string | null = null;
+        let discountValue: number | null = null;
+        let discountAmount = 0;
+        if (dto.discountType && dto.discountValue && dto.discountValue > 0) {
+          discountType = dto.discountType;
+          discountValue = dto.discountValue;
+          const raw =
+            dto.discountType === 'percent'
+              ? (subtotal * Math.min(dto.discountValue, 100)) / 100
+              : dto.discountValue;
+          discountAmount = Math.max(0, Math.min(raw, subtotal));
+        }
+        total = subtotal - discountAmount;
+
+        // Resolve the payment breakdown against the batch-priced total.
+        let payments: {method: string; amount: number}[];
+        let paymentMethod: string | null;
+        let amountPaid: number;
+        let changeAmount: number;
+        // For a debt sale this is the unpaid remainder owed by the customer.
+        let debtAmount = 0;
+
+        if (isDebt) {
+          // `payments` here is what the customer pays *now* (a down payment); the
+          // rest becomes the debt. An empty list means the whole total is owed.
+          payments = (dto.payments ?? []).map((p) => ({
+            method: p.method,
+            amount: p.amount,
+          }));
+          const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
+          debtAmount = Math.max(0, total - paidNow);
+          paymentMethod = 'debt';
+          const cashApplied = payments
+            .filter((p) => p.method === 'cash')
+            .reduce((sum, p) => sum + p.amount, 0);
+          amountPaid = dto.amountPaid ?? cashApplied;
+          changeAmount = 0;
+        } else {
+          // Default to a single method covering the whole total.
+          payments =
+            dto.payments && dto.payments.length > 0
+              ? dto.payments.map((p) => ({method: p.method, amount: p.amount}))
+              : [{method: dto.paymentMethod ?? 'cash', amount: total}];
+          const methods = Array.from(new Set(payments.map((p) => p.method)));
+          paymentMethod =
+            methods.length > 1
+              ? 'split'
+              : (methods[0] ?? dto.paymentMethod ?? null);
+          // Cash tendered (defaults to the total); change is over the cash portion.
+          const cashApplied = payments
+            .filter((p) => p.method === 'cash')
+            .reduce((sum, p) => sum + p.amount, 0);
+          amountPaid = dto.amountPaid ?? cashApplied;
+          changeAmount = Math.max(0, amountPaid - cashApplied);
+        }
+
+        const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+
+        await tx.insert(orders).values({
+          id: orderId,
           businessId,
-          p.productId,
-          p.quantity,
-          method,
-          p.priceIn,
-          p.priceOut,
-        );
-        total += c.revenueTotal;
-        lines.push({
-          productId: p.productId,
-          productName: p.productName,
-          priceOut: money(c.priceOut),
-          quantity: p.quantity,
-          lineTotal: money(c.revenueTotal),
-          costIn: money(c.costIn),
-          costTotal: money(c.costTotal),
-          frontPriceOut: c.frontPriceOut,
+          clientId: dto.clientId ?? null,
+          userId: customerId,
+          customerName,
+          status: dto.status ?? 'Pending',
+          totalAmount: money(total),
+          subtotalAmount: money(subtotal),
+          discountType,
+          discountValue: discountValue !== null ? money(discountValue) : null,
+          discountAmount: money(discountAmount),
+          itemCount,
+          paymentMethod,
+          payments,
+          amountPaid: money(amountPaid),
+          changeAmount: money(changeAmount),
+          taxRate: money(vatRate),
+          taxAmount: money(taxAmount),
+          note: dto.note ?? null,
+          source: dto.source ?? 'admin',
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+          shiftId,
         });
+
+        await tx.insert(orderItems).values(
+          lines.map((line) => ({
+            id: generateId(),
+            orderId,
+            businessId,
+            productId: line.productId,
+            productName: line.productName,
+            priceOut: line.priceOut,
+            quantity: line.quantity,
+            lineTotal: line.lineTotal,
+            costIn: line.costIn,
+            costTotal: line.costTotal,
+          })),
+        );
+
+        // Decrement stock (never below zero) and keep the displayed selling price
+        // tracking the new FIFO-front batch (the next unit to be sold).
+        for (const line of lines) {
+          await tx
+            .update(products)
+            .set({
+              quantity: sql`GREATEST(0, ${products.quantity} - ${line.quantity})`,
+              ...(line.frontPriceOut !== null
+                ? {priceOut: line.frontPriceOut}
+                : {}),
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(products.businessId, businessId),
+                eq(products.id, line.productId),
+              ),
+            );
+        }
+
+        // Completing a resumed held sale: drop the parked order in the same
+        // transaction so it can't be resumed or completed twice. Held orders
+        // never touched stock, so a hard delete is safe.
+        if (dto.heldOrderId) {
+          await tx
+            .delete(orders)
+            .where(
+              and(
+                eq(orders.businessId, businessId),
+                eq(orders.id, dto.heldOrderId),
+                eq(orders.status, 'Held'),
+              ),
+            );
+        }
+
+        // Debt sale: record the unpaid remainder as a credit, linked to this
+        // order + customer. (Skip if a down payment covered the whole total.)
+        if (isDebt && customerId && debtAmount > 0) {
+          const itemSummary = lines
+            .map((l) => `${l.productName} ×${l.quantity}`)
+            .join(', ');
+          await tx.insert(userDebts).values({
+            id: generateId(),
+            businessId,
+            userId: customerId,
+            orderId,
+            amount: money(debtAmount),
+            status: 'Pending',
+            dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
+            description: itemSummary.slice(0, 500),
+          });
+        }
+      });
+    } catch (err) {
+      // A concurrent retry of the same offline sale lost the race on the unique
+      // (business_id, client_id) index. Return the order that won, not an error.
+      if (dto.clientId && isUniqueViolation(err)) {
+        const existing = await this.findByClientId(businessId, dto.clientId);
+        if (existing) return existing;
       }
+      throw err;
+    }
 
-      // Apply the manual whole-receipt discount (fixed soʻm or percent) to the
-      // gross subtotal. COGS is untouched, so profit = discounted revenue - cost.
-      // Everything below (payments, VAT, debt, totalAmount) keys off the net total.
-      const subtotal = total;
-      let discountType: string | null = null;
-      let discountValue: number | null = null;
-      let discountAmount = 0;
-      if (dto.discountType && dto.discountValue && dto.discountValue > 0) {
-        discountType = dto.discountType;
-        discountValue = dto.discountValue;
-        const raw =
-          dto.discountType === 'percent'
-            ? (subtotal * Math.min(dto.discountValue, 100)) / 100
-            : dto.discountValue;
-        discountAmount = Math.max(0, Math.min(raw, subtotal));
+    return this.findOne(businessId, orderId) as Promise<OrderWithItems>;
+  }
+
+  /**
+   * Park the current cart as a held ("kechiktirilgan") sale. A held order is
+   * just a saved cart: stock is NOT decremented, no inventory batches are
+   * consumed and no payment/debt/kassa records are written — its totals are a
+   * display snapshot from the products' current selling prices. Completing it
+   * later goes back through create() with `heldOrderId`, which rings up a
+   * fresh (properly costed) order and deletes the parked one in the same
+   * transaction.
+   */
+  async hold(
+    businessId: string,
+    dto: HoldOrderDto,
+    account?: IAccount,
+  ): Promise<OrderWithItems> {
+    const cashier = await this.resolveCashier(account);
+
+    // Resolve optional customer (same rule as a normal sale).
+    let customerName = dto.customerName ?? null;
+    const customerId: string | null = dto.userId ?? null;
+    if (dto.userId) {
+      const [user] = await this.dbService.db
+        .select()
+        .from(users)
+        .where(and(eq(users.businessId, businessId), eq(users.id, dto.userId)))
+        .limit(1);
+      if (!user) {
+        throw new BadRequestException('Customer not found for this business');
       }
-      total = subtotal - discountAmount;
+      if (!customerName) customerName = user.name;
+    }
 
-      // Resolve the payment breakdown against the batch-priced total.
-      let payments: { method: string; amount: number }[];
-      let paymentMethod: string | null;
-      let amountPaid: number;
-      let changeAmount: number;
-      // For a debt sale this is the unpaid remainder owed by the customer.
-      let debtAmount = 0;
-
-      if (isDebt) {
-        // `payments` here is what the customer pays *now* (a down payment); the
-        // rest becomes the debt. An empty list means the whole total is owed.
-        payments = (dto.payments ?? []).map((p) => ({
-          method: p.method,
-          amount: p.amount,
-        }));
-        const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
-        debtAmount = Math.max(0, total - paidNow);
-        paymentMethod = 'debt';
-        const cashApplied = payments
-          .filter((p) => p.method === 'cash')
-          .reduce((sum, p) => sum + p.amount, 0);
-        amountPaid = dto.amountPaid ?? cashApplied;
-        changeAmount = 0;
-      } else {
-        // Default to a single method covering the whole total.
-        payments =
-          dto.payments && dto.payments.length > 0
-            ? dto.payments.map((p) => ({ method: p.method, amount: p.amount }))
-            : [{ method: dto.paymentMethod ?? 'cash', amount: total }];
-        const methods = Array.from(new Set(payments.map((p) => p.method)));
-        paymentMethod =
-          methods.length > 1
-            ? 'split'
-            : (methods[0] ?? dto.paymentMethod ?? null);
-        // Cash tendered (defaults to the total); change is over the cash portion.
-        const cashApplied = payments
-          .filter((p) => p.method === 'cash')
-          .reduce((sum, p) => sum + p.amount, 0);
-        amountPaid = dto.amountPaid ?? cashApplied;
-        changeAmount = Math.max(0, amountPaid - cashApplied);
+    // Snapshot each product at its current selling price.
+    const lines: {
+      productId: string;
+      productName: string;
+      priceOut: string;
+      quantity: number;
+      lineTotal: string;
+    }[] = [];
+    let subtotal = 0;
+    let itemCount = 0;
+    for (const item of dto.items) {
+      const [product] = await this.dbService.db
+        .select()
+        .from(products)
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, item.productId),
+          ),
+        )
+        .limit(1);
+      if (!product) {
+        throw new BadRequestException(`Product not found: ${item.productId}`);
       }
+      const priceOut = Number(product.priceOut);
+      const lineTotal = priceOut * item.quantity;
+      subtotal += lineTotal;
+      itemCount += item.quantity;
+      lines.push({
+        productId: product.id,
+        productName: product.name,
+        priceOut: money(priceOut),
+        quantity: item.quantity,
+        lineTotal: money(lineTotal),
+      });
+    }
 
-      const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+    // The manual discount travels with the parked cart so resuming restores it.
+    let discountType: string | null = null;
+    let discountValue: number | null = null;
+    let discountAmount = 0;
+    if (dto.discountType && dto.discountValue && dto.discountValue > 0) {
+      discountType = dto.discountType;
+      discountValue = dto.discountValue;
+      const raw =
+        dto.discountType === 'percent'
+          ? (subtotal * Math.min(dto.discountValue, 100)) / 100
+          : dto.discountValue;
+      discountAmount = Math.max(0, Math.min(raw, subtotal));
+    }
+    const total = subtotal - discountAmount;
 
+    const orderId = generateId();
+    await this.dbService.db.transaction(async (tx) => {
       await tx.insert(orders).values({
         id: orderId,
         businessId,
         userId: customerId,
         customerName,
-        status: dto.status ?? 'Pending',
+        status: 'Held',
         totalAmount: money(total),
         subtotalAmount: money(subtotal),
         discountType,
         discountValue: discountValue !== null ? money(discountValue) : null,
         discountAmount: money(discountAmount),
         itemCount,
-        paymentMethod,
-        payments,
-        amountPaid: money(amountPaid),
-        changeAmount: money(changeAmount),
-        taxRate: money(vatRate),
-        taxAmount: money(taxAmount),
+        paymentMethod: null,
+        payments: [],
+        amountPaid: money(0),
+        changeAmount: money(0),
+        taxRate: money(0),
+        taxAmount: money(0),
         note: dto.note ?? null,
-        source: dto.source ?? 'admin',
+        source: 'admin',
         cashierId: cashier.id,
         cashierName: cashier.name,
+        shiftId: null,
       });
-
       await tx.insert(orderItems).values(
         lines.map((line) => ({
           id: generateId(),
@@ -306,51 +618,66 @@ export class OrderService {
           priceOut: line.priceOut,
           quantity: line.quantity,
           lineTotal: line.lineTotal,
-          costIn: line.costIn,
-          costTotal: line.costTotal,
+          costIn: money(0),
+          costTotal: money(0),
         })),
       );
-
-      // Decrement stock (never below zero) and keep the displayed selling price
-      // tracking the new FIFO-front batch (the next unit to be sold).
-      for (const line of lines) {
-        await tx
-          .update(products)
-          .set({
-            quantity: sql`GREATEST(0, ${products.quantity} - ${line.quantity})`,
-            ...(line.frontPriceOut !== null
-              ? { priceOut: line.frontPriceOut }
-              : {}),
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.id, line.productId),
-            ),
-          );
-      }
-
-      // Debt sale: record the unpaid remainder as a credit, linked to this
-      // order + customer. (Skip if a down payment covered the whole total.)
-      if (isDebt && customerId && debtAmount > 0) {
-        const itemSummary = lines
-          .map((l) => `${l.productName} ×${l.quantity}`)
-          .join(', ');
-        await tx.insert(userDebts).values({
-          id: generateId(),
-          businessId,
-          userId: customerId,
-          orderId,
-          amount: money(debtAmount),
-          status: 'Pending',
-          dueDate: dto.dueDate ? new Date(dto.dueDate) : null,
-          description: itemSummary.slice(0, 500),
-        });
-      }
     });
 
     return this.findOne(businessId, orderId) as Promise<OrderWithItems>;
+  }
+
+  /** Look up an order by its client-supplied idempotency key (with items). */
+  async findByClientId(
+    businessId: string,
+    clientId: string,
+  ): Promise<OrderWithItems | null> {
+    const [order] = await this.dbService.db
+      .select()
+      .from(orders)
+      .where(
+        and(eq(orders.businessId, businessId), eq(orders.clientId, clientId)),
+      )
+      .limit(1);
+    if (!order) return null;
+
+    const items = await this.dbService.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, order.id));
+
+    return {...order, items};
+  }
+
+  /**
+   * Bulk-create queued offline orders in one request. Each order is created
+   * independently (its own transaction) and idempotently on clientId, so a
+   * single rejected sale is reported as an error without blocking the rest.
+   * Processed serially to avoid stock/batch contention between orders.
+   */
+  async createBatch(
+    businessId: string,
+    orders: CreateOrderDto[],
+    account?: IAccount,
+  ): Promise<{results: BatchOrderResult[]}> {
+    const results: BatchOrderResult[] = [];
+    for (const dto of orders) {
+      try {
+        const order = await this.create(businessId, dto, account);
+        results.push({
+          clientId: dto.clientId ?? null,
+          status: 'ok',
+          orderId: order.id,
+        });
+      } catch (err) {
+        results.push({
+          clientId: dto.clientId ?? null,
+          status: 'error',
+          error: (err as Error)?.message ?? 'Failed to create order',
+        });
+      }
+    }
+    return {results};
   }
 
   /**
@@ -364,7 +691,7 @@ export class OrderService {
       throw new BadRequestException('Order must contain at least one item');
     }
     const [product] = await this.dbService.db
-      .select({ businessId: products.businessId })
+      .select({businessId: products.businessId})
       .from(products)
       .where(eq(products.id, firstId))
       .limit(1);
@@ -381,8 +708,19 @@ export class OrderService {
 
   async findAll(
     businessId: string,
-    options?: { page?: number; limit?: number; search?: string; status?: string },
-  ): Promise<{ orders: Order[]; total: number; page: number; limit: number }> {
+    options?: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      status?: string;
+      from?: string;
+      to?: string;
+      paymentMethod?: string;
+      cashierId?: string;
+      minAmount?: number;
+      maxAmount?: number;
+    },
+  ): Promise<{orders: Order[]; total: number; page: number; limit: number}> {
     const page = options?.page || 1;
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
@@ -391,17 +729,39 @@ export class OrderService {
     if (options?.status) {
       where.push(eq(orders.status, options.status));
     }
+    if (options?.from) {
+      where.push(gte(orders.createdAt, new Date(options.from)));
+    }
+    if (options?.to) {
+      // Include the whole "to" day.
+      const to = new Date(options.to);
+      to.setHours(23, 59, 59, 999);
+      where.push(lte(orders.createdAt, to));
+    }
+    if (options?.paymentMethod) {
+      where.push(eq(orders.paymentMethod, options.paymentMethod));
+    }
+    if (options?.cashierId) {
+      where.push(eq(orders.cashierId, options.cashierId));
+    }
+    if (options?.minAmount != null) {
+      where.push(gte(orders.totalAmount, money(options.minAmount)));
+    }
+    if (options?.maxAmount != null) {
+      where.push(lte(orders.totalAmount, money(options.maxAmount)));
+    }
     if (options?.search) {
       where.push(
         or(
           ilike(orders.customerName, `%${options.search}%`),
           ilike(orders.id, `%${options.search}%`),
+          ilike(orders.cashierName, `%${options.search}%`),
         )!,
       );
     }
 
     const totalResult = await this.dbService.db
-      .select({ count: count() })
+      .select({count: count()})
       .from(orders)
       .where(and(...where));
 
@@ -413,10 +773,30 @@ export class OrderService {
       .limit(limit)
       .offset(offset);
 
-    return { orders: rows, total: totalResult[0].count, page, limit };
+    // Distinct-product ("tur") count per order — the number of line items, not
+    // the summed quantity. Fetched in one grouped query for the whole page.
+    const ids = rows.map((r) => r.id);
+    const typeCounts = new Map<string, number>();
+    if (ids.length > 0) {
+      const counts = await this.dbService.db
+        .select({orderId: orderItems.orderId, types: count()})
+        .from(orderItems)
+        .where(inArray(orderItems.orderId, ids))
+        .groupBy(orderItems.orderId);
+      for (const c of counts) typeCounts.set(c.orderId, Number(c.types));
+    }
+    const withTypes = rows.map((r) => ({
+      ...r,
+      itemTypes: typeCounts.get(r.id) ?? 0,
+    }));
+
+    return {orders: withTypes, total: totalResult[0].count, page, limit};
   }
 
-  async findOne(businessId: string, id: string): Promise<OrderWithItems | null> {
+  async findOne(
+    businessId: string,
+    id: string,
+  ): Promise<OrderWithItems | null> {
     const [order] = await this.dbService.db
       .select()
       .from(orders)
@@ -429,7 +809,7 @@ export class OrderService {
       .from(orderItems)
       .where(eq(orderItems.orderId, id));
 
-    return { ...order, items };
+    return {...order, items};
   }
 
   async findByUser(businessId: string, userId: string): Promise<Order[]> {
@@ -449,9 +829,102 @@ export class OrderService {
     if (!existing) {
       throw new NotFoundException('Order not found');
     }
+    // A held sale never decremented stock, so promoting it here would create a
+    // sale that no inventory ever backed. It must be completed via checkout.
+    if (existing.status === 'Held' && status !== 'Cancelled') {
+      throw new BadRequestException(
+        'A held sale must be completed through checkout',
+      );
+    }
     await this.dbService.db
       .update(orders)
-      .set({ status, updatedAt: new Date() })
+      .set({status, updatedAt: new Date()})
+      .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+    return this.findOne(businessId, id) as Promise<OrderWithItems>;
+  }
+
+  /**
+   * Edit a sale's metadata (date, customer, cashier, note). Money, items and
+   * stock are untouched — those flows go through create/refund, not here.
+   */
+  async update(
+    businessId: string,
+    id: string,
+    dto: UpdateOrderDto,
+  ): Promise<OrderWithItems> {
+    const existing = await this.findOne(businessId, id);
+    if (!existing) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const patch: Partial<typeof orders.$inferInsert> = {updatedAt: new Date()};
+
+    if (dto.note !== undefined) {
+      patch.note = dto.note;
+    }
+
+    if (dto.userId !== undefined) {
+      // The debt record is tied to the customer — changing it here would
+      // desync who owes the money.
+      if (existing.paymentMethod === 'debt') {
+        throw new BadRequestException(
+          'The customer of a debt sale cannot be changed',
+        );
+      }
+      if (dto.userId === null) {
+        patch.userId = null;
+        patch.customerName = dto.customerName ?? null;
+      } else {
+        const [user] = await this.dbService.db
+          .select()
+          .from(users)
+          .where(
+            and(eq(users.businessId, businessId), eq(users.id, dto.userId)),
+          )
+          .limit(1);
+        if (!user) {
+          throw new BadRequestException('Customer not found for this business');
+        }
+        patch.userId = user.id;
+        patch.customerName = dto.customerName ?? user.name;
+      }
+    } else if (dto.customerName !== undefined) {
+      patch.customerName = dto.customerName;
+    }
+
+    if (dto.cashierId !== undefined) {
+      if (dto.cashierId === null) {
+        patch.cashierId = null;
+        patch.cashierName = null;
+      } else {
+        // A cashier is either a staff member or the owner (business) account.
+        const [st] = await this.dbService.db
+          .select({name: staff.name})
+          .from(staff)
+          .where(
+            and(eq(staff.id, dto.cashierId), eq(staff.businessId, businessId)),
+          )
+          .limit(1);
+        if (st) {
+          patch.cashierId = dto.cashierId;
+          patch.cashierName = st.name;
+        } else if (dto.cashierId === businessId) {
+          const [biz] = await this.dbService.db
+            .select({name: businesses.name})
+            .from(businesses)
+            .where(eq(businesses.id, businessId))
+            .limit(1);
+          patch.cashierId = dto.cashierId;
+          patch.cashierName = biz?.name ?? null;
+        } else {
+          throw new BadRequestException('Cashier not found for this business');
+        }
+      }
+    }
+
+    await this.dbService.db
+      .update(orders)
+      .set(patch)
       .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
     return this.findOne(businessId, id) as Promise<OrderWithItems>;
   }
@@ -466,9 +939,89 @@ export class OrderService {
       .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
   }
 
+  /**
+   * Daily/ranged sales summary for the "All sales" screen: transaction count,
+   * units sold, revenue, the received-money split by method (from the payments
+   * jsonb — what was actually taken now), and the outstanding debt created in
+   * the range (debt orders' totals minus their down payments).
+   */
+  async getSalesSummary(
+    businessId: string,
+    options: {from?: string; to?: string} = {},
+  ): Promise<{
+    count: number;
+    units: number;
+    revenue: number;
+    cash: number;
+    card: number;
+    debt: number;
+  }> {
+    const where = [
+      eq(orders.businessId, businessId),
+      eq(orders.status, 'Completed'),
+    ];
+    if (options.from) {
+      where.push(gte(orders.createdAt, new Date(options.from)));
+    }
+    if (options.to) {
+      const to = new Date(options.to);
+      to.setHours(23, 59, 59, 999);
+      where.push(lte(orders.createdAt, to));
+    }
+    const whereSql = and(...where)!;
+
+    const [totals] = await this.dbService.db
+      .select({
+        count: count(),
+        units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(whereSql);
+
+    // Money actually received, split by method (unnests the payments jsonb).
+    const byMethod = await this.dbService.db.execute<{
+      method: string;
+      total: string;
+    }>(sql`
+      SELECT p.value->>'method' AS method,
+             COALESCE(SUM((p.value->>'amount')::numeric), 0) AS total
+      FROM ${orders}, jsonb_array_elements(${orders.payments}) AS p
+      WHERE ${whereSql}
+      GROUP BY 1
+    `);
+    const methodRows: {method: string; total: string}[] =
+      (byMethod as unknown as {rows?: {method: string; total: string}[]})
+        .rows ?? (byMethod as unknown as {method: string; total: string}[]);
+    const methodTotal = (m: string) =>
+      Number(methodRows.find((r) => r.method === m)?.total ?? 0);
+
+    // Outstanding debt created in the range: debt orders' totals minus what
+    // was paid down at the till.
+    const [debtRow] = await this.dbService.db
+      .select({
+        total: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        paid: sql<string>`COALESCE(SUM((
+          SELECT COALESCE(SUM((p.value->>'amount')::numeric), 0)
+          FROM jsonb_array_elements(${orders.payments}) AS p
+        )), 0)`,
+      })
+      .from(orders)
+      .where(and(whereSql, eq(orders.paymentMethod, 'debt')));
+
+    return {
+      count: Number(totals.count),
+      units: Number(totals.units),
+      revenue: Number(totals.revenue),
+      cash: methodTotal('cash'),
+      card: methodTotal('card'),
+      debt: Math.max(0, Number(debtRow.total) - Number(debtRow.paid)),
+    };
+  }
+
   async getCount(businessId: string): Promise<number> {
     const result = await this.dbService.db
-      .select({ count: count() })
+      .select({count: count()})
       .from(orders)
       .where(eq(orders.businessId, businessId));
     return result[0].count;
@@ -483,7 +1036,7 @@ export class OrderService {
    */
   async getProductPerformance(
     businessId: string,
-    options?: { from?: string; to?: string },
+    options?: {from?: string; to?: string},
   ): Promise<
     {
       productId: string | null;
@@ -606,7 +1159,7 @@ export class OrderService {
    */
   async getSalesByEmployee(
     businessId: string,
-    options: { from?: string; to?: string } = {},
+    options: {from?: string; to?: string} = {},
   ): Promise<
     Array<{
       cashierId: string | null;

@@ -1,5 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
+import {Type} from 'class-transformer';
 import {
   IsString,
   IsOptional,
@@ -11,45 +11,58 @@ import {
   ArrayMinSize,
   ValidateNested,
   IsIn,
+  IsUUID,
 } from 'class-validator';
 
 export class OrderItemDto {
-  @ApiProperty({ description: 'Product id' })
+  @ApiProperty({description: 'Product id'})
   @IsString()
   productId: string;
 
-  @ApiProperty({ description: 'Quantity ordered', example: 2 })
+  @ApiProperty({description: 'Quantity ordered', example: 2})
   @IsInt()
   @Min(1)
   quantity: number;
 }
 
 export class PaymentSplitDto {
-  @ApiProperty({ description: 'Payment method', enum: ['cash', 'card'] })
+  @ApiProperty({description: 'Payment method', enum: ['cash', 'card']})
   @IsString()
   @IsIn(['cash', 'card'])
   method: string;
 
-  @ApiProperty({ description: 'Amount applied via this method' })
+  @ApiProperty({description: 'Amount applied via this method'})
   @IsNumber()
   @Min(0)
   amount: number;
 }
 
 export class CreateOrderDto {
-  @ApiProperty({ description: 'Order line items', type: [OrderItemDto] })
+  @ApiProperty({description: 'Order line items', type: [OrderItemDto]})
   @IsArray()
   @ArrayMinSize(1)
-  @ValidateNested({ each: true })
+  @ValidateNested({each: true})
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
 
-  @ApiProperty({ description: 'Customer id (optional)', required: false })
+  @ApiPropertyOptional({
+    description:
+      'Client-generated idempotency key (UUID) for offline sales. Re-POSTing ' +
+      'the same clientId returns the already-created order instead of a duplicate.',
+  })
+  @IsUUID()
+  @IsOptional()
+  clientId?: string;
+
+  @ApiProperty({description: 'Customer id (optional)', required: false})
   @IsString()
   @IsOptional()
   userId?: string;
 
-  @ApiProperty({ description: 'Customer name snapshot (optional)', required: false })
+  @ApiProperty({
+    description: 'Customer name snapshot (optional)',
+    required: false,
+  })
   @IsString()
   @IsOptional()
   customerName?: string;
@@ -64,7 +77,7 @@ export class CreateOrderDto {
   @IsOptional()
   status?: string;
 
-  @ApiProperty({ description: 'Payment method', required: false })
+  @ApiProperty({description: 'Payment method', required: false})
   @IsString()
   @IsOptional()
   paymentMethod?: string;
@@ -75,18 +88,21 @@ export class CreateOrderDto {
   })
   @IsArray()
   @IsOptional()
-  @ValidateNested({ each: true })
+  @ValidateNested({each: true})
   @Type(() => PaymentSplitDto)
   payments?: PaymentSplitDto[];
 
-  @ApiPropertyOptional({ description: 'Cash physically tendered by the customer' })
+  @ApiPropertyOptional({
+    description: 'Cash physically tendered by the customer',
+  })
   @IsNumber()
   @IsOptional()
   @Min(0)
   amountPaid?: number;
 
   @ApiPropertyOptional({
-    description: 'Customer phone (for a debt sale: find-or-create the customer)',
+    description:
+      'Customer phone (for a debt sale: find-or-create the customer)',
   })
   @IsString()
   @IsOptional()
@@ -117,7 +133,7 @@ export class CreateOrderDto {
   @IsOptional()
   discountValue?: number;
 
-  @ApiProperty({ description: 'Note', required: false })
+  @ApiProperty({description: 'Note', required: false})
   @IsString()
   @IsOptional()
   note?: string;
@@ -131,4 +147,32 @@ export class CreateOrderDto {
   @IsIn(['admin', 'store'])
   @IsOptional()
   source?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Register (kassa) this admin sale is rung up on. If omitted and the ' +
+      'business has exactly one register, that one is used. Ignored for store sales.',
+  })
+  @IsString()
+  @IsOptional()
+  registerId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Cashier shift this sale belongs to. Normally resolved from the ' +
+      "register's open shift; an offline sale may pass the shift it was rung " +
+      'under so it still attributes correctly after sync.',
+  })
+  @IsString()
+  @IsOptional()
+  shiftId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Held (parked) order this sale resumes. Deleted in the same ' +
+      'transaction as the new order so it cannot be resumed twice.',
+  })
+  @IsString()
+  @IsOptional()
+  heldOrderId?: string;
 }

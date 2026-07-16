@@ -1,17 +1,17 @@
-import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { AppModule } from './app.module';
+import {ValidationPipe} from '@nestjs/common';
+import {NestFactory} from '@nestjs/core';
+import {DocumentBuilder, SwaggerModule} from '@nestjs/swagger';
+import {AppModule} from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  
+
   // Enable CORS for frontend
   app.enableCors({
     origin: true,
     credentials: true,
   });
-  
+
   // Enable validation pipes
   app.useGlobalPipes(
     new ValidationPipe({
@@ -23,8 +23,8 @@ async function bootstrap() {
 
   // Swagger configuration
   const config = new DocumentBuilder()
-    .setTitle('Pimpo CRM API')
-    .setDescription('API documentation for Pimpo CRM application')
+    .setTitle('KPOS CRM API')
+    .setDescription('API documentation for KPOS CRM application')
     .setVersion('1.0')
     .addBearerAuth(
       {
@@ -46,9 +46,9 @@ async function bootstrap() {
       persistAuthorization: true,
     },
   });
-  
+
   await app.listen(process.env.PORT ?? 3050, () => {
-		console.log(`Server is running on port ${process.env.PORT ?? 3050}`);
-	})
+    console.log(`Server is running on port ${process.env.PORT ?? 3050}`);
+  });
 }
 bootstrap();
