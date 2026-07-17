@@ -17,6 +17,7 @@ import { OrderModule } from './order/order.module';
 import { SettingsModule } from './settings/settings.module';
 import { SupplierModule } from './supplier/supplier.module';
 import { ReceiptModule } from './receipt/receipt.module';
+import { ReceiptTemplateModule } from './receipt-template/receipt-template.module';
 import { ShiftModule } from './shift/shift.module';
 import { JwtModule } from '@nestjs/jwt';
 
@@ -63,6 +64,7 @@ class JwtGlobalModule {}
     SettingsModule,
     SupplierModule,
     ReceiptModule,
+    ReceiptTemplateModule,
     ShiftModule,
   ],
   controllers: [AppController],

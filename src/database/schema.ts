@@ -431,6 +431,50 @@ export const receiptSettings = pgTable('receipt_settings', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Configurable receipt/waybill layout templates. Unlike `receiptSettings`
+// (one accounting-oriented row per business), a business can have several of
+// these, each optionally bound to a specific register (kassa). The field
+// selection, ordering, footer links and note live in jsonb so the layout is
+// fully data-driven — the frontend editor + live preview render from it.
+export const receiptTemplates = pgTable('receipt_templates', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(),
+  // 'receipt' (chek) | 'waybill' (yuk xati).
+  printType: varchar('print_type', {length: 20}).notNull().default('receipt'),
+  // Which register this template applies to. null = business-wide default,
+  // used when a register has no template of its own.
+  registerId: varchar('register_id', {length: 36}).references(
+    () => cashRegisters.id,
+    {onDelete: 'set null'},
+  ),
+  showLogo: boolean('show_logo').notNull().default(true),
+  logoUrl: varchar('logo_url', {length: 500}),
+  extraImageUrl: varchar('extra_image_url', {length: 500}),
+  showCustomerBalance: boolean('show_customer_balance')
+    .notNull()
+    .default(false),
+  showCustomerDebt: boolean('show_customer_debt').notNull().default(false),
+  showProductAttributes: boolean('show_product_attributes')
+    .notNull()
+    .default(false),
+  showPoweredBy: boolean('show_powered_by').notNull().default(true),
+  // Info-block fields, in display order, each toggleable:
+  // [{ key:'storeName', enabled:true }, { key:'date', enabled:true }, ...].
+  infoFields: jsonb('info_fields'),
+  // Bottom block (socials + barcode), in display order:
+  // [{ key:'facebook', enabled:true, value:'...' }, ...].
+  footerLinks: jsonb('footer_links'),
+  // Rich-text note printed at the bottom (sanitised HTML).
+  footerText: varchar('footer_text', {length: 2000}),
+  // The business-wide default template (registerId is null). At most one.
+  isDefault: boolean('is_default').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // ─── Kassa (cash management) ────────────────────────────────────────────────
 
 // A cash register / till ("Kassa" / Cashbox). A business can have several; each
@@ -760,6 +804,8 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type NewOrderItem = typeof orderItems.$inferInsert;
 export type ReceiptSettings = typeof receiptSettings.$inferSelect;
 export type NewReceiptSettings = typeof receiptSettings.$inferInsert;
+export type ReceiptTemplate = typeof receiptTemplates.$inferSelect;
+export type NewReceiptTemplate = typeof receiptTemplates.$inferInsert;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 export type NewSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
 export type BusinessSubscription = typeof businessSubscriptions.$inferSelect;
