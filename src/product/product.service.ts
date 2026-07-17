@@ -9,20 +9,19 @@ import {
   products,
   inventoryBatches,
   globalBarcodes,
+  mxikClassifier,
   type Product,
   type NewProduct,
 } from '../database/schema';
 import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
-import { BarcodeLookupService } from './barcode-lookup.service';
 
 @Injectable()
 export class ProductService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
-    private readonly barcodeLookupService: BarcodeLookupService,
   ) {}
 
   async create(businessId: string, data: {
@@ -286,10 +285,11 @@ export class ProductService {
     barcode: string,
   ): Promise<{
     found: boolean;
-    source: 'own' | 'community' | null;
+    source: 'own' | 'community' | 'classifier' | null;
     name: string | null;
     image: string | null;
     categoryName: string | null;
+    mxikCode: string | null;
     existsInBusiness: boolean;
     productId: string | null;
   }> {
@@ -299,6 +299,7 @@ export class ProductService {
       name: null,
       image: null,
       categoryName: null,
+      mxikCode: null,
       existsInBusiness: false,
       productId: null,
     };
@@ -325,6 +326,7 @@ export class ProductService {
         name: own.name,
         image: own.image,
         categoryName: null,
+        mxikCode: null,
         existsInBusiness: true,
         productId: own.id,
       };
@@ -344,32 +346,29 @@ export class ProductService {
         name: global.name,
         image: global.image,
         categoryName: global.categoryName,
+        mxikCode: null,
         existsInBusiness: false,
         productId: null,
       };
     }
 
-    // Last resort: query external providers (GS1 / Open Food Facts) and cache any
-    // hit into the shared catalog, so this barcode is instant (and offline) next time.
-    const external = await this.barcodeLookupService.lookup(barcode);
-    if (external) {
-      await this.dbService.db
-        .insert(globalBarcodes)
-        .values({
-          barcode,
-          name: external.name,
-          image: external.image,
-          categoryName: external.categoryName,
-          source: external.source,
-        })
-        .onConflictDoNothing();
+    // Last resort: the Uzbekistan national classifier (IKPU / MXIK), imported
+    // from tasnif.soliq.uz. Authoritative and fully offline — also carries the
+    // 17-digit MXIK code the product needs for fiscalization.
+    const [classifier] = await this.dbService.db
+      .select()
+      .from(mxikClassifier)
+      .where(eq(mxikClassifier.barcode, barcode))
+      .limit(1);
 
+    if (classifier) {
       return {
         found: true,
-        source: 'community',
-        name: external.name,
-        image: external.image,
-        categoryName: external.categoryName,
+        source: 'classifier',
+        name: classifier.name,
+        image: null,
+        categoryName: classifier.groupName,
+        mxikCode: classifier.mxikCode,
         existsInBusiness: false,
         productId: null,
       };

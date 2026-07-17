@@ -127,6 +127,31 @@ export const globalBarcodes = pgTable('global_barcodes', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Uzbekistan national product classifier (IKPU / MXIK) imported from
+// tasnif.soliq.uz. Authoritative, offline reference used for two things:
+//   1. Barcode scan auto-fill — maps a scanned barcode to an official name +
+//      category, so it works without hitting any external network provider.
+//   2. Fiscalization — every fiscal receipt line needs the 17-digit MXIK code,
+//      so the product form searches this table to pick one (see FISCALIZATION.md).
+// Keyed by the MXIK code; barcode is indexed but nullable (not every classified
+// item has a barcode). Not scoped to a business — it's global reference data.
+export const mxikClassifier = pgTable(
+  'mxik_classifier',
+  {
+    mxikCode: varchar('mxik_code', {length: 17}).primaryKey().notNull(),
+    name: varchar('name', {length: 500}).notNull(),
+    barcode: varchar('barcode', {length: 20}),
+    groupName: varchar('group_name', {length: 255}),
+    brand: varchar('brand', {length: 255}),
+    unitName: varchar('unit_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    barcodeIdx: index('mxik_classifier_barcode_idx').on(table.barcode),
+  }),
+);
+
 export const categories = pgTable(
   'categories',
   {
@@ -814,6 +839,8 @@ export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
 export type GlobalBarcode = typeof globalBarcodes.$inferSelect;
 export type NewGlobalBarcode = typeof globalBarcodes.$inferInsert;
+export type MxikClassifier = typeof mxikClassifier.$inferSelect;
+export type NewMxikClassifier = typeof mxikClassifier.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
 export type User = typeof users.$inferSelect;

@@ -120,6 +120,13 @@
       "when": 1784266467846,
       "tag": "0016_futuristic_rachel_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784273656528,
+      "tag": "0017_rapid_manta",
+      "breakpoints": true
     }
   ]
 }
