@@ -37,10 +37,17 @@ export interface ReconInput {
   counted?: Map<string, number>;
 }
 
+export interface SaleTotals {
+  cashSales: number;
+  cardSales: number;
+  debtSales: number;
+}
+
 export function computeReconciliation(input: ReconInput): {
   rows: ReconRow[];
   orderCount: number;
   hasUsd: boolean;
+  saleTotals: SaleTotals;
 } {
   const {openingFloat, sales, movements, counted} = input;
 
@@ -117,5 +124,10 @@ export function computeReconciliation(input: ReconInput): {
     );
   }
 
-  return {rows, orderCount: sales.length, hasUsd};
+  return {
+    rows,
+    orderCount: sales.length,
+    hasUsd,
+    saleTotals: {cashSales, cardSales, debtSales},
+  };
 }

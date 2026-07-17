@@ -103,6 +103,9 @@ export const products = pgTable('products', {
   barcode: varchar('barcode', {length: 100}),
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
   priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+  // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
+  // catalog; null when the product has no separate wholesale tier.
+  priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
   quantity: integer('quantity').default(0).notNull(),
   quantityType: varchar('quantity_type', {length: 50}),
   image: varchar('image', {length: 500}),
@@ -387,10 +390,94 @@ export const goodsReceipts = pgTable('goods_receipts', {
   totalAmount: decimal('total_amount', {precision: 12, scale: 2})
     .notNull()
     .default('0'),
+  // Supplier-payment control: how much of totalAmount is settled, and a rolled-up
+  // status. Obligation is settled by payments AND returns (returned goods reduce
+  // what is owed): settled = paidAmount + returnedAmount.
+  // 'unpaid' (settled 0) | 'partial' (0<settled<total) | 'paid' (settled>=total).
+  paidAmount: decimal('paid_amount', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
+  // Value of goods returned to the supplier against this receipt.
+  returnedAmount: decimal('returned_amount', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
+  paymentStatus: varchar('payment_status', {length: 10})
+    .notNull()
+    .default('unpaid'), // 'unpaid' | 'partial' | 'paid'
+  // Settlement currency of this receipt (debt/payments are in this currency).
+  currency: varchar('currency', {length: 3}).notNull().default('UZS'),
+  // USD→UZS rate used to convert the supply cost to base for inventory, when
+  // currency is USD. Null for UZS receipts.
+  usdRate: decimal('usd_rate', {precision: 12, scale: 4}),
   itemCount: integer('item_count').notNull().default(0),
   note: varchar('note', {length: 500}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Payments made to a supplier against a goods receipt. Each payment also books
+// a finance expense (financialTransactionId) so the money-out shows in Moliya —
+// the finance ledger stays the single source of truth for account balances.
+export const supplierPayments = pgTable('supplier_payments', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  receiptId: varchar('receipt_id', {length: 36})
+    .notNull()
+    .references(() => goodsReceipts.id, {onDelete: 'cascade'}),
+  supplierId: varchar('supplier_id', {length: 36}),
+  supplierName: varchar('supplier_name', {length: 255}),
+  amount: decimal('amount', {precision: 12, scale: 2}).notNull(),
+  currency: varchar('currency', {length: 3}).notNull().default('UZS'),
+  // Which finance account the money left from (cash/bank).
+  accountId: varchar('account_id', {length: 36}),
+  accountName: varchar('account_name', {length: 255}),
+  // The booked finance expense, for provenance / reversal.
+  financialTransactionId: varchar('financial_transaction_id', {length: 36}),
+  note: varchar('note', {length: 500}),
+  cashierId: varchar('cashier_id', {length: 36}),
+  cashierName: varchar('cashier_name', {length: 255}),
+  paidAt: timestamp('paid_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// A return of received goods back to the supplier, against a goods receipt.
+// Reverses stock + the receipt's batches and reduces the amount owed.
+export const supplierReturns = pgTable('supplier_returns', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  receiptId: varchar('receipt_id', {length: 36})
+    .notNull()
+    .references(() => goodsReceipts.id, {onDelete: 'cascade'}),
+  supplierId: varchar('supplier_id', {length: 36}),
+  supplierName: varchar('supplier_name', {length: 255}),
+  totalAmount: decimal('total_amount', {precision: 12, scale: 2}).notNull(),
+  currency: varchar('currency', {length: 3}).notNull().default('UZS'),
+  itemCount: integer('item_count').notNull().default(0),
+  note: varchar('note', {length: 500}),
+  cashierId: varchar('cashier_id', {length: 36}),
+  cashierName: varchar('cashier_name', {length: 255}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const supplierReturnItems = pgTable('supplier_return_items', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  returnId: varchar('return_id', {length: 36})
+    .notNull()
+    .references(() => supplierReturns.id, {onDelete: 'cascade'}),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  productId: varchar('product_id', {length: 36}),
+  productName: varchar('product_name', {length: 255}).notNull(),
+  // Unit cost the goods were received at (reverses the same value).
+  priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
+  quantity: integer('quantity').notNull(),
+  lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
 export const goodsReceiptItems = pgTable('goods_receipt_items', {
@@ -404,8 +491,16 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   // Loose reference (products may be deleted later); item keeps a name snapshot.
   productId: varchar('product_id', {length: 36}),
   productName: varchar('product_name', {length: 255}).notNull(),
-  // Unit cost paid on this receipt (feeds the weighted-average priceIn update).
+  // Unit cost paid on this receipt, in the receipt's currency (feeds the
+  // weighted-average product cost after conversion to base UZS).
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
+  // Entry currency of priceIn (snapshot of the receipt currency).
+  currency: varchar('currency', {length: 3}).notNull().default('UZS'),
+  // Retail + wholesale selling prices entered on this line (snapshot). priceOut
+  // drives the batch/product selling price; priceWholesale updates the product's
+  // wholesale tier. Nullable for older receipts.
+  priceOut: decimal('price_out', {precision: 10, scale: 2}),
+  priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
   quantity: integer('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -621,6 +716,114 @@ export const cashMovements = pgTable('cash_movements', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+// ── Finance (Moliya) ──────────────────────────────────────────────────────
+// A financial account where money is kept: 'cash' (register/on-hand) or
+// 'noncash' (bank/card terminal). A cash account may link to a cash_register.
+export const accounts = pgTable('accounts', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(), // "Asosiy kassa", "Bank hisobi"
+  type: varchar('type', {length: 10}).notNull(), // 'cash' | 'noncash'
+  // For a cash account: which register it belongs to (optional).
+  registerId: varchar('register_id', {length: 36}),
+  storeId: varchar('store_id', {length: 36}), // future: multi-store
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Current balance per account × currency. Updated atomically inside the same
+// db.transaction as each financial_transaction write.
+export const accountBalances = pgTable(
+  'account_balances',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    accountId: varchar('account_id', {length: 36})
+      .notNull()
+      .references(() => accounts.id, {onDelete: 'cascade'}),
+    currency: varchar('currency', {length: 3}).notNull(), // 'UZS' | 'USD'
+    balance: decimal('balance', {precision: 14, scale: 4})
+      .notNull()
+      .default('0'),
+    frozen: decimal('frozen', {precision: 14, scale: 4})
+      .notNull()
+      .default('0'),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    accountCurrencyIdx: uniqueIndex('account_balances_account_currency_idx').on(
+      table.accountId,
+      table.currency,
+    ),
+  }),
+);
+
+// Income/expense categories (BiLLZ "Moliyaviy toifalar"). Single source for
+// both finance and kassa: a cash-in movement picks an 'income' category, a
+// cash-out picks an 'expense' one.
+export const financialCategories = pgTable('financial_categories', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(),
+  kind: varchar('kind', {length: 10}).notNull(), // 'income' | 'expense'
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// The finance ledger — every money movement. One table covers all kinds.
+// 'conversion' + subtype (vat/passthrough) columns exist but are unused in MVP.
+export const financialTransactions = pgTable(
+  'financial_transactions',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // 'income' | 'expense' | 'transfer' | 'conversion' | 'shift_close'
+    kind: varchar('kind', {length: 12}).notNull(),
+    // Source account (the 'from' for expense/transfer/conversion).
+    accountId: varchar('account_id', {length: 36}),
+    accountName: varchar('account_name', {length: 255}), // snapshot
+    // Destination account (the 'to' for transfer/conversion).
+    toAccountId: varchar('to_account_id', {length: 36}),
+    toAccountName: varchar('to_account_name', {length: 255}),
+    isCash: boolean('is_cash').default(true).notNull(), // cash / non-cash
+    amount: decimal('amount', {precision: 14, scale: 4}).notNull(),
+    currency: varchar('currency', {length: 3}).notNull().default('UZS'),
+    // Conversion only (unused in MVP): received currency + amount + rate.
+    toAmount: decimal('to_amount', {precision: 14, scale: 4}),
+    toCurrency: varchar('to_currency', {length: 3}),
+    rate: decimal('rate', {precision: 14, scale: 4}),
+    // BiLLZ "Tur" (unused in MVP): 'vat' | 'passthrough' | null.
+    subtype: varchar('subtype', {length: 12}),
+    categoryId: varchar('category_id', {length: 36}),
+    categoryName: varchar('category_name', {length: 255}),
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    note: varchar('note', {length: 500}),
+    operationDate: timestamp('operation_date'), // "Operatsiya sanasi"
+    // Provenance — links a ledger row back to its kassa source.
+    orderId: varchar('order_id', {length: 36}),
+    shiftId: varchar('shift_id', {length: 36}),
+    cashMovementId: varchar('cash_movement_id', {length: 36}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('financial_transactions_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    accountIdx: index('financial_transactions_account_idx').on(table.accountId),
+  }),
+);
+
 export const businessesRelations = relations(businesses, ({one, many}) => ({
   subscription: one(businessSubscriptions, {
     fields: [businesses.id],
@@ -636,9 +839,60 @@ export const businessesRelations = relations(businesses, ({one, many}) => ({
   suppliers: many(suppliers),
   brands: many(brands),
   goodsReceipts: many(goodsReceipts),
+  supplierPayments: many(supplierPayments),
+  supplierReturns: many(supplierReturns),
   cashRegisters: many(cashRegisters),
   cashShifts: many(cashShifts),
+  accounts: many(accounts),
+  financialCategories: many(financialCategories),
+  financialTransactions: many(financialTransactions),
 }));
+
+export const accountsRelations = relations(accounts, ({one, many}) => ({
+  business: one(businesses, {
+    fields: [accounts.businessId],
+    references: [businesses.id],
+  }),
+  balances: many(accountBalances),
+}));
+
+export const accountBalancesRelations = relations(
+  accountBalances,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [accountBalances.businessId],
+      references: [businesses.id],
+    }),
+    account: one(accounts, {
+      fields: [accountBalances.accountId],
+      references: [accounts.id],
+    }),
+  }),
+);
+
+export const financialCategoriesRelations = relations(
+  financialCategories,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [financialCategories.businessId],
+      references: [businesses.id],
+    }),
+  }),
+);
+
+export const financialTransactionsRelations = relations(
+  financialTransactions,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [financialTransactions.businessId],
+      references: [businesses.id],
+    }),
+    account: one(accounts, {
+      fields: [financialTransactions.accountId],
+      references: [accounts.id],
+    }),
+  }),
+);
 
 export const ordersRelations = relations(orders, ({one, many}) => ({
   business: one(businesses, {
@@ -796,6 +1050,47 @@ export const goodsReceiptsRelations = relations(
       references: [suppliers.id],
     }),
     items: many(goodsReceiptItems),
+    payments: many(supplierPayments),
+    returns: many(supplierReturns),
+  }),
+);
+
+export const supplierReturnsRelations = relations(
+  supplierReturns,
+  ({one, many}) => ({
+    business: one(businesses, {
+      fields: [supplierReturns.businessId],
+      references: [businesses.id],
+    }),
+    receipt: one(goodsReceipts, {
+      fields: [supplierReturns.receiptId],
+      references: [goodsReceipts.id],
+    }),
+    items: many(supplierReturnItems),
+  }),
+);
+
+export const supplierReturnItemsRelations = relations(
+  supplierReturnItems,
+  ({one}) => ({
+    return: one(supplierReturns, {
+      fields: [supplierReturnItems.returnId],
+      references: [supplierReturns.id],
+    }),
+  }),
+);
+
+export const supplierPaymentsRelations = relations(
+  supplierPayments,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [supplierPayments.businessId],
+      references: [businesses.id],
+    }),
+    receipt: one(goodsReceipts, {
+      fields: [supplierPayments.receiptId],
+      references: [goodsReceipts.id],
+    }),
   }),
 );
 
@@ -888,6 +1183,12 @@ export type Supplier = typeof suppliers.$inferSelect;
 export type NewSupplier = typeof suppliers.$inferInsert;
 export type GoodsReceipt = typeof goodsReceipts.$inferSelect;
 export type NewGoodsReceipt = typeof goodsReceipts.$inferInsert;
+export type SupplierPayment = typeof supplierPayments.$inferSelect;
+export type NewSupplierPayment = typeof supplierPayments.$inferInsert;
+export type SupplierReturn = typeof supplierReturns.$inferSelect;
+export type NewSupplierReturn = typeof supplierReturns.$inferInsert;
+export type SupplierReturnItem = typeof supplierReturnItems.$inferSelect;
+export type NewSupplierReturnItem = typeof supplierReturnItems.$inferInsert;
 export type GoodsReceiptItem = typeof goodsReceiptItems.$inferSelect;
 export type NewGoodsReceiptItem = typeof goodsReceiptItems.$inferInsert;
 export type InventoryBatch = typeof inventoryBatches.$inferSelect;
@@ -901,3 +1202,83 @@ export type CashShift = typeof cashShifts.$inferSelect;
 export type NewCashShift = typeof cashShifts.$inferInsert;
 export type CashMovement = typeof cashMovements.$inferSelect;
 export type NewCashMovement = typeof cashMovements.$inferInsert;
+export type Account = typeof accounts.$inferSelect;
+export type NewAccount = typeof accounts.$inferInsert;
+export type AccountBalance = typeof accountBalances.$inferSelect;
+export type NewAccountBalance = typeof accountBalances.$inferInsert;
+export type FinancialCategory = typeof financialCategories.$inferSelect;
+export type NewFinancialCategory = typeof financialCategories.$inferInsert;
+export type FinancialTransaction = typeof financialTransactions.$inferSelect;
+export type NewFinancialTransaction =
+  typeof financialTransactions.$inferInsert;
+
+// ─── Stock-take (Inventarizatsiya) ──────────────────────────────────────────
+// Ombor sanog'i: haqiqiy qoldiqни kitob qoldig'и bilan solishtirib tuzatish.
+// Yakunlaganда: ortiqcha → yangi partiya (oxirги priceIn), kamomad → FIFO yechim,
+// farq COGS bo'yicha; net farq MOLIYA `financial_transactions`ga yoziladi.
+export const stockTakes = pgTable('stock_takes', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(),
+  storeId: varchar('store_id', {length: 36}), // kelajak: ko'p filial
+  type: varchar('type', {length: 10}).notNull(), // 'full' | 'partial'
+  status: varchar('status', {length: 12}).notNull().default('in_progress'), // 'in_progress' | 'completed'
+  // Yakuniy jamlar (snapshot).
+  surplusQty: decimal('surplus_qty', {precision: 14, scale: 3}),
+  shortageQty: decimal('shortage_qty', {precision: 14, scale: 3}),
+  diffValue: decimal('diff_value', {precision: 14, scale: 2}), // COGS bo'yicha net farq
+  createdByCashierId: varchar('created_by_cashier_id', {length: 36}),
+  createdByCashierName: varchar('created_by_cashier_name', {length: 255}),
+  note: varchar('note', {length: 500}),
+  startedAt: timestamp('started_at').defaultNow().notNull(),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const stockTakeItems = pgTable(
+  'stock_take_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    stockTakeId: varchar('stock_take_id', {length: 36})
+      .notNull()
+      .references(() => stockTakes.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36}).notNull(),
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    bookQty: integer('book_qty').notNull(), // tizim qoldig'i (sanoq boshlanganда)
+    countedQty: integer('counted_qty').notNull(), // haqiqiy sanalgan
+    diffQty: integer('diff_qty').notNull(), // counted - book
+    unitCost: decimal('unit_cost', {precision: 10, scale: 2}), // tannarx (COGS)
+    diffValue: decimal('diff_value', {precision: 12, scale: 2}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    stockTakeIdx: index('stock_take_items_take_idx').on(table.stockTakeId),
+  }),
+);
+
+export const stockTakesRelations = relations(stockTakes, ({one, many}) => ({
+  business: one(businesses, {
+    fields: [stockTakes.businessId],
+    references: [businesses.id],
+  }),
+  items: many(stockTakeItems),
+}));
+
+export const stockTakeItemsRelations = relations(stockTakeItems, ({one}) => ({
+  stockTake: one(stockTakes, {
+    fields: [stockTakeItems.stockTakeId],
+    references: [stockTakes.id],
+  }),
+  product: one(products, {
+    fields: [stockTakeItems.productId],
+    references: [products.id],
+  }),
+}));
+
+export type StockTake = typeof stockTakes.$inferSelect;
+export type NewStockTake = typeof stockTakes.$inferInsert;
+export type StockTakeItem = typeof stockTakeItems.$inferSelect;
+export type NewStockTakeItem = typeof stockTakeItems.$inferInsert;

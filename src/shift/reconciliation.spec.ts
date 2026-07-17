@@ -167,3 +167,53 @@ describe('computeReconciliation', () => {
     expect(row(rows, 'cash').in).toBeCloseTo(3438842.8991, 4);
   });
 });
+
+// saleTotals is what closeShift feeds into the finance ledger on close. It must
+// contain ONLY sales (manual movements are mirrored separately when they
+// happen), otherwise shift_close would double-count them.
+describe('computeReconciliation saleTotals (finance ledger source)', () => {
+  it('splits sales by method', () => {
+    const {saleTotals} = computeReconciliation({
+      openingFloat: 0,
+      sales: [
+        {
+          totalAmount: 100000,
+          payments: [
+            {method: 'cash', amount: 60000},
+            {method: 'card', amount: 40000},
+          ],
+        },
+        {totalAmount: 50000, payments: [{method: 'cash', amount: 20000}]},
+      ],
+      movements: [],
+    });
+    expect(saleTotals.cashSales).toBe(80000);
+    expect(saleTotals.cardSales).toBe(40000);
+    expect(saleTotals.debtSales).toBe(30000); // 50000 − 20000 down payment
+  });
+
+  it('EXCLUDES manual movements (no double-counting on close)', () => {
+    const {saleTotals} = computeReconciliation({
+      openingFloat: 0,
+      sales: [{totalAmount: 50000, payments: [{method: 'cash', amount: 50000}]}],
+      // Big manual movements must NOT leak into saleTotals — they are already
+      // recorded as ledger rows by recordCashMovementTx.
+      movements: [
+        {isCash: true, currency: 'UZS', type: 'in', amount: 999999},
+        {isCash: false, currency: 'UZS', type: 'out', amount: 12345},
+      ],
+    });
+    expect(saleTotals.cashSales).toBe(50000);
+    expect(saleTotals.cardSales).toBe(0);
+    expect(saleTotals.debtSales).toBe(0);
+  });
+
+  it('is zero when there are no sales', () => {
+    const {saleTotals} = computeReconciliation({
+      openingFloat: 100000,
+      sales: [],
+      movements: [{isCash: true, currency: 'UZS', type: 'in', amount: 20000}],
+    });
+    expect(saleTotals).toEqual({cashSales: 0, cardSales: 0, debtSales: 0});
+  });
+});

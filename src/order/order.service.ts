@@ -158,6 +158,31 @@ export class OrderService {
     return openShift.id;
   }
 
+  // Blocks a sale when an inventory count is in progress. Uses a raw guarded
+  // query so it stays decoupled from the stock-take module and never throws if
+  // that table hasn't been migrated yet (fail-open, see AGENT-SYNC.md).
+  private async assertNoStockTakeInProgress(businessId: string): Promise<void> {
+    try {
+      // db.execute() returns either a bare row array or a { rows } object
+      // depending on the driver — normalise both (see the byMethod query below).
+      const result = (await this.dbService.db.execute(sql`
+        SELECT 1 FROM stock_takes
+        WHERE business_id = ${businessId} AND status = 'in_progress'
+        LIMIT 1
+      `)) as unknown;
+      const rows =
+        (result as {rows?: unknown[]}).rows ?? (result as unknown[]);
+      if (rows.length > 0) {
+        throw new ForbiddenException(
+          'A stock-take is in progress. Sales are frozen until it is completed.',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ForbiddenException) throw err;
+      // Table missing / transient error — don't block the till.
+    }
+  }
+
   async create(
     businessId: string,
     dto: CreateOrderDto,
@@ -171,6 +196,11 @@ export class OrderService {
       const existing = await this.findByClientId(businessId, dto.clientId);
       if (existing) return existing;
     }
+
+    // Freeze sales while a stock-take is open — the count relies on a stable
+    // book-quantity snapshot (INVENTARIZATSIYA.md §9.4). Guarded + fail-open so
+    // a store never gets stuck if the stock_takes table isn't migrated yet.
+    await this.assertNoStockTakeInProgress(businessId);
 
     const isDebt = dto.paymentMethod === 'debt';
     const cashier = await this.resolveCashier(account);

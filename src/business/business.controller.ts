@@ -22,12 +22,14 @@ import { BusinessService } from './business.service';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { CurrentBusiness } from './decorators/current-business.decorator';
-import { IBusiness } from './types';
+import { CurrentAccount } from './decorators/current-account.decorator';
+import { IBusiness, IAccount } from './types';
 import { CreateBusinessDto } from './dto/create-business.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
+import { CurrentUserResponseDto } from './dto/current-user-response.dto';
 
 @ApiTags('businesses')
 @Controller('businesses')
@@ -97,6 +99,24 @@ export class BusinessController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getProfile(@CurrentBusiness() business: IBusiness) {
     return business;
+  }
+
+  @Get('me/account')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Get the current authenticated user (owner or staff) with the permissions ' +
+      '(menu keys) that drive the frontend menus and access checks',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current account + owning business, with allowed menu keys',
+    type: CurrentUserResponseDto,
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  async getCurrentUser(@CurrentAccount() account: IAccount) {
+    return this.authService.getCurrentUser(account);
   }
 
   @Get(':id')

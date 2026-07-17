@@ -6,7 +6,7 @@ import { DatabaseService } from '../database/database.service';
 import { staff, roles } from '../database/schema';
 import { verifyPassword } from '../utils/password';
 import { JwtPayload } from './jwt-auth.guard';
-import { IBusiness } from './types';
+import { IBusiness, IAccount } from './types';
 
 // Sentinel meaning "all menus" — used for the business owner.
 const ALL_MENUS = '*';
@@ -76,6 +76,74 @@ export class AuthService {
     }
 
     return this.buildStaffSession(member);
+  }
+
+  /**
+   * Re-resolve the acting account (owner or staff) together with its current
+   * permissions. Backs `GET /businesses/me/account`, letting the frontend
+   * refresh profile + menuKeys without re-logging in — so role/permission edits
+   * take effect immediately. Reads live from the DB rather than the JWT payload.
+   */
+  async getCurrentUser(identity: IAccount) {
+    if (identity.type === 'business') {
+      const business = await this.businessService.findById(identity.id);
+      if (!business || !business.isActive) {
+        throw new UnauthorizedException('Business account is inactive');
+      }
+      const { password: _pw, ...businessWithoutPassword } = business;
+      return {
+        business: businessWithoutPassword,
+        account: {
+          type: 'business' as const,
+          id: business.id,
+          name: business.name,
+          login: business.login,
+          roleId: null,
+          roleName: null,
+          menuKeys: [ALL_MENUS],
+        },
+      };
+    }
+
+    // Staff account — re-read staff + role so permission edits take effect.
+    const [member] = await this.dbService.db
+      .select()
+      .from(staff)
+      .where(eq(staff.id, identity.id))
+      .limit(1);
+
+    if (!member || !member.isActive) {
+      throw new UnauthorizedException('Staff account is inactive');
+    }
+
+    const [role] = await this.dbService.db
+      .select()
+      .from(roles)
+      .where(eq(roles.id, member.roleId))
+      .limit(1);
+
+    if (!role || !role.isActive) {
+      throw new UnauthorizedException('Staff role is missing or inactive');
+    }
+
+    const business = await this.businessService.findById(member.businessId);
+    if (!business || !business.isActive) {
+      throw new UnauthorizedException('Business account is inactive');
+    }
+
+    const { password: _pw, ...businessWithoutPassword } = business;
+    return {
+      business: businessWithoutPassword,
+      account: {
+        type: 'staff' as const,
+        id: member.id,
+        name: member.name,
+        login: member.login,
+        roleId: role.id,
+        roleName: role.name,
+        menuKeys: role.menuKeys ?? [],
+      },
+    };
   }
 
   private signToken(payload: JwtPayload): string {

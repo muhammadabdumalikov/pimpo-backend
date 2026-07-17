@@ -134,6 +134,41 @@
       "when": 1784280763401,
       "tag": "0018_organic_grandmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784301635573,
+      "tag": "0019_small_tiger_shark",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784310076473,
+      "tag": "0020_pink_adam_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784310793948,
+      "tag": "0021_shiny_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784311455457,
+      "tag": "0022_flowery_black_cat",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784312926963,
+      "tag": "0023_pretty_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

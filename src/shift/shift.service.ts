@@ -2,28 +2,39 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import {DatabaseService} from '../database/database.service';
 import {
   cashRegisters,
-  cashOperationCategories,
   cashShifts,
   cashMovements,
+  financialCategories,
   orders,
   staff,
   businesses,
   type CashRegister,
-  type CashOperationCategory,
   type CashShift,
   type CashMovement,
 } from '../database/schema';
-import {eq, and, desc, ne} from 'drizzle-orm';
+import {eq, and, desc, ne, sql} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
+import {FinanceService} from '../finance/finance.service';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import {computeReconciliation, type ReconRow} from './reconciliation';
+
+/** Category shape the kassa UI still expects (direction, not kind). */
+export interface CashCategoryCompat {
+  id: string;
+  businessId: string;
+  name: string;
+  direction: 'in' | 'out';
+  isActive: boolean;
+  createdAt: Date;
+}
 
 export type {ReconRow};
 
@@ -34,23 +45,17 @@ export interface ShiftReport {
   orderCount: number;
 }
 
-// Default register + categories created for a business the first time it touches
-// the kassa module, so existing businesses keep working without a data migration.
+// Default register created for a business the first time it touches the kassa
+// module, so existing businesses keep working without a data migration.
+// (Operation categories now live in the shared finance categories table.)
 const DEFAULT_REGISTER_NAME = 'Asosiy kassa';
-const DEFAULT_CATEGORIES: Array<{
-  name: string;
-  direction: 'in' | 'out' | 'both';
-}> = [
-  {name: "Do'kon xarajati", direction: 'out'},
-  {name: 'Inkassatsiya', direction: 'out'},
-  {name: 'Ish haqi', direction: 'out'},
-  {name: "Maydalik qo'shildi", direction: 'in'},
-  {name: 'Boshqa', direction: 'both'},
-];
 
 @Injectable()
 export class ShiftService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly financeService: FinanceService,
+  ) {}
 
   // ─── Acting cashier (owner or staff) ──────────────────────────────────────
   private async resolveCashier(
@@ -121,50 +126,6 @@ export class ShiftService {
     }
   }
 
-  // Seed default categories once; dedupe by name if a race duplicated them.
-  private async ensureDefaultCategories(businessId: string): Promise<void> {
-    const cats = await this.dbService.db
-      .select({
-        id: cashOperationCategories.id,
-        name: cashOperationCategories.name,
-        createdAt: cashOperationCategories.createdAt,
-      })
-      .from(cashOperationCategories)
-      .where(
-        and(
-          eq(cashOperationCategories.businessId, businessId),
-          eq(cashOperationCategories.isActive, true),
-        ),
-      )
-      .orderBy(cashOperationCategories.createdAt);
-
-    if (cats.length === 0) {
-      await this.dbService.db.insert(cashOperationCategories).values(
-        DEFAULT_CATEGORIES.map((c) => ({
-          id: generateId(),
-          businessId,
-          name: c.name,
-          direction: c.direction,
-          isActive: true,
-        })),
-      );
-      return;
-    }
-
-    // Deactivate later duplicates sharing a name (movements keep their snapshot).
-    const seen = new Set<string>();
-    for (const c of cats) {
-      if (seen.has(c.name)) {
-        await this.dbService.db
-          .update(cashOperationCategories)
-          .set({isActive: false})
-          .where(eq(cashOperationCategories.id, c.id));
-      } else {
-        seen.add(c.name);
-      }
-    }
-  }
-
   // ─── Registers (kassa) ────────────────────────────────────────────────────
   async getRegisters(businessId: string): Promise<CashRegister[]> {
     await this.ensureDefaultRegister(businessId);
@@ -228,37 +189,31 @@ export class ShiftService {
   }
 
   // ─── Cash operation categories (Toifa) ────────────────────────────────────
-  async getCashCategories(
-    businessId: string,
-  ): Promise<CashOperationCategory[]> {
-    await this.ensureDefaultCategories(businessId);
-    return this.dbService.db
-      .select()
-      .from(cashOperationCategories)
-      .where(
-        and(
-          eq(cashOperationCategories.businessId, businessId),
-          eq(cashOperationCategories.isActive, true),
-        ),
-      )
-      .orderBy(desc(cashOperationCategories.createdAt));
+  // Now backed by the shared finance categories table (single source of truth).
+  // The kassa UI still speaks `direction` (in/out); we map it to finance `kind`
+  // (income/expense): in↔income, out↔expense.
+  async getCashCategories(businessId: string): Promise<CashCategoryCompat[]> {
+    return this.financeService.getCategoriesAsDirection(businessId);
   }
 
   async createCashCategory(
     businessId: string,
     data: {name: string; direction?: 'in' | 'out' | 'both'},
-  ): Promise<CashOperationCategory> {
-    const [category] = await this.dbService.db
-      .insert(cashOperationCategories)
-      .values({
-        id: generateId(),
-        businessId,
-        name: data.name,
-        direction: data.direction ?? 'both',
-        isActive: true,
-      })
-      .returning();
-    return category;
+  ): Promise<CashCategoryCompat> {
+    // 'in' → income; 'out'/'both' → expense (income is the exception).
+    const kind = data.direction === 'in' ? 'income' : 'expense';
+    const category = await this.financeService.createCategory(businessId, {
+      name: data.name,
+      kind,
+    });
+    return {
+      id: category.id,
+      businessId: category.businessId,
+      name: category.name,
+      direction: kind === 'income' ? 'in' : 'out',
+      isActive: category.isActive,
+      createdAt: category.createdAt,
+    };
   }
 
   async updateCashCategory(
@@ -269,30 +224,20 @@ export class ShiftService {
       direction?: 'in' | 'out' | 'both';
       isActive?: boolean;
     },
-  ): Promise<CashOperationCategory> {
-    const [existing] = await this.dbService.db
-      .select()
-      .from(cashOperationCategories)
-      .where(
-        and(
-          eq(cashOperationCategories.id, categoryId),
-          eq(cashOperationCategories.businessId, businessId),
-        ),
-      )
-      .limit(1);
-    if (!existing) throw new NotFoundException('Category not found');
-
-    const [category] = await this.dbService.db
-      .update(cashOperationCategories)
-      .set(data)
-      .where(
-        and(
-          eq(cashOperationCategories.id, categoryId),
-          eq(cashOperationCategories.businessId, businessId),
-        ),
-      )
-      .returning();
-    return category;
+  ): Promise<CashCategoryCompat> {
+    const category = await this.financeService.updateCategory(
+      businessId,
+      categoryId,
+      {name: data.name, isActive: data.isActive},
+    );
+    return {
+      id: category.id,
+      businessId: category.businessId,
+      name: category.name,
+      direction: category.kind === 'income' ? 'in' : 'out',
+      isActive: category.isActive,
+      createdAt: category.createdAt,
+    };
   }
 
   // ─── Shifts ───────────────────────────────────────────────────────────────
@@ -330,11 +275,39 @@ export class ShiftService {
       .orderBy(desc(cashShifts.openedAt));
   }
 
+  // Blocks opening a shift while an inventory count is in progress. Raw guarded
+  // query so it stays decoupled from the stock-take module and never throws if
+  // that table hasn't been migrated yet (fail-open, mirrors OrderService).
+  private async assertNoStockTakeInProgress(businessId: string): Promise<void> {
+    try {
+      // db.execute() returns a bare row array or a { rows } object depending on
+      // the driver — normalise both.
+      const result = (await this.dbService.db.execute(sql`
+        SELECT 1 FROM stock_takes
+        WHERE business_id = ${businessId} AND status = 'in_progress'
+        LIMIT 1
+      `)) as unknown;
+      const rows =
+        (result as {rows?: unknown[]}).rows ?? (result as unknown[]);
+      if (rows.length > 0) {
+        throw new ForbiddenException(
+          'A stock-take is in progress. The cash register cannot be opened until it is completed.',
+        );
+      }
+    } catch (err) {
+      if (err instanceof ForbiddenException) throw err;
+      // Table missing / transient error — don't block the till.
+    }
+  }
+
   async openShift(
     businessId: string,
     dto: OpenShiftDto,
     account?: IAccount,
   ): Promise<CashShift> {
+    // Freeze the register while a stock-take is open (INVENTARIZATSIYA.md §9.4).
+    await this.assertNoStockTakeInProgress(businessId);
+
     // Register must exist and belong to the business.
     const [register] = await this.dbService.db
       .select()
@@ -450,11 +423,11 @@ export class ShiftService {
     if (dto.categoryId) {
       const [cat] = await this.dbService.db
         .select()
-        .from(cashOperationCategories)
+        .from(financialCategories)
         .where(
           and(
-            eq(cashOperationCategories.id, dto.categoryId),
-            eq(cashOperationCategories.businessId, businessId),
+            eq(financialCategories.id, dto.categoryId),
+            eq(financialCategories.businessId, businessId),
           ),
         )
         .limit(1);
@@ -463,25 +436,52 @@ export class ShiftService {
     }
 
     const cashier = await this.resolveCashier(account);
-    const [movement] = await this.dbService.db
-      .insert(cashMovements)
-      .values({
-        id: generateId(),
+    const isCash = dto.isCash ?? true;
+    const currency = dto.currency ?? 'UZS';
+
+    // Insert the movement and mirror it into the finance ledger + balance in one
+    // atomic transaction, so the two never drift apart.
+    return this.dbService.db.transaction(async (tx) => {
+      const [movement] = await tx
+        .insert(cashMovements)
+        .values({
+          id: generateId(),
+          businessId,
+          shiftId: shift.id,
+          registerId: shift.registerId,
+          type: dto.type,
+          isCash,
+          amount: String(dto.amount),
+          currency,
+          categoryId: dto.categoryId ?? null,
+          categoryName,
+          reason: dto.reason ?? null,
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+        })
+        .returning();
+
+      await this.financeService.recordCashMovementTx(
+        tx,
         businessId,
-        shiftId: shift.id,
-        registerId: shift.registerId,
-        type: dto.type,
-        isCash: dto.isCash ?? true,
-        amount: String(dto.amount),
-        currency: dto.currency ?? 'UZS',
-        categoryId: dto.categoryId ?? null,
-        categoryName,
-        reason: dto.reason ?? null,
-        cashierId: cashier.id,
-        cashierName: cashier.name,
-      })
-      .returning();
-    return movement;
+        {
+          id: movement.id,
+          shiftId: movement.shiftId,
+          registerId: movement.registerId,
+          type: movement.type,
+          isCash: movement.isCash,
+          amount: movement.amount,
+          currency: movement.currency,
+          categoryId: movement.categoryId,
+          categoryName: movement.categoryName,
+          cashierId: movement.cashierId,
+          cashierName: movement.cashierName,
+        },
+        {id: shift.registerId, name: shift.registerName},
+      );
+
+      return movement;
+    });
   }
 
   async getShiftMovements(
@@ -511,7 +511,12 @@ export class ShiftService {
     shift: CashShift,
     movements: CashMovement[],
     counted?: Map<string, number>,
-  ): Promise<{rows: ReconRow[]; orderCount: number; hasUsd: boolean}> {
+  ): Promise<{
+    rows: ReconRow[];
+    orderCount: number;
+    hasUsd: boolean;
+    saleTotals: {cashSales: number; cardSales: number; debtSales: number};
+  }> {
     // Sales for this shift (exclude cancelled).
     const shiftOrders = await this.dbService.db
       .select({
@@ -582,7 +587,7 @@ export class ShiftService {
     }
 
     const movements = await this.getShiftMovements(businessId, shiftId);
-    const {rows, orderCount} = await this.buildReconciliation(
+    const {rows, orderCount, saleTotals} = await this.buildReconciliation(
       shift,
       movements,
       counted,
@@ -594,28 +599,46 @@ export class ShiftService {
     )!;
     const cashier = await this.resolveCashier(account);
 
-    const [closed] = await this.dbService.db
-      .update(cashShifts)
-      .set({
-        status: 'closed',
-        usdRate: dto.usdRate != null ? String(dto.usdRate) : null,
-        closedByCashierId: cashier.id,
-        closedByCashierName: cashier.name,
-        countedCash: cashRow.counted != null ? String(cashRow.counted) : null,
-        expectedCash: String(cashRow.expected),
-        cashIn: String(cashRow.in),
-        cashOut: String(cashRow.out),
-        difference: cashRow.diff != null ? String(cashRow.diff) : null,
-        reconciliation: rows,
-        orderCount,
-        note: dto.note ?? null,
-        closedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(
-        and(eq(cashShifts.id, shiftId), eq(cashShifts.businessId, businessId)),
-      )
-      .returning();
-    return closed;
+    // Persist the Z-report and mirror the shift's SALES into the finance ledger
+    // in one atomic transaction. Manual movements were already mirrored on
+    // addMovement, so only sales are recorded here (no double-counting).
+    return this.dbService.db.transaction(async (tx) => {
+      const [closed] = await tx
+        .update(cashShifts)
+        .set({
+          status: 'closed',
+          usdRate: dto.usdRate != null ? String(dto.usdRate) : null,
+          closedByCashierId: cashier.id,
+          closedByCashierName: cashier.name,
+          countedCash: cashRow.counted != null ? String(cashRow.counted) : null,
+          expectedCash: String(cashRow.expected),
+          cashIn: String(cashRow.in),
+          cashOut: String(cashRow.out),
+          difference: cashRow.diff != null ? String(cashRow.diff) : null,
+          reconciliation: rows,
+          orderCount,
+          note: dto.note ?? null,
+          closedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(cashShifts.id, shiftId), eq(cashShifts.businessId, businessId)),
+        )
+        .returning();
+
+      await this.financeService.recordShiftCloseTx(
+        tx,
+        businessId,
+        {
+          id: shift.id,
+          registerId: shift.registerId,
+          registerName: shift.registerName,
+        },
+        {cashSales: saleTotals.cashSales, cardSales: saleTotals.cardSales},
+        cashier,
+      );
+
+      return closed;
+    });
   }
 }

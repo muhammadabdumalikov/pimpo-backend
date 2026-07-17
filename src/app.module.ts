@@ -20,6 +20,8 @@ import { BrandModule } from './brand/brand.module';
 import { ReceiptModule } from './receipt/receipt.module';
 import { ReceiptTemplateModule } from './receipt-template/receipt-template.module';
 import { ShiftModule } from './shift/shift.module';
+import { StockTakeModule } from './stock-take/stock-take.module';
+import { FinanceModule } from './finance/finance.module';
 import { JwtModule } from '@nestjs/jwt';
 
 // Global module for JWT - makes JwtService available everywhere.
@@ -68,6 +70,8 @@ class JwtGlobalModule {}
     ReceiptModule,
     ReceiptTemplateModule,
     ShiftModule,
+    StockTakeModule,
+    FinanceModule,
   ],
   controllers: [AppController],
   providers: [AppService],

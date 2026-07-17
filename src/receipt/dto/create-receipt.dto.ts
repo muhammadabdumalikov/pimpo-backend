@@ -7,6 +7,7 @@ import {
   IsInt,
   IsNumber,
   IsBoolean,
+  IsIn,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -40,6 +41,16 @@ export class ReceiptItemDto {
 
   @ApiPropertyOptional({
     description:
+      'Wholesale (bulk) selling price. When given, updates the product wholesale price.',
+    example: 5500,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  priceWholesale?: number;
+
+  @ApiPropertyOptional({
+    description:
       'When the new selling price is higher than the current one, whether to ' +
       'also reprice the existing open batches up (true) or keep their old ' +
       'price (false). Overrides the business priceIncreaseMode default.',
@@ -56,6 +67,33 @@ export class CreateReceiptDto {
   @ValidateNested({ each: true })
   @Type(() => ReceiptItemDto)
   items: ReceiptItemDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Save as a draft (no stock change). Receive it later to apply stock.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  draft?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Supply/settlement currency of the receipt',
+    enum: ['UZS', 'USD'],
+    default: 'UZS',
+  })
+  @IsString()
+  @IsIn(['UZS', 'USD'])
+  @IsOptional()
+  currency?: 'UZS' | 'USD';
+
+  @ApiPropertyOptional({
+    description: 'USD→UZS rate (required when currency is USD)',
+    example: 12800,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  usdRate?: number;
 
   @ApiPropertyOptional({ description: 'Supplier id (optional)' })
   @IsString()
