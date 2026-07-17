@@ -85,4 +85,39 @@ export class UpdateProductDto {
   @IsString()
   @IsOptional()
   categoryId?: string;
+
+  @ApiProperty({
+    description: 'Markup over cost as a percent (e.g. "22.50"). UI helper only.',
+    example: '22.50',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  markupPercent?: string;
+
+  @ApiProperty({
+    description: 'Reorder point — flag "low stock" when quantity <= this.',
+    example: 5,
+    required: false,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  lowStockThreshold?: number;
+
+  @ApiProperty({
+    description: 'Brand ID this product belongs to',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  brandId?: string;
+
+  @ApiProperty({
+    description: 'Default supplier ID this product is bought from',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  supplierId?: string;
 }

@@ -127,6 +127,13 @@
       "when": 1784273656528,
       "tag": "0017_rapid_manta",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784280763401,
+      "tag": "0018_organic_grandmaster",
+      "breakpoints": true
     }
   ]
 }

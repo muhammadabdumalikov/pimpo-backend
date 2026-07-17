@@ -27,6 +27,7 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { BulkCreateProductDto } from './dto/bulk-create-product.dto';
 
 @ApiTags('products')
 @Controller('products')
@@ -51,6 +52,28 @@ export class ProductController {
     return {
       message: 'Product created successfully',
       product,
+    };
+  }
+
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-import products from a spreadsheet (Excel/CSV)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Import result: created count + skipped/errored rows',
+  })
+  @ApiResponse({ status: 403, description: 'Bulk import not available on this plan' })
+  async bulkCreate(
+    @CurrentBusiness() business: IBusiness,
+    @Body() bulkCreateProductDto: BulkCreateProductDto,
+  ) {
+    const result = await this.productService.bulkCreate(
+      business.id,
+      bulkCreateProductDto.products,
+    );
+    return {
+      message: `Imported ${result.created} product(s)`,
+      ...result,
     };
   }
 
@@ -97,6 +120,16 @@ export class ProductController {
   async generateCode(@CurrentBusiness() business: IBusiness) {
     const code = await this.productService.generateProductCode(business.id);
     return { code };
+  }
+
+  @Get('generate-barcode')
+  @ApiOperation({
+    summary: 'Generate a fresh, unique EAN-13 barcode for current business',
+  })
+  @ApiResponse({ status: 200, description: 'Generated barcode' })
+  async generateBarcode(@CurrentBusiness() business: IBusiness) {
+    const barcode = await this.productService.generateBarcode(business.id);
+    return { barcode };
   }
 
   @Get('lookup')

@@ -107,6 +107,31 @@ export const products = pgTable('products', {
   quantityType: varchar('quantity_type', {length: 50}),
   image: varchar('image', {length: 500}),
   categoryId: varchar('category_id', {length: 100}),
+  // Markup over cost, as a percent (e.g. 22.50 = +22.5%). UI-only helper that
+  // ties priceIn → priceOut; stored so it can be shown/edited later. Nullable
+  // for products priced directly without a markup.
+  markupPercent: decimal('markup_percent', {precision: 6, scale: 2}),
+  // Reorder point: when quantity drops to or below this, the product is flagged
+  // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
+  lowStockThreshold: integer('low_stock_threshold'),
+  // Optional brand this product belongs to (for filtering/reporting).
+  brandId: varchar('brand_id', {length: 36}),
+  // Optional default supplier this product is bought from.
+  supplierId: varchar('supplier_id', {length: 36}),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Product brands (marketing manufacturers, e.g. "Nike", "Bosch"). Scoped per
+// business, managed by the business. Referenced loosely by products.brandId so
+// deleting a brand never breaks a product.
+export const brands = pgTable('brands', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -609,6 +634,7 @@ export const businessesRelations = relations(businesses, ({one, many}) => ({
   staff: many(staff),
   orders: many(orders),
   suppliers: many(suppliers),
+  brands: many(brands),
   goodsReceipts: many(goodsReceipts),
   cashRegisters: many(cashRegisters),
   cashShifts: many(cashShifts),
@@ -735,6 +761,13 @@ export const categoriesRelations = relations(categories, ({one}) => ({
   }),
 }));
 
+export const brandsRelations = relations(brands, ({one}) => ({
+  business: one(businesses, {
+    fields: [brands.businessId],
+    references: [businesses.id],
+  }),
+}));
+
 export const usersRelations = relations(users, ({one, many}) => ({
   business: one(businesses, {
     fields: [users.businessId],
@@ -843,6 +876,8 @@ export type MxikClassifier = typeof mxikClassifier.$inferSelect;
 export type NewMxikClassifier = typeof mxikClassifier.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
+export type Brand = typeof brands.$inferSelect;
+export type NewBrand = typeof brands.$inferInsert;
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type UserDebt = typeof userDebts.$inferSelect;
