@@ -377,6 +377,25 @@ export const suppliers = pgTable('suppliers', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Branch ("do'kon" / store) — a business may operate several. Lightweight
+// attribution model: one shared catalogue/inventory, documents (e.g. goods
+// receipts) are tagged with the branch they belong to. Every business has one
+// default branch. `store` is taken by the public storefront, so this is `branch`
+// (matches subscriptionPlans.branchesLimit).
+export const branches = pgTable('branches', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  name: varchar('name', {length: 255}).notNull(),
+  address: varchar('address', {length: 500}),
+  // Exactly one per business; the fallback for documents without an explicit branch.
+  isDefault: boolean('is_default').default(false).notNull(),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Goods receipt ("приход товаров") — an inbound stock document, the inverse of
 // an order. Created as 'Completed' and immutable thereafter; corrections are a
 // new offsetting receipt. Saving one increments product stock and recomputes
@@ -392,6 +411,11 @@ export const goodsReceipts = pgTable('goods_receipts', {
     {onDelete: 'set null'},
   ),
   supplierName: varchar('supplier_name', {length: 255}),
+  // Branch ("do'kon") this receipt belongs to. Null on legacy rows → the
+  // business default branch (see receipt.service findAll).
+  branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+    onDelete: 'set null',
+  }),
   status: varchar('status', {length: 20}).notNull().default('Completed'), // 'Completed'
   totalAmount: decimal('total_amount', {precision: 12, scale: 2})
     .notNull()
@@ -1055,11 +1079,23 @@ export const goodsReceiptsRelations = relations(
       fields: [goodsReceipts.supplierId],
       references: [suppliers.id],
     }),
+    branch: one(branches, {
+      fields: [goodsReceipts.branchId],
+      references: [branches.id],
+    }),
     items: many(goodsReceiptItems),
     payments: many(supplierPayments),
     returns: many(supplierReturns),
   }),
 );
+
+export const branchesRelations = relations(branches, ({one, many}) => ({
+  business: one(businesses, {
+    fields: [branches.businessId],
+    references: [businesses.id],
+  }),
+  receipts: many(goodsReceipts),
+}));
 
 export const supplierReturnsRelations = relations(
   supplierReturns,
@@ -1187,6 +1223,9 @@ export type DebtPayment = typeof debtPayments.$inferSelect;
 export type NewDebtPayment = typeof debtPayments.$inferInsert;
 export type Supplier = typeof suppliers.$inferSelect;
 export type NewSupplier = typeof suppliers.$inferInsert;
+
+export type Branch = typeof branches.$inferSelect;
+export type NewBranch = typeof branches.$inferInsert;
 export type GoodsReceipt = typeof goodsReceipts.$inferSelect;
 export type NewGoodsReceipt = typeof goodsReceipts.$inferInsert;
 export type SupplierPayment = typeof supplierPayments.$inferSelect;

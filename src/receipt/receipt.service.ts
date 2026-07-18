@@ -16,15 +16,29 @@ import {
   supplierReturnItems,
   staff,
   businesses,
+  branches,
   type GoodsReceipt,
   type GoodsReceiptItem,
   type SupplierPayment,
   type SupplierReturn,
 } from '../database/schema';
-import { eq, and, asc, desc, gt, gte, lte, ne, inArray, sql } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  asc,
+  desc,
+  gt,
+  gte,
+  lte,
+  ne,
+  inArray,
+  sql,
+  getTableColumns,
+} from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { IAccount } from '../business/types';
 import { FinanceService } from '../finance/finance.service';
+import { BranchService } from '../branch/branch.service';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
@@ -41,6 +55,7 @@ function paymentStatusOf(paid: number, total: number): string {
 }
 
 export type ReceiptWithItems = GoodsReceipt & {
+  branchName?: string | null;
   items: GoodsReceiptItem[];
   payments?: SupplierPayment[];
   returns?: SupplierReturn[];
@@ -72,6 +87,7 @@ export class ReceiptService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
+    private readonly branchService: BranchService,
   ) {}
 
   // Acting cashier (owner or staff) — snapshotted onto the payment.
@@ -218,12 +234,17 @@ export class ReceiptService {
     const receiptId = generateId();
     const draft = dto.draft === true;
 
+    // Attribute the receipt to a branch ("do'kon"); fall back to the default.
+    const branchId =
+      dto.branchId ?? (await this.branchService.ensureDefault(businessId)).id;
+
     await this.dbService.db.transaction(async (tx) => {
       await tx.insert(goodsReceipts).values({
         id: receiptId,
         businessId,
         supplierId: dto.supplierId ?? null,
         supplierName,
+        branchId,
         status: draft ? 'draft' : 'received',
         totalAmount: money(total),
         currency,
@@ -515,13 +536,14 @@ export class ReceiptService {
       page?: number;
       limit?: number;
       supplierId?: string;
+      branchId?: string;
       paymentStatus?: string;
       status?: string;
       startDate?: string;
       endDate?: string;
     },
   ): Promise<{
-    receipts: GoodsReceipt[];
+    receipts: Array<GoodsReceipt & { branchName: string | null }>;
     total: number;
     page: number;
     limit: number;
@@ -533,6 +555,9 @@ export class ReceiptService {
     const whereConditions = [eq(goodsReceipts.businessId, businessId)];
     if (options?.supplierId) {
       whereConditions.push(eq(goodsReceipts.supplierId, options.supplierId));
+    }
+    if (options?.branchId) {
+      whereConditions.push(eq(goodsReceipts.branchId, options.branchId));
     }
     if (options?.paymentStatus) {
       whereConditions.push(
@@ -563,8 +588,9 @@ export class ReceiptService {
     const total = all.length;
 
     const paginated = await this.dbService.db
-      .select()
+      .select({ ...getTableColumns(goodsReceipts), branchName: branches.name })
       .from(goodsReceipts)
+      .leftJoin(branches, eq(goodsReceipts.branchId, branches.id))
       .where(and(...whereConditions))
       .orderBy(desc(goodsReceipts.createdAt))
       .limit(limit)
@@ -578,8 +604,9 @@ export class ReceiptService {
     receiptId: string,
   ): Promise<ReceiptWithItems | null> {
     const [receipt] = await this.dbService.db
-      .select()
+      .select({ ...getTableColumns(goodsReceipts), branchName: branches.name })
       .from(goodsReceipts)
+      .leftJoin(branches, eq(goodsReceipts.branchId, branches.id))
       .where(
         and(
           eq(goodsReceipts.id, receiptId),

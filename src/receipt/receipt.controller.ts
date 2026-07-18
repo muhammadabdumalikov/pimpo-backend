@@ -54,6 +54,7 @@ export class ReceiptController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'supplierId', required: false, type: String })
+  @ApiQuery({ name: 'branchId', required: false, type: String })
   @ApiQuery({ name: 'paymentStatus', required: false, type: String })
   @ApiQuery({ name: 'status', required: false, type: String })
   @ApiQuery({ name: 'startDate', required: false, type: String })
@@ -64,6 +65,7 @@ export class ReceiptController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('supplierId') supplierId?: string,
+    @Query('branchId') branchId?: string,
     @Query('paymentStatus') paymentStatus?: string,
     @Query('status') status?: string,
     @Query('startDate') startDate?: string,
@@ -73,6 +75,7 @@ export class ReceiptController {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       supplierId,
+      branchId,
       paymentStatus,
       status,
       startDate,

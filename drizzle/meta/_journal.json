@@ -176,6 +176,13 @@
       "when": 1784361379929,
       "tag": "0024_fancy_cannonball",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784363611440,
+      "tag": "0025_lyrical_fallen_one",
+      "breakpoints": true
     }
   ]
 }

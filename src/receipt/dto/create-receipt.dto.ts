@@ -100,6 +100,13 @@ export class CreateReceiptDto {
   @IsOptional()
   supplierId?: string;
 
+  @ApiPropertyOptional({
+    description: "Branch (do'kon) id. Defaults to the business default branch.",
+  })
+  @IsString()
+  @IsOptional()
+  branchId?: string;
+
   @ApiPropertyOptional({ description: 'Note' })
   @IsString()
   @IsOptional()

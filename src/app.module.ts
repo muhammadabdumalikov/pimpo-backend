@@ -16,6 +16,7 @@ import { StaffModule } from './staff/staff.module';
 import { OrderModule } from './order/order.module';
 import { SettingsModule } from './settings/settings.module';
 import { SupplierModule } from './supplier/supplier.module';
+import { BranchModule } from './branch/branch.module';
 import { BrandModule } from './brand/brand.module';
 import { ReceiptModule } from './receipt/receipt.module';
 import { ReceiptTemplateModule } from './receipt-template/receipt-template.module';
@@ -66,6 +67,7 @@ class JwtGlobalModule {}
     OrderModule,
     SettingsModule,
     SupplierModule,
+    BranchModule,
     BrandModule,
     ReceiptModule,
     ReceiptTemplateModule,
