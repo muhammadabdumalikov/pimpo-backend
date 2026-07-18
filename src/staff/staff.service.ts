@@ -3,18 +3,31 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { eq, and, asc } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
 import { staff, roles, type Staff, type NewStaff } from '../database/schema';
 import { generateId } from '../utils/uuid';
 import { hashPassword } from '../utils/password';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 export type StaffView = Omit<Staff, 'password'> & { roleName: string | null };
 
 @Injectable()
 export class StaffService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
+
+  private async countStaff(businessId: string): Promise<number> {
+    const rows = await this.dbService.db
+      .select()
+      .from(staff)
+      .where(and(eq(staff.businessId, businessId), eq(staff.isActive, true)));
+    return rows.length;
+  }
 
   private strip(member: Staff, roleName: string | null): StaffView {
     const { password: _, ...rest } = member;
@@ -58,6 +71,16 @@ export class StaffService {
     businessId: string,
     data: { name: string; login: string; password: string; roleId: string },
   ): Promise<StaffView> {
+    // Enforce the plan's user limit (owner + staff). The owner always holds one
+    // seat, so a plan with usersLimit N allows N-1 staff members.
+    const { usersLimit } =
+      await this.subscriptionService.getSubscriptionLimits(businessId);
+    if (usersLimit !== null && (await this.countStaff(businessId)) + 1 >= usersLimit) {
+      throw new ForbiddenException(
+        `User limit of ${usersLimit} reached for your current plan.`,
+      );
+    }
+
     await this.assertRoleBelongsToBusiness(businessId, data.roleId);
 
     const [existing] = await this.dbService.db

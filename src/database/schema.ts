@@ -72,6 +72,12 @@ export const subscriptionPlans = pgTable('subscription_plans', {
   isActive: boolean('is_active').default(true).notNull(),
   debtsLimit: integer('debts_limit'),
   productsLimit: integer('products_limit'),
+  // Max total users (owner + staff). Enforced on staff creation; the owner
+  // always holds 1 seat, so N allows N-1 staff members. null = unlimited.
+  usersLimit: integer('users_limit'),
+  // Max total branches/stores (1 base + extras). Catalog value for now; branch
+  // creation and per-branch discount billing will consume it (not built yet).
+  branchesLimit: integer('branches_limit'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

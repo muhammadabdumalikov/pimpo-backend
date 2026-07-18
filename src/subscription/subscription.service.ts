@@ -114,20 +114,26 @@ export class SubscriptionService implements OnModuleInit {
   async getSubscriptionLimits(businessId: string): Promise<{
     debtsLimit: number | null;
     productsLimit: number | null;
+    usersLimit: number | null;
+    branchesLimit: number | null;
   }> {
     const subscription = await this.getBusinessSubscription(businessId);
-    
+
     if (!subscription) {
       // Default to free plan limits
       return {
         debtsLimit: 20,
         productsLimit: 100,
+        usersLimit: 1,
+        branchesLimit: 1,
       };
     }
 
     return {
       debtsLimit: subscription.plan.debtsLimit,
       productsLimit: subscription.plan.productsLimit,
+      usersLimit: subscription.plan.usersLimit,
+      branchesLimit: subscription.plan.branchesLimit,
     };
   }
 
@@ -152,6 +158,8 @@ export class SubscriptionService implements OnModuleInit {
     price: string;
     debtsLimit?: number | null;
     productsLimit?: number | null;
+    usersLimit?: number | null;
+    branchesLimit?: number | null;
     isActive?: boolean;
   }): Promise<SubscriptionPlan> {
     // Check if tier already exists
@@ -170,6 +178,8 @@ export class SubscriptionService implements OnModuleInit {
       isActive: data.isActive !== undefined ? data.isActive : true,
       debtsLimit: data.debtsLimit !== undefined ? data.debtsLimit : null,
       productsLimit: data.productsLimit !== undefined ? data.productsLimit : null,
+      usersLimit: data.usersLimit !== undefined ? data.usersLimit : null,
+      branchesLimit: data.branchesLimit !== undefined ? data.branchesLimit : null,
     };
 
     const [plan] = await this.dbService.db
@@ -188,6 +198,8 @@ export class SubscriptionService implements OnModuleInit {
       price?: string;
       debtsLimit?: number | null;
       productsLimit?: number | null;
+      usersLimit?: number | null;
+      branchesLimit?: number | null;
       isActive?: boolean;
     },
   ): Promise<SubscriptionPlan> {
@@ -207,6 +219,8 @@ export class SubscriptionService implements OnModuleInit {
     if (data.price !== undefined) updateData.price = data.price;
     if (data.debtsLimit !== undefined) updateData.debtsLimit = data.debtsLimit;
     if (data.productsLimit !== undefined) updateData.productsLimit = data.productsLimit;
+    if (data.usersLimit !== undefined) updateData.usersLimit = data.usersLimit;
+    if (data.branchesLimit !== undefined) updateData.branchesLimit = data.branchesLimit;
     if (data.isActive !== undefined) updateData.isActive = data.isActive;
 
     const [plan] = await this.dbService.db

@@ -169,6 +169,13 @@
       "when": 1784312926963,
       "tag": "0023_pretty_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784361379929,
+      "tag": "0024_fancy_cannonball",
+      "breakpoints": true
     }
   ]
 }

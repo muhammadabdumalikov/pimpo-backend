@@ -1,13 +1,13 @@
 import * as dotenv from 'dotenv';
-import * as postgres from 'postgres';
+import {eq, sql} from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq, sql } from 'drizzle-orm';
+import * as postgres from 'postgres';
 
-import * as schema from './schema';
-import { DatabaseService } from './database.service';
-import { seedSubscriptionPlans } from '../subscription/seed-plans';
-import { generateId } from '../utils/uuid';
+import {seedSubscriptionPlans} from '../subscription/seed-plans';
 import { hashPassword } from '../utils/password';
+import {generateId} from '../utils/uuid';
+import {DatabaseService} from './database.service';
+import * as schema from './schema';
 
 dotenv.config();
 
@@ -74,20 +74,22 @@ async function ensureDemoStaff(
     password: hashPassword('cashier1234'),
     isActive: true,
   });
-  console.log('✓ Demo role + staff created (login: cashier / password: cashier1234)');
+  console.log(
+    '✓ Demo role + staff created (login: cashier / password: cashier1234)',
+  );
 }
 
 async function seed() {
   const connectionString =
     process.env.DATABASE_URL ||
-    'postgresql://postgres:oLCvicppN1ALpQDNyCpORztaAT22jUtcyBE5mJYrS47ujmsZ19mkYf1clU4TEpka@116.202.26.85:5454/pimpo';
+    'postgresql://postgres:oLCvicppN1ALpQDNyCpORztaAT22jUtcyBE5mJYrS47ujmsZ19mkYf1clU4TEpka@116.202.26.85:5454/KPOS';
 
-  const client = postgres(connectionString, { max: 1 });
-  const db = drizzle(client, { schema });
+  const client = postgres(connectionString, {max: 1});
+  const db = drizzle(client, {schema});
 
   try {
     // 1. Subscription plans (reuse the app's own seeder — idempotent by tier).
-    await seedSubscriptionPlans({ db } as unknown as DatabaseService);
+    await seedSubscriptionPlans({db} as unknown as DatabaseService);
     console.log('✓ Subscription plans seeded');
 
     // 2. Demo business — bail out early if it already exists.
@@ -111,12 +113,14 @@ async function seed() {
     await db.insert(schema.businesses).values({
       id: businessId,
       name: 'Demo Market',
-      email: 'demo@pimpo.uz',
+      email: 'demo@KPOS.uz',
       login: DEMO_BUSINESS_LOGIN,
       password: hashPassword(DEMO_BUSINESS_PASSWORD),
       isActive: true,
     });
-    console.log(`✓ Business created (login: ${DEMO_BUSINESS_LOGIN} / password: ${DEMO_BUSINESS_PASSWORD})`);
+    console.log(
+      `✓ Business created (login: ${DEMO_BUSINESS_LOGIN} / password: ${DEMO_BUSINESS_PASSWORD})`,
+    );
 
     // 3. Attach the business to the "pro" plan for a year.
     const [proPlan] = await db
@@ -139,118 +143,141 @@ async function seed() {
 
     // 4. Categories (composite PK: businessId + id).
     await db.insert(schema.categories).values([
-      { id: CATEGORY.drinks, businessId, name: 'Drinks' },
-      { id: CATEGORY.snacks, businessId, name: 'Snacks' },
-      { id: CATEGORY.dairy, businessId, name: 'Dairy' },
-      { id: CATEGORY.bakery, businessId, name: 'Bakery' },
-      { id: CATEGORY.household, businessId, name: 'Household' },
+      {id: CATEGORY.drinks, businessId, name: 'Drinks'},
+      {id: CATEGORY.snacks, businessId, name: 'Snacks'},
+      {id: CATEGORY.dairy, businessId, name: 'Dairy'},
+      {id: CATEGORY.bakery, businessId, name: 'Bakery'},
+      {id: CATEGORY.household, businessId, name: 'Household'},
     ]);
     console.log('✓ Categories created (5)');
 
     // 5. Products.
-    const productRows = await db.insert(schema.products).values([
-      {
-        id: generateId(),
-        businessId,
-        name: 'Coca-Cola 1L',
-        code: 'CC-1L',
-        barcode: '5449000000996',
-        priceIn: '8000.00',
-        priceOut: '11000.00',
-        quantity: 120,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.drinks,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Pepsi 1.5L',
-        code: 'PP-15L',
-        barcode: '5449000054227',
-        priceIn: '9000.00',
-        priceOut: '13000.00',
-        quantity: 80,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.drinks,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Lays Classic 80g',
-        code: 'LAYS-80',
-        barcode: '4690388080207',
-        priceIn: '6000.00',
-        priceOut: '9000.00',
-        quantity: 200,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.snacks,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Milk 1L',
-        code: 'MILK-1L',
-        priceIn: '7000.00',
-        priceOut: '9500.00',
-        quantity: 50,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.dairy,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Yogurt 400g',
-        code: 'YOG-400',
-        priceIn: '5000.00',
-        priceOut: '7500.00',
-        quantity: 60,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.dairy,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'White Bread',
-        code: 'BREAD-W',
-        priceIn: '2500.00',
-        priceOut: '4000.00',
-        quantity: 40,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.bakery,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Dish Soap 500ml',
-        code: 'SOAP-500',
-        barcode: '8690637000010',
-        priceIn: '12000.00',
-        priceOut: '18000.00',
-        quantity: 35,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.household,
-      },
-      {
-        id: generateId(),
-        businessId,
-        name: 'Paper Towels 2-pack',
-        code: 'TWL-2',
-        priceIn: '15000.00',
-        priceOut: '22000.00',
-        quantity: 25,
-        quantityType: 'pcs',
-        categoryId: CATEGORY.household,
-      },
-    ]).returning();
+    const productRows = await db
+      .insert(schema.products)
+      .values([
+        {
+          id: generateId(),
+          businessId,
+          name: 'Coca-Cola 1L',
+          code: 'CC-1L',
+          barcode: '5449000000996',
+          priceIn: '8000.00',
+          priceOut: '11000.00',
+          quantity: 120,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.drinks,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Pepsi 1.5L',
+          code: 'PP-15L',
+          barcode: '5449000054227',
+          priceIn: '9000.00',
+          priceOut: '13000.00',
+          quantity: 80,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.drinks,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Lays Classic 80g',
+          code: 'LAYS-80',
+          barcode: '4690388080207',
+          priceIn: '6000.00',
+          priceOut: '9000.00',
+          quantity: 200,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.snacks,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Milk 1L',
+          code: 'MILK-1L',
+          priceIn: '7000.00',
+          priceOut: '9500.00',
+          quantity: 50,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.dairy,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Yogurt 400g',
+          code: 'YOG-400',
+          priceIn: '5000.00',
+          priceOut: '7500.00',
+          quantity: 60,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.dairy,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'White Bread',
+          code: 'BREAD-W',
+          priceIn: '2500.00',
+          priceOut: '4000.00',
+          quantity: 40,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.bakery,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Dish Soap 500ml',
+          code: 'SOAP-500',
+          barcode: '8690637000010',
+          priceIn: '12000.00',
+          priceOut: '18000.00',
+          quantity: 35,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.household,
+        },
+        {
+          id: generateId(),
+          businessId,
+          name: 'Paper Towels 2-pack',
+          code: 'TWL-2',
+          priceIn: '15000.00',
+          priceOut: '22000.00',
+          quantity: 25,
+          quantityType: 'pcs',
+          categoryId: CATEGORY.household,
+        },
+      ])
+      .returning();
     console.log('✓ Products created (8)');
 
     // 6. Users (customers).
     const userRows = [
-      { name: 'Akmal Karimov', phone: '+998901112233', address: 'Tashkent, Chilonzor 12' },
-      { name: 'Dilnoza Yusupova', phone: '+998902223344', address: 'Tashkent, Yunusobod 5' },
-      { name: 'Bobur Aliyev', phone: '+998903334455', address: 'Samarkand, Registon 8' },
-      { name: 'Gulnora Saidova', phone: '+998904445566', address: 'Bukhara, Lyabi-Hauz 3' },
-      { name: 'Sardor Toshmatov', phone: '+998905556677', address: 'Andijan, Bobur 21' },
+      {
+        name: 'Akmal Karimov',
+        phone: '+998901112233',
+        address: 'Tashkent, Chilonzor 12',
+      },
+      {
+        name: 'Dilnoza Yusupova',
+        phone: '+998902223344',
+        address: 'Tashkent, Yunusobod 5',
+      },
+      {
+        name: 'Bobur Aliyev',
+        phone: '+998903334455',
+        address: 'Samarkand, Registon 8',
+      },
+      {
+        name: 'Gulnora Saidova',
+        phone: '+998904445566',
+        address: 'Bukhara, Lyabi-Hauz 3',
+      },
+      {
+        name: 'Sardor Toshmatov',
+        phone: '+998905556677',
+        address: 'Andijan, Bobur 21',
+      },
     ].map((u) => ({
       id: generateId(),
       businessId,
@@ -273,7 +300,7 @@ async function seed() {
     // the unpaid remainder as a debt linked to that order.
     async function seedDebtSale(opts: {
       user: (typeof userRows)[number];
-      lines: { product: (typeof productRows)[number]; qty: number }[];
+      lines: {product: (typeof productRows)[number]; qty: number}[];
       paidNow: number;
       method?: 'cash' | 'card';
       dueInDays: number | null;
@@ -281,7 +308,7 @@ async function seed() {
       const orderId = generateId();
       let total = 0;
       let itemCount = 0;
-      const items = opts.lines.map(({ product, qty }) => {
+      const items = opts.lines.map(({product, qty}) => {
         const lineTotal = Number(product.priceOut) * qty;
         total += lineTotal;
         itemCount += qty;
@@ -297,7 +324,8 @@ async function seed() {
         };
       });
       const paidNow = Math.min(opts.paidNow, total);
-      const payments = paidNow > 0 ? [{ method: opts.method ?? 'cash', amount: paidNow }] : [];
+      const payments =
+        paidNow > 0 ? [{method: opts.method ?? 'cash', amount: paidNow}] : [];
 
       await db.insert(schema.orders).values({
         id: orderId,
@@ -319,7 +347,9 @@ async function seed() {
       for (const it of items) {
         await db
           .update(schema.products)
-          .set({ quantity: sql`GREATEST(0, ${schema.products.quantity} - ${it.quantity})` })
+          .set({
+            quantity: sql`GREATEST(0, ${schema.products.quantity} - ${it.quantity})`,
+          })
           .where(eq(schema.products.id, it.productId));
       }
       await db.insert(schema.userDebts).values({
@@ -330,7 +360,9 @@ async function seed() {
         amount: money(total - paidNow),
         status: 'Pending',
         dueDate: opts.dueInDays == null ? null : daysFromNow(opts.dueInDays),
-        description: items.map((i) => `${i.productName} ×${i.quantity}`).join(', '),
+        description: items
+          .map((i) => `${i.productName} ×${i.quantity}`)
+          .join(', '),
       });
     }
 
@@ -338,8 +370,8 @@ async function seed() {
     await seedDebtSale({
       user: userRows[0],
       lines: [
-        { product: productRows[0], qty: 2 },
-        { product: productRows[1], qty: 1 },
+        {product: productRows[0], qty: 2},
+        {product: productRows[1], qty: 1},
       ],
       paidNow: 20000,
       dueInDays: 14,
@@ -348,8 +380,8 @@ async function seed() {
     await seedDebtSale({
       user: userRows[1],
       lines: [
-        { product: productRows[2], qty: 3 },
-        { product: productRows[3], qty: 1 },
+        {product: productRows[2], qty: 3},
+        {product: productRows[3], qty: 1},
       ],
       paidNow: 0,
       dueInDays: 7,
@@ -357,7 +389,7 @@ async function seed() {
     // Bobur — full debt from a sale, already overdue.
     await seedDebtSale({
       user: userRows[2],
-      lines: [{ product: productRows[4], qty: 4 }],
+      lines: [{product: productRows[4], qty: 4}],
       paidNow: 0,
       dueInDays: -10,
     });
