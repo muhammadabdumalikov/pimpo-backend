@@ -1,12 +1,17 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import { brands, type Brand, type NewBrand } from '../database/schema';
 import { eq, and, desc, ilike } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 @Injectable()
 export class BrandService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   async create(businessId: string, data: { name: string }): Promise<Brand> {
     const newBrand: NewBrand = {
@@ -21,10 +26,29 @@ export class BrandService {
       .values(newBrand)
       .returning();
 
+    await this.cache.del(CacheKeys.brands(businessId));
+
     return brand;
   }
 
   async findAll(
+    businessId: string,
+    options?: { page?: number; limit?: number; search?: string },
+  ): Promise<{ brands: Brand[]; total: number; page: number; limit: number }> {
+    const isPlainList = !options?.page && !options?.limit && !options?.search;
+
+    if (isPlainList) {
+      return this.cache.wrap(
+        CacheKeys.brands(businessId),
+        () => this.fetchAll(businessId, options),
+        TTL.BRANDS,
+      );
+    }
+
+    return this.fetchAll(businessId, options);
+  }
+
+  private async fetchAll(
     businessId: string,
     options?: { page?: number; limit?: number; search?: string },
   ): Promise<{ brands: Brand[]; total: number; page: number; limit: number }> {
@@ -91,6 +115,8 @@ export class BrandService {
       .where(and(eq(brands.id, brandId), eq(brands.businessId, businessId)))
       .returning();
 
+    await this.cache.del(CacheKeys.brands(businessId));
+
     return brand;
   }
 
@@ -105,5 +131,7 @@ export class BrandService {
       .update(brands)
       .set({ isActive: false, updatedAt: new Date() })
       .where(and(eq(brands.id, brandId), eq(brands.businessId, businessId)));
+
+    await this.cache.del(CacheKeys.brands(businessId));
   }
 }

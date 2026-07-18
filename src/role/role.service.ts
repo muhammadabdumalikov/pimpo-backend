@@ -2,22 +2,33 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  Inject,
 } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { eq, and, asc } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
 import { roles, staff, type Role, type NewRole } from '../database/schema';
 import { generateId } from '../utils/uuid';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 @Injectable()
 export class RoleService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   async findAll(businessId: string): Promise<Role[]> {
-    return this.dbService.db
-      .select()
-      .from(roles)
-      .where(eq(roles.businessId, businessId))
-      .orderBy(asc(roles.name));
+    return this.cache.wrap(
+      CacheKeys.roles(businessId),
+      () =>
+        this.dbService.db
+          .select()
+          .from(roles)
+          .where(eq(roles.businessId, businessId))
+          .orderBy(asc(roles.name)),
+      TTL.ROLES,
+    );
   }
 
   async findOne(businessId: string, id: string): Promise<Role | null> {
@@ -53,6 +64,7 @@ export class RoleService {
       .insert(roles)
       .values(newRole)
       .returning();
+    await this.cache.del(CacheKeys.roles(businessId));
     return role;
   }
 
@@ -87,6 +99,7 @@ export class RoleService {
       })
       .where(and(eq(roles.businessId, businessId), eq(roles.id, id)))
       .returning();
+    await this.cache.del(CacheKeys.roles(businessId));
     return role;
   }
 
@@ -110,5 +123,6 @@ export class RoleService {
     await this.dbService.db
       .delete(roles)
       .where(and(eq(roles.businessId, businessId), eq(roles.id, id)));
+    await this.cache.del(CacheKeys.roles(businessId));
   }
 }

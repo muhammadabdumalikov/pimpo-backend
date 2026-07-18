@@ -1,11 +1,16 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import { categories, type Category, type NewCategory } from '../database/schema';
 import { eq, and, asc } from 'drizzle-orm';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 @Injectable()
 export class CategoryService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   async create(businessId: string, data: { id: string; name: string; image?: string }): Promise<Category> {
     const existing = await this.dbService.db
@@ -28,15 +33,21 @@ export class CategoryService {
       isDeleted: false,
     };
     const [cat] = await this.dbService.db.insert(categories).values(newCat).returning();
+    await this.cache.del(CacheKeys.categories(businessId));
     return cat;
   }
 
   async findAll(businessId: string): Promise<Category[]> {
-    return this.dbService.db
-      .select()
-      .from(categories)
-      .where(and(eq(categories.businessId, businessId), eq(categories.isDeleted, false)))
-      .orderBy(asc(categories.name));
+    return this.cache.wrap(
+      CacheKeys.categories(businessId),
+      () =>
+        this.dbService.db
+          .select()
+          .from(categories)
+          .where(and(eq(categories.businessId, businessId), eq(categories.isDeleted, false)))
+          .orderBy(asc(categories.name)),
+      TTL.CATEGORIES,
+    );
   }
 
   async findOne(businessId: string, categoryId: string): Promise<Category | null> {
@@ -70,6 +81,7 @@ export class CategoryService {
       })
       .where(and(eq(categories.businessId, businessId), eq(categories.id, categoryId)))
       .returning();
+    await this.cache.del(CacheKeys.categories(businessId));
     return cat;
   }
 
@@ -82,6 +94,7 @@ export class CategoryService {
       .update(categories)
       .set({ isDeleted: true, updatedAt: new Date() })
       .where(and(eq(categories.businessId, businessId), eq(categories.id, categoryId)));
+    await this.cache.del(CacheKeys.categories(businessId));
   }
 
   async findAllForStore(businessId?: string): Promise<Category[]> {

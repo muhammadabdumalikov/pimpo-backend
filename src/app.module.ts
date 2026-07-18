@@ -24,6 +24,7 @@ import { ShiftModule } from './shift/shift.module';
 import { StockTakeModule } from './stock-take/stock-take.module';
 import { FinanceModule } from './finance/finance.module';
 import { JwtModule } from '@nestjs/jwt';
+import { CacheModule } from '@nestjs/cache-manager';
 
 // Global module for JWT - makes JwtService available everywhere.
 // Uses registerAsync so the secret is read from ConfigService AFTER
@@ -52,6 +53,10 @@ class JwtGlobalModule {}
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // In-memory cache, available app-wide (isGlobal → CACHE_MANAGER injectable
+    // everywhere without importing CacheModule per feature module). Per-call
+    // TTLs are passed explicitly via cache.wrap(); this default is a fallback.
+    CacheModule.register({ isGlobal: true, ttl: 60_000 }),
     JwtGlobalModule,
     DatabaseModule,
     BusinessModule,

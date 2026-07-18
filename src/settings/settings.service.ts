@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
 import { receiptSettings, type ReceiptSettings } from '../database/schema';
 import { UpdateReceiptSettingsDto } from './dto/update-receipt-settings.dto';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 const DEFAULTS = {
   receiptName: 'Standart',
@@ -16,28 +18,37 @@ const DEFAULTS = {
 
 @Injectable()
 export class SettingsService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   /** Receipt settings for a business, falling back to defaults if unset. */
   async getReceiptSettings(businessId: string): Promise<ReceiptSettings> {
-    const [row] = await this.dbService.db
-      .select()
-      .from(receiptSettings)
-      .where(eq(receiptSettings.businessId, businessId))
-      .limit(1);
+    return this.cache.wrap(
+      CacheKeys.settingsReceipt(businessId),
+      async () => {
+        const [row] = await this.dbService.db
+          .select()
+          .from(receiptSettings)
+          .where(eq(receiptSettings.businessId, businessId))
+          .limit(1);
 
-    if (row) return row;
-    return {
-      businessId,
-      receiptName: DEFAULTS.receiptName,
-      showLogo: DEFAULTS.showLogo,
-      logoUrl: DEFAULTS.logoUrl,
-      vatEnabled: DEFAULTS.vatEnabled,
-      vatRate: DEFAULTS.vatRate,
-      costingMethod: DEFAULTS.costingMethod,
-      priceIncreaseMode: DEFAULTS.priceIncreaseMode,
-      updatedAt: new Date(),
-    };
+        if (row) return row;
+        return {
+          businessId,
+          receiptName: DEFAULTS.receiptName,
+          showLogo: DEFAULTS.showLogo,
+          logoUrl: DEFAULTS.logoUrl,
+          vatEnabled: DEFAULTS.vatEnabled,
+          vatRate: DEFAULTS.vatRate,
+          costingMethod: DEFAULTS.costingMethod,
+          priceIncreaseMode: DEFAULTS.priceIncreaseMode,
+          updatedAt: new Date(),
+        };
+      },
+      TTL.SETTINGS,
+    );
   }
 
   /** Upsert: create the row on first save, update it thereafter. */
@@ -63,6 +74,8 @@ export class SettingsService {
         target: receiptSettings.businessId,
         set: { ...next, updatedAt: new Date() },
       });
+
+    await this.cache.del(CacheKeys.settingsReceipt(businessId));
 
     return this.getReceiptSettings(businessId);
   }

@@ -3,9 +3,12 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Inject,
 } from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {eq, and, desc, ilike, or, count, sql, gte, lte, inArray} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
+import {CacheKeys, TTL} from '../cache/cache.util';
 import {
   orders,
   orderItems,
@@ -61,6 +64,7 @@ export class OrderService {
     private readonly dbService: DatabaseService,
     private readonly userService: UserService,
     private readonly subscriptionService: SubscriptionService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   // Resolve the acting account into a snapshotted cashier (id + display name).
@@ -978,6 +982,20 @@ export class OrderService {
   async getSalesSummary(
     businessId: string,
     options: {from?: string; to?: string} = {},
+  ) {
+    // Heavy aggregation read by the dashboard — cached with a short TTL so the
+    // DB isn't hit on every refresh. Kept fresh within TTL.ORDERS_SUMMARY; no
+    // per-write invalidation (a new sale reflects once the TTL lapses).
+    return this.cache.wrap(
+      CacheKeys.ordersSummary(businessId, options),
+      () => this.computeSalesSummary(businessId, options),
+      TTL.ORDERS_SUMMARY,
+    );
+  }
+
+  private async computeSalesSummary(
+    businessId: string,
+    options: {from?: string; to?: string} = {},
   ): Promise<{
     count: number;
     units: number;
@@ -1067,6 +1085,17 @@ export class OrderService {
   async getProductPerformance(
     businessId: string,
     options?: {from?: string; to?: string},
+  ) {
+    return this.cache.wrap(
+      CacheKeys.ordersPerformance(businessId, options),
+      () => this.computeProductPerformance(businessId, options),
+      TTL.ORDERS_PERFORMANCE,
+    );
+  }
+
+  private async computeProductPerformance(
+    businessId: string,
+    options?: {from?: string; to?: string},
   ): Promise<
     {
       productId: string | null;
@@ -1144,6 +1173,14 @@ export class OrderService {
   }
 
   async getRevenue(businessId: string): Promise<number> {
+    return this.cache.wrap(
+      CacheKeys.ordersRevenue(businessId),
+      () => this.computeRevenue(businessId),
+      TTL.ORDERS_REVENUE,
+    );
+  }
+
+  private async computeRevenue(businessId: string): Promise<number> {
     const [row] = await this.dbService.db
       .select({
         sum: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
@@ -1160,6 +1197,17 @@ export class OrderService {
    * Returns exactly 12 numbers (Jan..Dec); months with no sales are 0.
    */
   async getMonthlySales(businessId: string, year: number): Promise<number[]> {
+    return this.cache.wrap(
+      CacheKeys.ordersMonthly(businessId, {year}),
+      () => this.computeMonthlySales(businessId, year),
+      TTL.ORDERS_MONTHLY,
+    );
+  }
+
+  private async computeMonthlySales(
+    businessId: string,
+    year: number,
+  ): Promise<number[]> {
     const rows = await this.dbService.db
       .select({
         month: sql<number>`EXTRACT(MONTH FROM ${orders.createdAt})`,
@@ -1188,6 +1236,17 @@ export class OrderService {
    * up. `cashierId === null` covers storefront/guest and pre-migration orders.
    */
   async getSalesByEmployee(
+    businessId: string,
+    options: {from?: string; to?: string} = {},
+  ) {
+    return this.cache.wrap(
+      CacheKeys.ordersByEmployee(businessId, options),
+      () => this.computeSalesByEmployee(businessId, options),
+      TTL.ORDERS_BY_EMPLOYEE,
+    );
+  }
+
+  private async computeSalesByEmployee(
     businessId: string,
     options: {from?: string; to?: string} = {},
   ): Promise<

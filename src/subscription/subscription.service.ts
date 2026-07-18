@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, ConflictException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, OnModuleInit, Inject } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import {
   subscriptionPlans,
@@ -8,10 +9,14 @@ import {
 } from '../database/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 @Injectable()
 export class SubscriptionService implements OnModuleInit {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   async onModuleInit() {
     // Seed subscription plans on module initialization
@@ -19,10 +24,17 @@ export class SubscriptionService implements OnModuleInit {
   }
 
   async getAllPlans(): Promise<SubscriptionPlan[]> {
-    return await this.dbService.db
-      .select()
-      .from(subscriptionPlans)
-      .orderBy(subscriptionPlans.price);
+    // Global plan catalogue — rarely changes; cached with a long TTL and
+    // invalidated on create/update/delete of a plan.
+    return this.cache.wrap(
+      CacheKeys.plansAll(),
+      () =>
+        this.dbService.db
+          .select()
+          .from(subscriptionPlans)
+          .orderBy(subscriptionPlans.price),
+      TTL.PLANS,
+    );
   }
 
   async getPlanByTier(tier: string): Promise<SubscriptionPlan | null> {
@@ -36,6 +48,18 @@ export class SubscriptionService implements OnModuleInit {
   }
 
   async getBusinessSubscription(
+    businessId: string,
+  ): Promise<(BusinessSubscription & { plan: SubscriptionPlan }) | null> {
+    // Per-business active subscription. Feeds both /current and /limits.
+    // Invalidated whenever the subscription is changed/cancelled below.
+    return this.cache.wrap(
+      CacheKeys.subscriptionCurrent(businessId),
+      () => this.fetchBusinessSubscription(businessId),
+      TTL.SUBSCRIPTION,
+    );
+  }
+
+  private async fetchBusinessSubscription(
     businessId: string,
   ): Promise<(BusinessSubscription & { plan: SubscriptionPlan }) | null> {
     const [subscription] = await this.dbService.db
@@ -102,6 +126,10 @@ export class SubscriptionService implements OnModuleInit {
       .values(newSubscription)
       .returning();
 
+    // Drop the stale cache before re-reading so the fresh subscription is
+    // returned (and re-cached) instead of the previous plan.
+    await this.cache.del(CacheKeys.subscriptionCurrent(businessId));
+
     // Get subscription with plan
     const result = await this.getBusinessSubscription(businessId);
     if (!result) {
@@ -148,6 +176,8 @@ export class SubscriptionService implements OnModuleInit {
           eq(businessSubscriptions.isActive, true),
         ),
       );
+
+    await this.cache.del(CacheKeys.subscriptionCurrent(businessId));
   }
 
   // Admin methods for managing plans
@@ -186,6 +216,8 @@ export class SubscriptionService implements OnModuleInit {
       .insert(subscriptionPlans)
       .values(newPlan)
       .returning();
+
+    await this.cache.del(CacheKeys.plansAll());
 
     return plan;
   }
@@ -229,6 +261,9 @@ export class SubscriptionService implements OnModuleInit {
       .where(eq(subscriptionPlans.id, planId))
       .returning();
 
+    await this.cache.del(CacheKeys.plansAll());
+    await this.cache.del(CacheKeys.planById(planId));
+
     return plan;
   }
 
@@ -248,9 +283,20 @@ export class SubscriptionService implements OnModuleInit {
       .update(subscriptionPlans)
       .set({ isActive: false })
       .where(eq(subscriptionPlans.id, planId));
+
+    await this.cache.del(CacheKeys.plansAll());
+    await this.cache.del(CacheKeys.planById(planId));
   }
 
   async getPlanById(planId: string): Promise<SubscriptionPlan | null> {
+    return this.cache.wrap(
+      CacheKeys.planById(planId),
+      () => this.fetchPlanById(planId),
+      TTL.PLANS,
+    );
+  }
+
+  private async fetchPlanById(planId: string): Promise<SubscriptionPlan | null> {
     const [plan] = await this.dbService.db
       .select()
       .from(subscriptionPlans)

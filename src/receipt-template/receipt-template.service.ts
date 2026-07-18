@@ -2,9 +2,12 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Inject,
 } from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {and, desc, eq, isNull} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
+import {CacheKeys, TTL} from '../cache/cache.util';
 import {
   receiptSettings,
   receiptTemplates,
@@ -21,7 +24,27 @@ import {
 
 @Injectable()
 export class ReceiptTemplateService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
+
+  /**
+   * Clear the cached resolve() results for a business. We can only target the
+   * default ('none') and, when known, a specific register — other register
+   * variants expire on their own via the short TTL. Called after any mutation.
+   */
+  private async invalidateResolve(
+    businessId: string,
+    registerId?: string | null,
+  ): Promise<void> {
+    await this.cache.del(CacheKeys.receiptTemplateResolve(businessId));
+    if (registerId) {
+      await this.cache.del(
+        CacheKeys.receiptTemplateResolve(businessId, registerId),
+      );
+    }
+  }
 
   /** All templates for a business, default first, then newest. */
   async findAll(businessId: string): Promise<ReceiptTemplate[]> {
@@ -56,6 +79,20 @@ export class ReceiptTemplateService {
    * the business-wide default. Lazily creates the default when missing.
    */
   async resolve(
+    businessId: string,
+    registerId?: string,
+  ): Promise<ReceiptTemplate> {
+    // Read on every receipt print — cache with a short TTL (template edits are
+    // rare; reflecting within ~a minute is fine). Keyed by register so a
+    // register-specific override doesn't collide with the default.
+    return this.cache.wrap(
+      CacheKeys.receiptTemplateResolve(businessId, registerId),
+      () => this.fetchResolved(businessId, registerId),
+      TTL.RECEIPT_RESOLVE,
+    );
+  }
+
+  private async fetchResolved(
     businessId: string,
     registerId?: string,
   ): Promise<ReceiptTemplate> {
@@ -105,6 +142,7 @@ export class ReceiptTemplateService {
         isDefault: makeDefault,
       })
       .returning();
+    await this.invalidateResolve(businessId, row.registerId);
     return row;
   }
 
@@ -151,6 +189,10 @@ export class ReceiptTemplateService {
         ),
       )
       .returning();
+    // registerId may have changed (e.g. promoted to default → null); clear both
+    // the previous and the new register variants.
+    await this.invalidateResolve(businessId, existing.registerId);
+    await this.invalidateResolve(businessId, row.registerId);
     return row;
   }
 
@@ -169,6 +211,7 @@ export class ReceiptTemplateService {
           eq(receiptTemplates.businessId, businessId),
         ),
       );
+    await this.invalidateResolve(businessId, existing.registerId);
   }
 
   /** Unset any current default (used before assigning a new one). */

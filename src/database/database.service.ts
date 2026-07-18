@@ -17,7 +17,20 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    this.client = postgres(this.connectionString, {max: 1});
+    // Connection pool size. The DB is remote, so each query carries network
+    // round-trip latency — a single connection serializes everything. A modest
+    // pool lets queries overlap that latency. Configurable via DB_POOL_MAX;
+    // keep it well under Postgres `max_connections` (default 100), accounting
+    // for other app instances sharing the same database.
+    const poolMax = Number(this.configService.get('DB_POOL_MAX')) || 10;
+
+    this.client = postgres(this.connectionString, {
+      max: poolMax,
+      // Drop idle connections after 30s so we don't hold sockets open needlessly.
+      idle_timeout: 30,
+      // Fail fast if the remote DB is unreachable rather than hanging requests.
+      connect_timeout: 10,
+    });
     this.db = drizzle(this.client, {schema});
   }
 

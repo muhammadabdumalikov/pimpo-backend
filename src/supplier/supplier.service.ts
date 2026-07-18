@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import {
   suppliers,
@@ -7,10 +8,14 @@ import {
 } from '../database/schema';
 import { eq, and, desc, ilike, or } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
+import { CacheKeys, TTL } from '../cache/cache.util';
 
 @Injectable()
 export class SupplierService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   async create(
     businessId: string,
@@ -30,10 +35,30 @@ export class SupplierService {
       .values(newSupplier)
       .returning();
 
+    await this.cache.del(CacheKeys.suppliers(businessId));
+
     return supplier;
   }
 
   async findAll(
+    businessId: string,
+    options?: { page?: number; limit?: number; search?: string },
+  ): Promise<{ suppliers: Supplier[]; total: number; page: number; limit: number }> {
+    const isPlainList =
+      !options?.page && !options?.limit && !options?.search;
+
+    if (isPlainList) {
+      return this.cache.wrap(
+        CacheKeys.suppliers(businessId),
+        () => this.findAllUncached(businessId, options),
+        TTL.SUPPLIERS,
+      );
+    }
+
+    return this.findAllUncached(businessId, options);
+  }
+
+  private async findAllUncached(
     businessId: string,
     options?: { page?: number; limit?: number; search?: string },
   ): Promise<{ suppliers: Supplier[]; total: number; page: number; limit: number }> {
@@ -107,6 +132,8 @@ export class SupplierService {
       )
       .returning();
 
+    await this.cache.del(CacheKeys.suppliers(businessId));
+
     return supplier;
   }
 
@@ -123,5 +150,7 @@ export class SupplierService {
       .where(
         and(eq(suppliers.id, supplierId), eq(suppliers.businessId, businessId)),
       );
+
+    await this.cache.del(CacheKeys.suppliers(businessId));
   }
 }
