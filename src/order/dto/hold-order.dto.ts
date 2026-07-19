@@ -29,6 +29,11 @@ export class HoldOrderDto {
   @IsOptional()
   userId?: string;
 
+  @ApiPropertyOptional({description: "Branch (do'kon); defaults to the default branch"})
+  @IsString()
+  @IsOptional()
+  branchId?: string;
+
   @ApiPropertyOptional({description: 'Customer name snapshot'})
   @IsString()
   @IsOptional()

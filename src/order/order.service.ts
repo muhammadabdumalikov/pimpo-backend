@@ -27,6 +27,7 @@ import {
 import {generateId} from '../utils/uuid';
 import {UserService} from '../user/user.service';
 import {SubscriptionService} from '../subscription/subscription.service';
+import {BranchService} from '../branch/branch.service';
 import {CreateOrderDto} from './dto/create-order.dto';
 import {HoldOrderDto} from './dto/hold-order.dto';
 import {UpdateOrderDto} from './dto/update-order.dto';
@@ -64,8 +65,20 @@ export class OrderService {
     private readonly dbService: DatabaseService,
     private readonly userService: UserService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly branchService: BranchService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
+
+  // Resolve the branch a sale belongs to: an explicit branch from the client,
+  // else the business default branch (created on first use). Enables per-store
+  // reporting; today checkout is single-branch so this is the default branch.
+  private async resolveBranchId(
+    businessId: string,
+    explicit?: string,
+  ): Promise<string> {
+    if (explicit) return explicit;
+    return (await this.branchService.ensureDefault(businessId)).id;
+  }
 
   // Resolve the acting account into a snapshotted cashier (id + display name).
   private async resolveCashier(
@@ -323,6 +336,7 @@ export class OrderService {
       settings?.costingMethod === 'FIFO' ? 'FIFO' : 'AVERAGE';
 
     const orderId = generateId();
+    const branchId = await this.resolveBranchId(businessId, dto.branchId);
 
     try {
       await this.dbService.db.transaction(async (tx) => {
@@ -450,6 +464,7 @@ export class OrderService {
           cashierId: cashier.id,
           cashierName: cashier.name,
           shiftId,
+          branchId,
         });
 
         await tx.insert(orderItems).values(
@@ -617,6 +632,7 @@ export class OrderService {
     const total = subtotal - discountAmount;
 
     const orderId = generateId();
+    const branchId = await this.resolveBranchId(businessId, dto.branchId);
     await this.dbService.db.transaction(async (tx) => {
       await tx.insert(orders).values({
         id: orderId,
@@ -641,6 +657,7 @@ export class OrderService {
         cashierId: cashier.id,
         cashierName: cashier.name,
         shiftId: null,
+        branchId,
       });
       await tx.insert(orderItems).values(
         lines.map((line) => ({
@@ -1084,7 +1101,7 @@ export class OrderService {
    */
   async getProductPerformance(
     businessId: string,
-    options?: {from?: string; to?: string},
+    options?: {from?: string; to?: string; branchId?: string},
   ) {
     return this.cache.wrap(
       CacheKeys.ordersPerformance(businessId, options),
@@ -1095,7 +1112,7 @@ export class OrderService {
 
   private async computeProductPerformance(
     businessId: string,
-    options?: {from?: string; to?: string},
+    options?: {from?: string; to?: string; branchId?: string},
   ): Promise<
     {
       productId: string | null;
@@ -1121,6 +1138,9 @@ export class OrderService {
       const to = new Date(options.to);
       to.setHours(23, 59, 59, 999);
       where.push(lte(orders.createdAt, to));
+    }
+    if (options?.branchId) {
+      where.push(eq(orders.branchId, options.branchId));
     }
 
     const rows = await this.dbService.db

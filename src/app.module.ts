@@ -23,6 +23,7 @@ import { ReceiptTemplateModule } from './receipt-template/receipt-template.modul
 import { ShiftModule } from './shift/shift.module';
 import { StockTakeModule } from './stock-take/stock-take.module';
 import { FinanceModule } from './finance/finance.module';
+import { ReportModule } from './report/report.module';
 import { JwtModule } from '@nestjs/jwt';
 import { CacheModule } from '@nestjs/cache-manager';
 
@@ -79,6 +80,7 @@ class JwtGlobalModule {}
     ShiftModule,
     StockTakeModule,
     FinanceModule,
+    ReportModule,
   ],
   controllers: [AppController],
   providers: [AppService],

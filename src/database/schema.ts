@@ -324,6 +324,12 @@ export const orders = pgTable(
     // Cashier shift this sale belongs to (null for storefront/guest and
     // pre-migration rows). The register is derived from the shift.
     shiftId: varchar('shift_id', {length: 36}),
+    // Branch ("do'kon") the sale belongs to. Defaults to the business default
+    // branch at checkout; enables per-store reporting. Null on pre-migration
+    // rows for businesses that had no branch yet (treated as "all stores").
+    branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

@@ -180,12 +180,14 @@ export class OrderController {
     description: 'ISO date (inclusive)',
   })
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
   async getProductPerformance(
     @CurrentBusiness() business: IBusiness,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('branchId') branchId?: string,
   ) {
-    return this.orderService.getProductPerformance(business.id, {from, to});
+    return this.orderService.getProductPerformance(business.id, {from, to, branchId});
   }
 
   @Get('sales-by-employee')

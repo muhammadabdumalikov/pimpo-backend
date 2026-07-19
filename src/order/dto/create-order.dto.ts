@@ -59,6 +59,15 @@ export class CreateOrderDto {
   @IsOptional()
   userId?: string;
 
+  @ApiPropertyOptional({
+    description:
+      "Branch (do'kon) the sale belongs to. Defaults to the business default " +
+      'branch when omitted.',
+  })
+  @IsString()
+  @IsOptional()
+  branchId?: string;
+
   @ApiProperty({
     description: 'Customer name snapshot (optional)',
     required: false,
