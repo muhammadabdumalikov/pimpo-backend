@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { userDebts, debtPayments, users, type UserDebt, type NewDebtPayment, type DebtPayment, type NewUserDebt, type User } from '../database/schema';
 import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, sql, inArray } from 'drizzle-orm';
@@ -28,7 +30,7 @@ export class DebtService {
     const currentDebtCount = await this.getCount(businessId);
 
     if (debtsLimit !== null && currentDebtCount >= debtsLimit) {
-      throw new ForbiddenException(`Debt limit of ${debtsLimit} reached for your current plan.`);
+      throw new AppException(ErrorCode.DEBT_LIMIT_REACHED, { limit: debtsLimit });
     }
 
     // Find or create user
@@ -36,7 +38,7 @@ export class DebtService {
     if (data.userId) {
       const user = await this.userService.findOne(businessId, data.userId);
       if (!user) {
-        throw new NotFoundException('User not found');
+        throw new AppException(ErrorCode.USER_NOT_FOUND);
       }
       userId = user.id;
     } else if (data.userName && data.phone) {
@@ -51,7 +53,7 @@ export class DebtService {
       }
       userId = user.id;
     } else {
-      throw new NotFoundException('User ID or user name and phone are required');
+      throw new AppException(ErrorCode.DEBT_USER_INFO_REQUIRED);
     }
 
     const newDebt: NewUserDebt = {
@@ -72,7 +74,7 @@ export class DebtService {
     // Fetch user data for response
     const user = await this.userService.findOne(businessId, userId);
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new AppException(ErrorCode.USER_NOT_FOUND);
     }
 
     return {
@@ -394,7 +396,7 @@ export class DebtService {
   ): Promise<UserDebt & { user: User }> {
     const existing = await this.findOne(businessId, debtId);
     if (!existing) {
-      throw new NotFoundException('Debt not found');
+      throw new AppException(ErrorCode.DEBT_NOT_FOUND);
     }
 
     // Handle user updates if userName or phone are provided
@@ -409,7 +411,7 @@ export class DebtService {
     if (data.userId && data.userId !== existing.userId) {
       const newUser = await this.userService.findOne(businessId, data.userId);
       if (!newUser) {
-        throw new NotFoundException('User not found');
+        throw new AppException(ErrorCode.USER_NOT_FOUND);
       }
     }
 
@@ -449,7 +451,7 @@ export class DebtService {
     const userId = data.userId || existing.userId;
     const user = await this.userService.findOne(businessId, userId);
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new AppException(ErrorCode.USER_NOT_FOUND);
     }
 
     return {
@@ -461,7 +463,7 @@ export class DebtService {
   async remove(businessId: string, debtId: string): Promise<void> {
     const existing = await this.findOne(businessId, debtId);
     if (!existing) {
-      throw new NotFoundException('Debt not found');
+      throw new AppException(ErrorCode.DEBT_NOT_FOUND);
     }
 
     await this.dbService.db
@@ -491,9 +493,7 @@ export class DebtService {
       await this.subscriptionService.getBusinessSubscription(businessId);
     const tier = subscription?.plan.tier ?? 'free';
     if (tier !== 'pro') {
-      throw new ForbiddenException(
-        'Installment debt payments are available on the Pro plan.',
-      );
+      throw new AppException(ErrorCode.DEBT_INSTALLMENT_PRO_ONLY);
     }
   }
 
@@ -559,7 +559,7 @@ export class DebtService {
   }> {
     await this.requirePro(businessId);
     const debt = await this.findOne(businessId, debtId);
-    if (!debt) throw new NotFoundException('Debt not found');
+    if (!debt) throw new AppException(ErrorCode.DEBT_NOT_FOUND);
 
     const paidMap = await this.getPaidByDebt(businessId, [debtId]);
     const alreadyPaid = paidMap.get(debtId) ?? 0;
@@ -568,13 +568,11 @@ export class DebtService {
     const amount = Number(data.amount);
 
     if (!(amount > 0)) {
-      throw new BadRequestException('Payment amount must be greater than 0.');
+      throw new AppException(ErrorCode.DEBT_PAYMENT_AMOUNT_INVALID);
     }
     // Small epsilon so exact-to-the-cent full payments aren't rejected.
     if (amount > remaining + 1e-9) {
-      throw new BadRequestException(
-        `Payment exceeds the remaining balance (${remaining.toFixed(2)}).`,
-      );
+      throw new AppException(ErrorCode.DEBT_PAYMENT_EXCEEDS_BALANCE, { remaining: remaining.toFixed(2) });
     }
 
     const newPayment: NewDebtPayment = {
@@ -610,7 +608,7 @@ export class DebtService {
   ): Promise<DebtPayment[]> {
     await this.requirePro(businessId);
     const debt = await this.findOne(businessId, debtId);
-    if (!debt) throw new NotFoundException('Debt not found');
+    if (!debt) throw new AppException(ErrorCode.DEBT_NOT_FOUND);
     return this.dbService.db
       .select()
       .from(debtPayments)
@@ -631,7 +629,7 @@ export class DebtService {
   ): Promise<void> {
     await this.requirePro(businessId);
     const debt = await this.findOne(businessId, debtId);
-    if (!debt) throw new NotFoundException('Debt not found');
+    if (!debt) throw new AppException(ErrorCode.DEBT_NOT_FOUND);
 
     const [existing] = await this.dbService.db
       .select()
@@ -644,7 +642,7 @@ export class DebtService {
         ),
       )
       .limit(1);
-    if (!existing) throw new NotFoundException('Payment not found');
+    if (!existing) throw new AppException(ErrorCode.DEBT_PAYMENT_NOT_FOUND);
 
     await this.dbService.db
       .delete(debtPayments)

@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import { brands, type Brand, type NewBrand } from '../database/schema';
@@ -106,7 +108,7 @@ export class BrandService {
   ): Promise<Brand> {
     const existing = await this.findOne(businessId, brandId);
     if (!existing) {
-      throw new NotFoundException('Brand not found');
+      throw new AppException(ErrorCode.BRAND_NOT_FOUND);
     }
 
     const [brand] = await this.dbService.db
@@ -123,7 +125,7 @@ export class BrandService {
   async remove(businessId: string, brandId: string): Promise<void> {
     const existing = await this.findOne(businessId, brandId);
     if (!existing) {
-      throw new NotFoundException('Brand not found');
+      throw new AppException(ErrorCode.BRAND_NOT_FOUND);
     }
 
     // Soft delete (products keep their brandId, which simply resolves to nothing).

@@ -8,8 +8,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -94,7 +95,7 @@ export class ReceiptController {
   ) {
     const receipt = await this.receiptService.findOne(business.id, id);
     if (!receipt) {
-      throw new NotFoundException('Receipt not found');
+      throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     }
     return receipt;
   }

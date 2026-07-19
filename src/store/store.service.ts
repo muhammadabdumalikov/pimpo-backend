@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppException } from '../common/errors/app.exception';
+import { ErrorCode } from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { products, type Product } from '../database/schema';
 import { eq, and, desc, count } from 'drizzle-orm';
@@ -52,7 +54,7 @@ export class StoreService {
       .limit(1);
 
     if (!product) {
-      throw new NotFoundException('Product not found');
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
     }
     return product;
   }

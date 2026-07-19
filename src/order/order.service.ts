@@ -1,14 +1,11 @@
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-  ForbiddenException,
-  Inject,
-} from '@nestjs/common';
+import {Injectable, Inject} from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {eq, and, desc, ilike, or, count, sql, gte, lte, inArray} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
+import {isStockTakeActive} from '../common/stock-take-lock';
 import {
   orders,
   orderItems,
@@ -125,7 +122,7 @@ export class OrderService {
         )
         .limit(1);
       if (!shift) {
-        throw new BadRequestException('Shift not found for this business');
+        throw new AppException(ErrorCode.SHIFT_NOT_FOUND_FOR_BUSINESS);
       }
       return shift.id;
     }
@@ -146,13 +143,9 @@ export class OrderService {
       if (activeRegisters.length === 1) {
         registerId = activeRegisters[0].id;
       } else if (activeRegisters.length === 0) {
-        throw new BadRequestException(
-          'No cash register found. Open a cash shift before selling.',
-        );
+        throw new AppException(ErrorCode.NO_CASH_REGISTER);
       } else {
-        throw new BadRequestException(
-          'Multiple registers exist — specify registerId for the sale.',
-        );
+        throw new AppException(ErrorCode.MULTIPLE_REGISTERS);
       }
     }
 
@@ -168,35 +161,17 @@ export class OrderService {
       )
       .limit(1);
     if (!openShift) {
-      throw new BadRequestException(
-        'No open cash shift for this register. Open a shift before selling.',
-      );
+      throw new AppException(ErrorCode.NO_OPEN_SHIFT_FOR_REGISTER);
     }
     return openShift.id;
   }
 
-  // Blocks a sale when an inventory count is in progress. Uses a raw guarded
-  // query so it stays decoupled from the stock-take module and never throws if
-  // that table hasn't been migrated yet (fail-open, see AGENT-SYNC.md).
+  // Blocks a sale when an inventory count is in progress. Cache-aside read
+  // (in-memory flag, DB as source of truth) so the hot checkout path avoids a
+  // query on every sale; fail-open if the stock_takes table isn't migrated yet.
   private async assertNoStockTakeInProgress(businessId: string): Promise<void> {
-    try {
-      // db.execute() returns either a bare row array or a { rows } object
-      // depending on the driver — normalise both (see the byMethod query below).
-      const result = (await this.dbService.db.execute(sql`
-        SELECT 1 FROM stock_takes
-        WHERE business_id = ${businessId} AND status = 'in_progress'
-        LIMIT 1
-      `)) as unknown;
-      const rows =
-        (result as {rows?: unknown[]}).rows ?? (result as unknown[]);
-      if (rows.length > 0) {
-        throw new ForbiddenException(
-          'A stock-take is in progress. Sales are frozen until it is completed.',
-        );
-      }
-    } catch (err) {
-      if (err instanceof ForbiddenException) throw err;
-      // Table missing / transient error — don't block the till.
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.SALES_FROZEN_STOCK_TAKE);
     }
   }
 
@@ -239,7 +214,7 @@ export class OrderService {
         .where(and(eq(users.businessId, businessId), eq(users.id, dto.userId)))
         .limit(1);
       if (!user) {
-        throw new BadRequestException('Customer not found for this business');
+        throw new AppException(ErrorCode.CUSTOMER_NOT_FOUND);
       }
       if (!customerName) customerName = user.name;
     }
@@ -256,17 +231,13 @@ export class OrderService {
           .from(userDebts)
           .where(eq(userDebts.businessId, businessId));
         if (debtCount >= debtsLimit) {
-          throw new ForbiddenException(
-            `Debt limit of ${debtsLimit} reached for your current plan.`,
-          );
+          throw new AppException(ErrorCode.DEBT_LIMIT_REACHED, {limit: debtsLimit});
         }
       }
       // Resolve the customer: existing id, or find-or-create by name + phone.
       if (!customerId) {
         if (!customerName || !dto.phone) {
-          throw new BadRequestException(
-            'A customer name and phone are required for a debt sale',
-          );
+          throw new AppException(ErrorCode.DEBT_SALE_CUSTOMER_REQUIRED);
         }
         const existing = await this.userService.findByPhone(
           businessId,
@@ -293,6 +264,10 @@ export class OrderService {
       priceIn: number;
       priceOut: number;
       quantity: number;
+      // Resolved tier: 'unit' prices per batch; 'wholesale'/'bundle' flat-price
+      // the whole line at priceOverride.
+      priceType: 'unit' | 'wholesale' | 'bundle';
+      priceOverride: number | null;
     }[] = [];
     let itemCount = 0;
 
@@ -308,7 +283,19 @@ export class OrderService {
         )
         .limit(1);
       if (!product) {
-        throw new BadRequestException(`Product not found: ${item.productId}`);
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: item.productId});
+      }
+      // Resolve the requested price tier to the product's configured price. An
+      // unset/unknown tier — or a tier the product hasn't priced — falls back to
+      // unit (per-batch) pricing, so the client can never dictate a raw amount.
+      let priceType: 'unit' | 'wholesale' | 'bundle' = 'unit';
+      let priceOverride: number | null = null;
+      if (item.priceTier === 'wholesale' && product.priceWholesale != null) {
+        priceType = 'wholesale';
+        priceOverride = Number(product.priceWholesale);
+      } else if (item.priceTier === 'bundle' && product.priceBundle != null) {
+        priceType = 'bundle';
+        priceOverride = Number(product.priceBundle);
       }
       planned.push({
         productId: product.id,
@@ -316,6 +303,8 @@ export class OrderService {
         priceIn: Number(product.priceIn),
         priceOut: Number(product.priceOut),
         quantity: item.quantity,
+        priceType,
+        priceOverride,
       });
       itemCount += item.quantity;
     }
@@ -347,6 +336,7 @@ export class OrderService {
           productId: string;
           productName: string;
           priceOut: string;
+          priceType: string;
           quantity: number;
           lineTotal: string;
           costIn: string;
@@ -364,12 +354,14 @@ export class OrderService {
             method,
             p.priceIn,
             p.priceOut,
+            p.priceOverride,
           );
           total += c.revenueTotal;
           lines.push({
             productId: p.productId,
             productName: p.productName,
             priceOut: money(c.priceOut),
+            priceType: p.priceType,
             quantity: p.quantity,
             lineTotal: money(c.revenueTotal),
             costIn: money(c.costIn),
@@ -475,6 +467,7 @@ export class OrderService {
             productId: line.productId,
             productName: line.productName,
             priceOut: line.priceOut,
+            priceType: line.priceType,
             quantity: line.quantity,
             lineTotal: line.lineTotal,
             costIn: line.costIn,
@@ -574,16 +567,18 @@ export class OrderService {
         .where(and(eq(users.businessId, businessId), eq(users.id, dto.userId)))
         .limit(1);
       if (!user) {
-        throw new BadRequestException('Customer not found for this business');
+        throw new AppException(ErrorCode.CUSTOMER_NOT_FOUND);
       }
       if (!customerName) customerName = user.name;
     }
 
-    // Snapshot each product at its current selling price.
+    // Snapshot each product at the chosen tier's selling price so resuming the
+    // parked cart restores the same prices.
     const lines: {
       productId: string;
       productName: string;
       priceOut: string;
+      priceType: string;
       quantity: number;
       lineTotal: string;
     }[] = [];
@@ -601,9 +596,19 @@ export class OrderService {
         )
         .limit(1);
       if (!product) {
-        throw new BadRequestException(`Product not found: ${item.productId}`);
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: item.productId});
       }
-      const priceOut = Number(product.priceOut);
+      // Same tier resolution as a completed sale (see create()): unknown/unpriced
+      // tiers fall back to the unit price.
+      let priceType: 'unit' | 'wholesale' | 'bundle' = 'unit';
+      let priceOut = Number(product.priceOut);
+      if (item.priceTier === 'wholesale' && product.priceWholesale != null) {
+        priceType = 'wholesale';
+        priceOut = Number(product.priceWholesale);
+      } else if (item.priceTier === 'bundle' && product.priceBundle != null) {
+        priceType = 'bundle';
+        priceOut = Number(product.priceBundle);
+      }
       const lineTotal = priceOut * item.quantity;
       subtotal += lineTotal;
       itemCount += item.quantity;
@@ -611,6 +616,7 @@ export class OrderService {
         productId: product.id,
         productName: product.name,
         priceOut: money(priceOut),
+        priceType,
         quantity: item.quantity,
         lineTotal: money(lineTotal),
       });
@@ -667,6 +673,7 @@ export class OrderService {
           productId: line.productId,
           productName: line.productName,
           priceOut: line.priceOut,
+          priceType: line.priceType,
           quantity: line.quantity,
           lineTotal: line.lineTotal,
           costIn: money(0),
@@ -739,7 +746,7 @@ export class OrderService {
   async createStore(dto: CreateOrderDto): Promise<OrderWithItems> {
     const firstId = dto.items[0]?.productId;
     if (!firstId) {
-      throw new BadRequestException('Order must contain at least one item');
+      throw new AppException(ErrorCode.ORDER_EMPTY);
     }
     const [product] = await this.dbService.db
       .select({businessId: products.businessId})
@@ -747,7 +754,7 @@ export class OrderService {
       .where(eq(products.id, firstId))
       .limit(1);
     if (!product) {
-      throw new BadRequestException(`Product not found: ${firstId}`);
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: firstId});
     }
     return this.create(product.businessId, {
       ...dto,
@@ -878,14 +885,12 @@ export class OrderService {
   ): Promise<OrderWithItems> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Order not found');
+      throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
     // A held sale never decremented stock, so promoting it here would create a
     // sale that no inventory ever backed. It must be completed via checkout.
     if (existing.status === 'Held' && status !== 'Cancelled') {
-      throw new BadRequestException(
-        'A held sale must be completed through checkout',
-      );
+      throw new AppException(ErrorCode.HELD_SALE_CHECKOUT_REQUIRED);
     }
     await this.dbService.db
       .update(orders)
@@ -905,7 +910,7 @@ export class OrderService {
   ): Promise<OrderWithItems> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Order not found');
+      throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
 
     const patch: Partial<typeof orders.$inferInsert> = {updatedAt: new Date()};
@@ -918,9 +923,7 @@ export class OrderService {
       // The debt record is tied to the customer — changing it here would
       // desync who owes the money.
       if (existing.paymentMethod === 'debt') {
-        throw new BadRequestException(
-          'The customer of a debt sale cannot be changed',
-        );
+        throw new AppException(ErrorCode.DEBT_SALE_CUSTOMER_IMMUTABLE);
       }
       if (dto.userId === null) {
         patch.userId = null;
@@ -934,7 +937,7 @@ export class OrderService {
           )
           .limit(1);
         if (!user) {
-          throw new BadRequestException('Customer not found for this business');
+          throw new AppException(ErrorCode.CUSTOMER_NOT_FOUND);
         }
         patch.userId = user.id;
         patch.customerName = dto.customerName ?? user.name;
@@ -968,7 +971,7 @@ export class OrderService {
           patch.cashierId = dto.cashierId;
           patch.cashierName = biz?.name ?? null;
         } else {
-          throw new BadRequestException('Cashier not found for this business');
+          throw new AppException(ErrorCode.CASHIER_NOT_FOUND);
         }
       }
     }
@@ -983,7 +986,7 @@ export class OrderService {
   async remove(businessId: string, id: string): Promise<void> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Order not found');
+      throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
     await this.dbService.db
       .delete(orders)

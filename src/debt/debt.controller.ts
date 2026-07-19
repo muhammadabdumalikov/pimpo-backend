@@ -10,8 +10,9 @@ import {
     UseGuards,
     HttpCode,
     HttpStatus,
-    NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
     ApiTags,
     ApiOperation,
@@ -159,7 +160,7 @@ export class DebtController {
     ) {
         const debt = await this.debtService.findOne(business.id, id);
         if (!debt) {
-            throw new NotFoundException('Debt not found');
+            throw new AppException(ErrorCode.DEBT_NOT_FOUND);
         }
         return debt;
     }

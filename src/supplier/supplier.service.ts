@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, Inject } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import {
@@ -121,7 +123,7 @@ export class SupplierService {
   ): Promise<Supplier> {
     const existing = await this.findOne(businessId, supplierId);
     if (!existing) {
-      throw new NotFoundException('Supplier not found');
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
     }
 
     const [supplier] = await this.dbService.db
@@ -140,7 +142,7 @@ export class SupplierService {
   async remove(businessId: string, supplierId: string): Promise<void> {
     const existing = await this.findOne(businessId, supplierId);
     if (!existing) {
-      throw new NotFoundException('Supplier not found');
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
     }
 
     // Soft delete (receipts keep their supplierName snapshot).

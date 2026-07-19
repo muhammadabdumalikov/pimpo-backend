@@ -2,8 +2,9 @@ import {
   Injectable,
   CanActivate,
   ExecutionContext,
-  ForbiddenException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { Request } from 'express';
 import { IAccount } from './types';
 
@@ -20,7 +21,7 @@ export class OwnerGuard implements CanActivate {
       .getRequest<Request & { account?: IAccount }>();
 
     if (request.account?.type !== 'business') {
-      throw new ForbiddenException('Only the business owner can perform this action');
+      throw new AppException(ErrorCode.OWNER_ONLY);
     }
     return true;
   }

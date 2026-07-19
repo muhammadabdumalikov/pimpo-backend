@@ -1,0 +1,1 @@
+ALTER TABLE "order_items" ADD COLUMN "price_type" varchar(20) DEFAULT 'unit' NOT NULL;

@@ -1,9 +1,9 @@
 import {
   Injectable,
-  NotFoundException,
-  ConflictException,
   Inject,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { eq, and, asc } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
@@ -50,7 +50,7 @@ export class RoleService {
       .where(and(eq(roles.businessId, businessId), eq(roles.name, data.name)))
       .limit(1);
     if (existing) {
-      throw new ConflictException('A role with this name already exists');
+      throw new AppException(ErrorCode.ROLE_NAME_EXISTS);
     }
 
     const newRole: NewRole = {
@@ -75,7 +75,7 @@ export class RoleService {
   ): Promise<Role> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Role not found');
+      throw new AppException(ErrorCode.ROLE_NOT_FOUND);
     }
 
     if (data.name && data.name !== existing.name) {
@@ -85,7 +85,7 @@ export class RoleService {
         .where(and(eq(roles.businessId, businessId), eq(roles.name, data.name)))
         .limit(1);
       if (clash) {
-        throw new ConflictException('A role with this name already exists');
+        throw new AppException(ErrorCode.ROLE_NAME_EXISTS);
       }
     }
 
@@ -106,7 +106,7 @@ export class RoleService {
   async remove(businessId: string, id: string): Promise<void> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Role not found');
+      throw new AppException(ErrorCode.ROLE_NOT_FOUND);
     }
 
     const [assigned] = await this.dbService.db
@@ -115,9 +115,7 @@ export class RoleService {
       .where(and(eq(staff.businessId, businessId), eq(staff.roleId, id)))
       .limit(1);
     if (assigned) {
-      throw new ConflictException(
-        'Cannot delete a role that is still assigned to staff',
-      );
+      throw new AppException(ErrorCode.ROLE_ASSIGNED_DELETE_FORBIDDEN);
     }
 
     await this.dbService.db

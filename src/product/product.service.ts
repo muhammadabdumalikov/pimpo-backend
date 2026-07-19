@@ -1,9 +1,6 @@
-import {
-  Injectable,
-  NotFoundException,
-  ConflictException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { AppException } from '../common/errors/app.exception';
+import { ErrorCode } from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import {
   products,
@@ -34,7 +31,7 @@ export class ProductService {
     quantityType?: string;
     image?: string;
     categoryId?: string;
-    markupPercent?: string;
+    priceBundle?: string;
     lowStockThreshold?: number;
     brandId?: string;
     supplierId?: string;
@@ -45,9 +42,7 @@ export class ProductService {
     if (productsLimit !== null) {
       const currentCount = await this.getCount(businessId);
       if (currentCount >= productsLimit) {
-        throw new ForbiddenException(
-          `Product limit of ${productsLimit} reached for your current plan.`,
-        );
+        throw new AppException(ErrorCode.PRODUCT_LIMIT_REACHED, { limit: productsLimit });
       }
     }
 
@@ -65,7 +60,7 @@ export class ProductService {
         .limit(1);
 
       if (existing.length > 0) {
-        throw new ConflictException('Product with this code already exists');
+        throw new AppException(ErrorCode.PRODUCT_CODE_EXISTS);
       }
     }
 
@@ -81,7 +76,7 @@ export class ProductService {
       quantityType: data.quantityType || null,
       image: data.image || null,
       categoryId: data.categoryId || null,
-      markupPercent: data.markupPercent || null,
+      priceBundle: data.priceBundle || null,
       lowStockThreshold: data.lowStockThreshold ?? null,
       brandId: data.brandId || null,
       supplierId: data.supplierId || null,
@@ -153,7 +148,7 @@ export class ProductService {
       priceOut?: string;
       quantity?: number;
       quantityType?: string;
-      markupPercent?: string;
+      priceBundle?: string;
       lowStockThreshold?: number;
     }>,
   ): Promise<{
@@ -167,9 +162,7 @@ export class ProductService {
       await this.subscriptionService.getBusinessSubscription(businessId);
     const tier = subscription?.plan.tier ?? 'free';
     if (tier === 'free') {
-      throw new ForbiddenException(
-        'Bulk import is not available on the free plan.',
-      );
+      throw new AppException(ErrorCode.PRODUCT_BULK_IMPORT_PRO_ONLY);
     }
 
     const skipped: Array<{ row: number; reason: string }> = [];
@@ -270,7 +263,7 @@ export class ProductService {
         quantityType: data.quantityType?.trim() || null,
         image: null,
         categoryId: null,
-        markupPercent: data.markupPercent?.toString().trim() || null,
+        priceBundle: data.priceBundle?.toString().trim() || null,
         lowStockThreshold,
         brandId: null,
         supplierId: null,
@@ -407,7 +400,7 @@ export class ProductService {
   ): Promise<Product> {
     const existing = await this.findOne(businessId, productId);
     if (!existing) {
-      throw new NotFoundException('Product not found');
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
     }
 
     // Check if code already exists for another product
@@ -425,7 +418,7 @@ export class ProductService {
         .limit(1);
 
       if (codeExists.length > 0) {
-        throw new ConflictException('Product with this code already exists');
+        throw new AppException(ErrorCode.PRODUCT_CODE_EXISTS);
       }
     }
 
@@ -449,7 +442,7 @@ export class ProductService {
   async remove(businessId: string, productId: string): Promise<void> {
     const existing = await this.findOne(businessId, productId);
     if (!existing) {
-      throw new NotFoundException('Product not found');
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
     }
 
     // Soft delete

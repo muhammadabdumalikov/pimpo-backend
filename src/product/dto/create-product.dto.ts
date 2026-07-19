@@ -80,13 +80,13 @@ export class CreateProductDto {
   categoryId?: string;
 
   @ApiProperty({
-    description: 'Markup over cost as a percent (e.g. "22.50"). UI helper only.',
-    example: '22.50',
+    description: 'Bundle/set selling price ("to\'plam narxi"). Optional.',
+    example: '6000.00',
     required: false,
   })
   @IsString()
   @IsOptional()
-  markupPercent?: string;
+  priceBundle?: string;
 
   @ApiProperty({
     description: 'Reorder point — flag "low stock" when quantity <= this.',

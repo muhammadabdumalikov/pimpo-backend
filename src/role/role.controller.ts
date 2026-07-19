@@ -9,8 +9,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -50,7 +51,7 @@ export class RoleController {
     @Param('id') id: string,
   ) {
     const role = await this.roleService.findOne(business.id, id);
-    if (!role) throw new NotFoundException('Role not found');
+    if (!role) throw new AppException(ErrorCode.ROLE_NOT_FOUND);
     return role;
   }
 

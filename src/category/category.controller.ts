@@ -9,8 +9,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -55,7 +56,7 @@ export class CategoryController {
   @ApiResponse({ status: 404, description: 'Not found' })
   async findOne(@CurrentBusiness() business: IBusiness, @Param('id') id: string) {
     const cat = await this.categoryService.findOne(business.id, id);
-    if (!cat) throw new NotFoundException('Category not found');
+    if (!cat) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
     return cat;
   }
 

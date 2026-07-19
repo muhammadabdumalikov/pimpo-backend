@@ -1,8 +1,8 @@
 import {
   Injectable,
-  NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import {
   goodsReceipts,
@@ -73,6 +73,7 @@ interface ReceiptLine {
   currency: string;
   priceOut: string;
   priceWholesale: string | null;
+  priceBundle: string | null;
   quantity: number;
   lineTotal: string;
 }
@@ -134,7 +135,7 @@ export class ReceiptService {
         )
         .limit(1);
       if (!supplier) {
-        throw new BadRequestException(`Supplier not found: ${dto.supplierId}`);
+        throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND_BY_ID, { supplierId: dto.supplierId });
       }
       supplierName = supplier.name;
     }
@@ -154,7 +155,7 @@ export class ReceiptService {
     // always stored in base UZS.
     const currency = dto.currency ?? 'UZS';
     if (currency === 'USD' && (!dto.usdRate || dto.usdRate <= 0)) {
-      throw new BadRequestException('usdRate is required for a USD receipt');
+      throw new AppException(ErrorCode.RECEIPT_USD_RATE_REQUIRED);
     }
     const rateToBase = currency === 'USD' ? Number(dto.usdRate) : 1;
 
@@ -169,8 +170,10 @@ export class ReceiptService {
     // (otherwise a second line for the same product would overwrite the first).
     const received = new Map<string, { qty: number; value: number }>();
     const lines: ReceiptLine[] = [];
-    // Wholesale price entered per product (last line wins) → updates the product.
+    // Wholesale + bundle prices entered per product (last line wins) → update
+    // the product's tiers.
     const wholesaleByProduct = new Map<string, string>();
+    const bundleByProduct = new Map<string, string>();
     let total = 0;
     let itemCount = 0;
 
@@ -188,7 +191,7 @@ export class ReceiptService {
           )
           .limit(1);
         if (!product) {
-          throw new BadRequestException(`Product not found: ${item.productId}`);
+          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, { productId: item.productId });
         }
         info = { name: product.name, priceOut: product.priceOut };
         productInfo.set(item.productId, info);
@@ -204,6 +207,11 @@ export class ReceiptService {
         item.priceWholesale != null ? money(item.priceWholesale) : null;
       if (priceWholesale != null) {
         wholesaleByProduct.set(item.productId, priceWholesale);
+      }
+      const priceBundle =
+        item.priceBundle != null ? money(item.priceBundle) : null;
+      if (priceBundle != null) {
+        bundleByProduct.set(item.productId, priceBundle);
       }
       // Line total is in the receipt currency; the base cost (UZS) drives the
       // inventory batch + weighted-average product cost.
@@ -221,6 +229,7 @@ export class ReceiptService {
         currency,
         priceOut: money(priceOut),
         priceWholesale,
+        priceBundle,
         quantity: item.quantity,
         lineTotal: money(lineTotal),
       });
@@ -264,6 +273,7 @@ export class ReceiptService {
           currency: line.currency,
           priceOut: line.priceOut,
           priceWholesale: line.priceWholesale,
+          priceBundle: line.priceBundle,
           quantity: line.quantity,
           lineTotal: line.lineTotal,
         })),
@@ -279,6 +289,7 @@ export class ReceiptService {
           received,
           productInfo,
           wholesaleByProduct,
+          bundleByProduct,
           repriceExistingDefault,
         );
       }
@@ -304,6 +315,7 @@ export class ReceiptService {
       { name: string; priceOut: string; repriceOverride?: boolean }
     >,
     wholesaleByProduct: Map<string, string>,
+    bundleByProduct: Map<string, string>,
     repriceExistingDefault: boolean,
   ): Promise<void> {
     // Push entered wholesale prices onto the products (last value per product).
@@ -311,6 +323,15 @@ export class ReceiptService {
       await tx
         .update(products)
         .set({ priceWholesale, updatedAt: new Date() })
+        .where(
+          and(eq(products.businessId, businessId), eq(products.id, productId)),
+        );
+    }
+    // Same for entered bundle ("to'plam") prices.
+    for (const [productId, priceBundle] of bundleByProduct) {
+      await tx
+        .update(products)
+        .set({ priceBundle, updatedAt: new Date() })
         .where(
           and(eq(products.businessId, businessId), eq(products.id, productId)),
         );
@@ -431,9 +452,9 @@ export class ReceiptService {
         ),
       )
       .limit(1);
-    if (!receipt) throw new NotFoundException('Receipt not found');
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     if (receipt.status !== 'draft') {
-      throw new BadRequestException('Only a draft receipt can be received');
+      throw new AppException(ErrorCode.RECEIPT_ONLY_DRAFT_RECEIVABLE);
     }
 
     const items = await this.dbService.db
@@ -462,6 +483,7 @@ export class ReceiptService {
       { name: string; priceOut: string; repriceOverride?: boolean }
     >();
     const wholesaleByProduct = new Map<string, string>();
+    const bundleByProduct = new Map<string, string>();
 
     for (const it of items) {
       if (!it.productId) continue;
@@ -487,6 +509,9 @@ export class ReceiptService {
       if (it.priceWholesale != null) {
         wholesaleByProduct.set(it.productId, it.priceWholesale);
       }
+      if (it.priceBundle != null) {
+        bundleByProduct.set(it.productId, it.priceBundle);
+      }
       const priceInBase = Number(it.priceIn) * rateToBase;
       lines.push({
         itemId: it.id,
@@ -497,6 +522,7 @@ export class ReceiptService {
         currency: it.currency ?? 'UZS',
         priceOut,
         priceWholesale: it.priceWholesale,
+        priceBundle: it.priceBundle,
         quantity: it.quantity,
         lineTotal: it.lineTotal,
       });
@@ -514,6 +540,7 @@ export class ReceiptService {
         received,
         productInfo,
         wholesaleByProduct,
+        bundleByProduct,
         repriceExistingDefault,
       );
       await tx
@@ -671,9 +698,9 @@ export class ReceiptService {
         ),
       )
       .limit(1);
-    if (!receipt) throw new NotFoundException('Receipt not found');
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     if (receipt.status === 'draft') {
-      throw new BadRequestException('Receive the draft before adding a payment');
+      throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT);
     }
 
     const cashier = await this.resolveCashier(account);
@@ -776,9 +803,9 @@ export class ReceiptService {
         ),
       )
       .limit(1);
-    if (!receipt) throw new NotFoundException('Receipt not found');
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     if (receipt.status === 'draft') {
-      throw new BadRequestException('Receive the draft before returning goods');
+      throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN);
     }
 
     // Aggregate requested quantities per product (sum duplicate lines).
@@ -791,7 +818,7 @@ export class ReceiptService {
       );
     }
     if (requested.size === 0) {
-      throw new BadRequestException('Nothing to return');
+      throw new AppException(ErrorCode.RECEIPT_NOTHING_TO_RETURN);
     }
 
     // Receipt lines (product names) + the receipt's open batches for reversal.
@@ -845,14 +872,12 @@ export class ReceiptService {
     for (const [productId, qty] of requested) {
       const name = nameByProduct.get(productId);
       if (!name) {
-        throw new BadRequestException(`Product not on this receipt: ${productId}`);
+        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, { productId });
       }
       const pb = batchesByProduct.get(productId) ?? [];
       const available = pb.reduce((s, b) => s + b.qtyRemaining, 0);
       if (qty > available) {
-        throw new BadRequestException(
-          `Cannot return ${qty} of "${name}"; only ${available} left in stock from this receipt`,
-        );
+        throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, { qty, name, available });
       }
       let toReturn = qty;
       let lineValue = 0;

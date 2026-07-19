@@ -1,9 +1,9 @@
 import {
-  BadRequestException,
   Injectable,
-  NotFoundException,
   Inject,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {and, desc, eq, isNull} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
@@ -70,7 +70,7 @@ export class ReceiptTemplateService {
         ),
       )
       .limit(1);
-    if (!row) throw new NotFoundException('Receipt template not found');
+    if (!row) throw new AppException(ErrorCode.RECEIPT_TEMPLATE_NOT_FOUND);
     return row;
   }
 
@@ -199,9 +199,7 @@ export class ReceiptTemplateService {
   async remove(businessId: string, id: string): Promise<void> {
     const existing = await this.findOne(businessId, id);
     if (existing.isDefault) {
-      throw new BadRequestException(
-        'Cannot delete the default template. Set another as default first.',
-      );
+      throw new AppException(ErrorCode.RECEIPT_TEMPLATE_DEFAULT_DELETE_FORBIDDEN);
     }
     await this.dbService.db
       .delete(receiptTemplates)

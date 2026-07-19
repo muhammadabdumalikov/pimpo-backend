@@ -1,0 +1,1 @@
+ALTER TABLE "goods_receipt_items" ADD COLUMN "price_bundle" numeric(10, 2);

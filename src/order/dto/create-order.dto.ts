@@ -23,6 +23,17 @@ export class OrderItemDto {
   @IsInt()
   @Min(1)
   quantity: number;
+
+  @ApiPropertyOptional({
+    description:
+      "Price tier to sell this line at: 'unit' (per-piece / dona, default), " +
+      "'wholesale' (ulgurji), or 'bundle' (to'plam). The server resolves it to " +
+      'the product\'s configured price; unknown/unset tiers fall back to unit.',
+    enum: ['unit', 'wholesale', 'bundle'],
+  })
+  @IsOptional()
+  @IsIn(['unit', 'wholesale', 'bundle'])
+  priceTier?: 'unit' | 'wholesale' | 'bundle';
 }
 
 export class PaymentSplitDto {

@@ -9,8 +9,9 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -134,7 +135,7 @@ export class BusinessController {
   async findOne(@Param('id') id: string) {
     const business = await this.businessService.findById(id);
     if (!business) {
-      throw new NotFoundException('Business not found');
+      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
     }
     // Remove password from response
     const { password: _, ...businessWithoutPassword } = business;

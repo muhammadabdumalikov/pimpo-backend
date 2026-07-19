@@ -1,8 +1,8 @@
 import {
   Injectable,
-  NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { branches, type Branch } from '../database/schema';
 import { eq, and, asc, desc } from 'drizzle-orm';
@@ -97,7 +97,7 @@ export class BranchService {
   async remove(businessId: string, id: string): Promise<void> {
     const existing = await this.findOneOrThrow(businessId, id);
     if (existing.isDefault) {
-      throw new BadRequestException("Asosiy do'konni o'chirib bo'lmaydi");
+      throw new AppException(ErrorCode.BRANCH_MAIN_DELETE_FORBIDDEN);
     }
     await this.dbService.db
       .update(branches)
@@ -114,7 +114,7 @@ export class BranchService {
       .from(branches)
       .where(and(eq(branches.id, id), eq(branches.businessId, businessId)))
       .limit(1);
-    if (!existing) throw new NotFoundException('Branch not found');
+    if (!existing) throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
     return existing;
   }
 }

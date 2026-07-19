@@ -29,7 +29,9 @@ function round2(value: number): number {
  * Consume `quantity` units of a product from its open inventory batches,
  * oldest-first (FIFO), and value the COGS for the line.
  *
- * - Selling price is always taken per batch (`batch.priceOut`).
+ * - Selling price is normally taken per batch (`batch.priceOut`). When
+ *   `priceOverride` is given (a chosen wholesale/bundle tier), the whole line is
+ *   valued at that flat unit price instead — cost and stock are unaffected.
  * - Unit cost depends on the method: FIFO uses each batch's own `priceIn`;
  *   AVERAGE uses the product's current weighted-average cost (`fallbackPriceIn`).
  * - If the batches run dry before the quantity is met (oversell), the shortfall
@@ -46,6 +48,7 @@ export async function consumeBatches(
   method: CostingMethod,
   fallbackPriceIn: number,
   fallbackPriceOut: number,
+  priceOverride?: number | null,
 ): Promise<LineCosting> {
   const batches = await tx
     .select({
@@ -90,6 +93,12 @@ export async function consumeBatches(
   if (need > 0) {
     costTotal += need * fallbackPriceIn;
     revenueTotal += need * fallbackPriceOut;
+  }
+
+  // A chosen tier (wholesale/bundle) prices the whole line flat, replacing the
+  // per-batch revenue; COGS and stock consumption above are unaffected.
+  if (priceOverride != null) {
+    revenueTotal = priceOverride * quantity;
   }
 
   costTotal = round2(costTotal);

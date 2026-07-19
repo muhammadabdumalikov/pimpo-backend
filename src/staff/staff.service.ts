@@ -1,10 +1,8 @@
 import {
   Injectable,
-  NotFoundException,
-  ConflictException,
-  BadRequestException,
-  ForbiddenException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { eq, and, asc } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service';
 import { staff, roles, type Staff, type NewStaff } from '../database/schema';
@@ -63,7 +61,7 @@ export class StaffService {
       .where(and(eq(roles.businessId, businessId), eq(roles.id, roleId)))
       .limit(1);
     if (!role) {
-      throw new BadRequestException('Role not found for this business');
+      throw new AppException(ErrorCode.STAFF_ROLE_NOT_FOUND);
     }
   }
 
@@ -76,9 +74,7 @@ export class StaffService {
     const { usersLimit } =
       await this.subscriptionService.getSubscriptionLimits(businessId);
     if (usersLimit !== null && (await this.countStaff(businessId)) + 1 >= usersLimit) {
-      throw new ForbiddenException(
-        `User limit of ${usersLimit} reached for your current plan.`,
-      );
+      throw new AppException(ErrorCode.USER_LIMIT_REACHED, { limit: usersLimit });
     }
 
     await this.assertRoleBelongsToBusiness(businessId, data.roleId);
@@ -89,7 +85,7 @@ export class StaffService {
       .where(eq(staff.login, data.login))
       .limit(1);
     if (existing) {
-      throw new ConflictException('Login already exists');
+      throw new AppException(ErrorCode.STAFF_LOGIN_EXISTS);
     }
 
     const newStaff: NewStaff = {
@@ -115,7 +111,7 @@ export class StaffService {
   ): Promise<StaffView> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Staff not found');
+      throw new AppException(ErrorCode.STAFF_NOT_FOUND);
     }
     if (data.roleId) {
       await this.assertRoleBelongsToBusiness(businessId, data.roleId);
@@ -140,7 +136,7 @@ export class StaffService {
   async remove(businessId: string, id: string): Promise<void> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
-      throw new NotFoundException('Staff not found');
+      throw new AppException(ErrorCode.STAFF_NOT_FOUND);
     }
     await this.dbService.db
       .delete(staff)

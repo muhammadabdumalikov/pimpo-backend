@@ -9,8 +9,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -65,7 +66,7 @@ export class SubscriptionController {
   async getPlanById(@Param('id') planId: string) {
     const plan = await this.subscriptionService.getPlanById(planId);
     if (!plan) {
-      throw new NotFoundException(`Plan with id ${planId} not found`);
+      throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND, { planId });
     }
     return plan;
   }

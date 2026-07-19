@@ -112,14 +112,13 @@ export const products = pgTable('products', {
   // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
   // catalog; null when the product has no separate wholesale tier.
   priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
+  // Optional bundle/set ("to'plam") selling price — used when the item is sold as
+  // a pack/set. Null when the product has no separate bundle tier.
+  priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
   quantity: integer('quantity').default(0).notNull(),
   quantityType: varchar('quantity_type', {length: 50}),
   image: varchar('image', {length: 500}),
   categoryId: varchar('category_id', {length: 100}),
-  // Markup over cost, as a percent (e.g. 22.50 = +22.5%). UI-only helper that
-  // ties priceIn → priceOut; stored so it can be shown/edited later. Nullable
-  // for products priced directly without a markup.
-  markupPercent: decimal('markup_percent', {precision: 6, scale: 2}),
   // Reorder point: when quantity drops to or below this, the product is flagged
   // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
   lowStockThreshold: integer('low_stock_threshold'),
@@ -358,6 +357,10 @@ export const orderItems = pgTable('order_items', {
   // Weighted selling price of the line at sale time (lineTotal / quantity).
   // With batch pricing a single line can span batches at different prices.
   priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+  // Which price tier this line was sold at: 'unit' (per-piece / "dona", the
+  // default), 'wholesale' (ulgurji), or 'bundle' (to'plam). priceOut above holds
+  // the resolved price for whichever tier was chosen.
+  priceType: varchar('price_type', {length: 20}).notNull().default('unit'),
   quantity: integer('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   // COGS snapshot at sale time (immutable history, independent of later price
@@ -532,11 +535,13 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
   // Entry currency of priceIn (snapshot of the receipt currency).
   currency: varchar('currency', {length: 3}).notNull().default('UZS'),
-  // Retail + wholesale selling prices entered on this line (snapshot). priceOut
-  // drives the batch/product selling price; priceWholesale updates the product's
-  // wholesale tier. Nullable for older receipts.
+  // Retail + wholesale + bundle selling prices entered on this line (snapshot).
+  // priceOut drives the batch/product selling price; priceWholesale/priceBundle
+  // update the product's wholesale ("ulgurji") / bundle ("to'plam") tiers.
+  // Nullable for older receipts / tiers left blank.
   priceOut: decimal('price_out', {precision: 10, scale: 2}),
   priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
+  priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
   quantity: integer('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),

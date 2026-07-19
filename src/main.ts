@@ -2,6 +2,7 @@ import {ValidationPipe} from '@nestjs/common';
 import {NestFactory} from '@nestjs/core';
 import {DocumentBuilder, SwaggerModule} from '@nestjs/swagger';
 import {AppModule} from './app.module';
+import {AllExceptionsFilter} from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,6 +12,10 @@ async function bootstrap() {
     origin: true,
     credentials: true,
   });
+
+  // Uniform error envelope for every failed request: { statusCode, code, message }.
+  // The frontend localizes by `code`; `message` is an English fallback.
+  app.useGlobalFilters(new AllExceptionsFilter());
 
   // Enable validation pipes
   app.useGlobalPipes(

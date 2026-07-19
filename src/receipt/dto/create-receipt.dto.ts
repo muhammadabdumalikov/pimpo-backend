@@ -51,6 +51,16 @@ export class ReceiptItemDto {
 
   @ApiPropertyOptional({
     description:
+      "Bundle/set (\"to'plam\") selling price. When given, updates the product bundle price.",
+    example: 5000,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  priceBundle?: number;
+
+  @ApiPropertyOptional({
+    description:
       'When the new selling price is higher than the current one, whether to ' +
       'also reprice the existing open batches up (true) or keep their old ' +
       'price (false). Overrides the business priceIncreaseMode default.',

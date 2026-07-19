@@ -190,6 +190,27 @@
       "when": 1784442511490,
       "tag": "0026_orders_branch_id",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784455636222,
+      "tag": "0027_add_price_bundle_drop_markup",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784457983534,
+      "tag": "0028_order_items_price_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784460060783,
+      "tag": "0029_receipt_items_price_bundle",
+      "breakpoints": true
     }
   ]
 }

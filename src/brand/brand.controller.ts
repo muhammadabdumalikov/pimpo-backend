@@ -10,8 +10,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -76,7 +77,7 @@ export class BrandController {
   ) {
     const brand = await this.brandService.findOne(business.id, id);
     if (!brand) {
-      throw new NotFoundException('Brand not found');
+      throw new AppException(ErrorCode.BRAND_NOT_FOUND);
     }
     return brand;
   }

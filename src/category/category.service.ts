@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, ConflictException, Inject } from '@nestjs/common';
+import { Injectable, Inject } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import { categories, type Category, type NewCategory } from '../database/schema';
@@ -23,7 +25,7 @@ export class CategoryService {
       ))
       .limit(1);
     if (existing.length > 0) {
-      throw new ConflictException('Category with this id already exists');
+      throw new AppException(ErrorCode.CATEGORY_ALREADY_EXISTS);
     }
     const newCat: NewCategory = {
       id: data.id,
@@ -70,7 +72,7 @@ export class CategoryService {
   ): Promise<Category> {
     const existing = await this.findOne(businessId, categoryId);
     if (!existing) {
-      throw new NotFoundException('Category not found');
+      throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
     }
     const [cat] = await this.dbService.db
       .update(categories)
@@ -88,7 +90,7 @@ export class CategoryService {
   async remove(businessId: string, categoryId: string): Promise<void> {
     const existing = await this.findOne(businessId, categoryId);
     if (!existing) {
-      throw new NotFoundException('Category not found');
+      throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
     }
     await this.dbService.db
       .update(categories)

@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { users, type User, type NewUser } from '../database/schema';
 import { eq, and, desc, ilike, or, count } from 'drizzle-orm';
@@ -28,7 +30,7 @@ export class UserService {
       .limit(1);
 
     if (existing.length > 0) {
-      throw new ConflictException('User with this phone number already exists');
+      throw new AppException(ErrorCode.USER_PHONE_EXISTS);
     }
 
     const newUser: NewUser = {
@@ -140,7 +142,7 @@ export class UserService {
   ): Promise<User> {
     const existing = await this.findOne(businessId, userId);
     if (!existing) {
-      throw new NotFoundException('User not found');
+      throw new AppException(ErrorCode.USER_NOT_FOUND);
     }
 
     // Check if phone is being updated and conflicts with another user
@@ -158,7 +160,7 @@ export class UserService {
         .limit(1);
 
       if (phoneExists.length > 0) {
-        throw new ConflictException('User with this phone number already exists');
+        throw new AppException(ErrorCode.USER_PHONE_EXISTS);
       }
     }
 
@@ -182,7 +184,7 @@ export class UserService {
   async remove(businessId: string, userId: string): Promise<void> {
     const existing = await this.findOne(businessId, userId);
     if (!existing) {
-      throw new NotFoundException('User not found');
+      throw new AppException(ErrorCode.USER_NOT_FOUND);
     }
 
     // Soft delete

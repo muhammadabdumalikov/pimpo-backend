@@ -11,8 +11,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -227,7 +228,7 @@ export class OrderController {
     @Param('id') id: string,
   ) {
     const order = await this.orderService.findOne(business.id, id);
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     return order;
   }
 

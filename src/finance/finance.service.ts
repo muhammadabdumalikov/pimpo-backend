@@ -1,8 +1,8 @@
 import {
   Injectable,
-  NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
 import {
   accounts,
@@ -173,7 +173,7 @@ export class FinanceService {
       .from(accounts)
       .where(and(eq(accounts.id, accountId), eq(accounts.businessId, businessId)))
       .limit(1);
-    if (!existing) throw new NotFoundException('Account not found');
+    if (!existing) throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
 
     const [account] = await this.db
       .update(accounts)
@@ -192,7 +192,7 @@ export class FinanceService {
       .from(accounts)
       .where(and(eq(accounts.id, accountId), eq(accounts.businessId, businessId)))
       .limit(1);
-    if (!account) throw new NotFoundException('Account not found');
+    if (!account) throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
     return account;
   }
 
@@ -266,7 +266,7 @@ export class FinanceService {
         ),
       )
       .limit(1);
-    if (!existing) throw new NotFoundException('Category not found');
+    if (!existing) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
 
     const [category] = await this.db
       .update(financialCategories)
@@ -330,7 +330,7 @@ export class FinanceService {
           ),
         )
         .limit(1);
-      if (!cat) throw new NotFoundException('Category not found');
+      if (!cat) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
       categoryName = cat.name;
     }
 
@@ -387,7 +387,7 @@ export class FinanceService {
     account?: IAccount,
   ): Promise<FinancialTransaction> {
     if (dto.fromAccountId === dto.toAccountId) {
-      throw new BadRequestException('Source and destination must differ');
+      throw new AppException(ErrorCode.FINANCE_TRANSFER_SAME_ACCOUNT);
     }
     const from = await this.loadAccount(businessId, dto.fromAccountId);
     const to = await this.loadAccount(businessId, dto.toAccountId);
@@ -706,7 +706,7 @@ export class FinanceService {
         ),
       )
       .limit(1);
-    if (!account) throw new NotFoundException('Account not found');
+    if (!account) throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
 
     const [txn] = await tx
       .insert(financialTransactions)

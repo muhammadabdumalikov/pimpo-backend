@@ -10,8 +10,9 @@ import {
     UseGuards,
     HttpCode,
     HttpStatus,
-    NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
     ApiTags,
     ApiOperation,
@@ -101,7 +102,7 @@ export class UserController {
     ) {
         const user = await this.userService.findByPhone(business.id, phone);
         if (!user) {
-            throw new NotFoundException('User not found');
+            throw new AppException(ErrorCode.USER_NOT_FOUND);
         }
         return user;
     }
@@ -120,7 +121,7 @@ export class UserController {
     ) {
         const user = await this.userService.findOne(business.id, id);
         if (!user) {
-            throw new NotFoundException('User not found');
+            throw new AppException(ErrorCode.USER_NOT_FOUND);
         }
         return user;
     }

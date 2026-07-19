@@ -9,8 +9,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -50,7 +51,7 @@ export class StaffController {
     @Param('id') id: string,
   ) {
     const member = await this.staffService.findOne(business.id, id);
-    if (!member) throw new NotFoundException('Staff not found');
+    if (!member) throw new AppException(ErrorCode.STAFF_NOT_FOUND);
     return member;
   }
 

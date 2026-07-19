@@ -1,9 +1,8 @@
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-  ForbiddenException,
-} from '@nestjs/common';
+import {Inject, Injectable} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
+import {isStockTakeActive} from '../common/stock-take-lock';
 import {DatabaseService} from '../database/database.service';
 import {
   cashRegisters,
@@ -17,7 +16,7 @@ import {
   type CashShift,
   type CashMovement,
 } from '../database/schema';
-import {eq, and, desc, ne, sql} from 'drizzle-orm';
+import {eq, and, desc, ne} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
@@ -55,6 +54,7 @@ export class ShiftService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   // ─── Acting cashier (owner or staff) ──────────────────────────────────────
@@ -173,7 +173,7 @@ export class ShiftService {
         ),
       )
       .limit(1);
-    if (!existing) throw new NotFoundException('Register not found');
+    if (!existing) throw new AppException(ErrorCode.REGISTER_NOT_FOUND);
 
     const [register] = await this.dbService.db
       .update(cashRegisters)
@@ -275,28 +275,12 @@ export class ShiftService {
       .orderBy(desc(cashShifts.openedAt));
   }
 
-  // Blocks opening a shift while an inventory count is in progress. Raw guarded
-  // query so it stays decoupled from the stock-take module and never throws if
-  // that table hasn't been migrated yet (fail-open, mirrors OrderService).
+  // Blocks opening a shift while an inventory count is in progress. Cache-aside
+  // read (in-memory flag, DB as source of truth), mirrors OrderService; fail-open
+  // if the stock_takes table isn't migrated yet.
   private async assertNoStockTakeInProgress(businessId: string): Promise<void> {
-    try {
-      // db.execute() returns a bare row array or a { rows } object depending on
-      // the driver — normalise both.
-      const result = (await this.dbService.db.execute(sql`
-        SELECT 1 FROM stock_takes
-        WHERE business_id = ${businessId} AND status = 'in_progress'
-        LIMIT 1
-      `)) as unknown;
-      const rows =
-        (result as {rows?: unknown[]}).rows ?? (result as unknown[]);
-      if (rows.length > 0) {
-        throw new ForbiddenException(
-          'A stock-take is in progress. The cash register cannot be opened until it is completed.',
-        );
-      }
-    } catch (err) {
-      if (err instanceof ForbiddenException) throw err;
-      // Table missing / transient error — don't block the till.
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.REGISTER_OPEN_FROZEN_STOCK_TAKE);
     }
   }
 
@@ -320,14 +304,12 @@ export class ShiftService {
         ),
       )
       .limit(1);
-    if (!register) throw new NotFoundException('Register not found');
+    if (!register) throw new AppException(ErrorCode.REGISTER_NOT_FOUND);
 
     // One open shift per register.
     const current = await this.getCurrentShift(businessId, dto.registerId);
     if (current) {
-      throw new BadRequestException(
-        'This register already has an open shift. Close it first.',
-      );
+      throw new AppException(ErrorCode.REGISTER_ALREADY_OPEN);
     }
 
     const cashier = await this.resolveCashier(account);
@@ -357,7 +339,7 @@ export class ShiftService {
         and(eq(cashShifts.id, shiftId), eq(cashShifts.businessId, businessId)),
       )
       .limit(1);
-    if (!shift) throw new NotFoundException('Shift not found');
+    if (!shift) throw new AppException(ErrorCode.SHIFT_NOT_FOUND);
     return shift;
   }
 
@@ -405,7 +387,7 @@ export class ShiftService {
   ): Promise<CashShift> {
     const shift = await this.getShift(businessId, shiftId);
     if (shift.status !== 'open') {
-      throw new BadRequestException('Shift is already closed');
+      throw new AppException(ErrorCode.SHIFT_ALREADY_CLOSED);
     }
     return shift;
   }
@@ -431,7 +413,7 @@ export class ShiftService {
           ),
         )
         .limit(1);
-      if (!cat) throw new NotFoundException('Category not found');
+      if (!cat) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
       categoryName = cat.name;
     }
 
@@ -576,9 +558,7 @@ export class ShiftService {
       shift.openedByCashierId &&
       shift.openedByCashierId !== account.id
     ) {
-      throw new BadRequestException(
-        'Only the cashier who opened this shift (or an owner) can close it',
-      );
+      throw new AppException(ErrorCode.SHIFT_CLOSE_FORBIDDEN);
     }
 
     const counted = new Map<string, number>();

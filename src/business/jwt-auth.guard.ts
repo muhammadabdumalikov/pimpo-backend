@@ -2,8 +2,9 @@ import {
   Injectable,
   CanActivate,
   ExecutionContext,
-  UnauthorizedException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
 import { BusinessService } from './business.service';
@@ -29,7 +30,7 @@ export class JwtAuthGuard implements CanActivate {
     const token = this.extractTokenFromHeader(request);
 
     if (!token) {
-      throw new UnauthorizedException('No token provided');
+      throw new AppException(ErrorCode.NO_TOKEN);
     }
 
     try {
@@ -44,7 +45,7 @@ export class JwtAuthGuard implements CanActivate {
       const business = await this.businessService.findById(businessId);
 
       if (!business || !business.isActive) {
-        throw new UnauthorizedException('Business not found or inactive');
+        throw new AppException(ErrorCode.AUTH_BUSINESS_INVALID);
       }
 
       // Remove password and attach business + account info to request
@@ -57,10 +58,10 @@ export class JwtAuthGuard implements CanActivate {
         roleId: payload.roleId,
       };
     } catch (err) {
-      if (err instanceof UnauthorizedException) {
+      if (err instanceof AppException) {
         throw err;
       }
-      throw new UnauthorizedException('Invalid token');
+      throw new AppException(ErrorCode.INVALID_TOKEN);
     }
 
     return true;

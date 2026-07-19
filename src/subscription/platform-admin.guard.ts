@@ -2,8 +2,9 @@ import {
   Injectable,
   CanActivate,
   ExecutionContext,
-  ForbiddenException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { Request } from 'express';
 
 /**
@@ -22,7 +23,7 @@ export class PlatformAdminGuard implements CanActivate {
     const expected = process.env.ADMIN_API_TOKEN;
 
     if (!expected || provided !== expected) {
-      throw new ForbiddenException('Platform admin access required');
+      throw new AppException(ErrorCode.PLATFORM_ADMIN_REQUIRED);
     }
     return true;
   }

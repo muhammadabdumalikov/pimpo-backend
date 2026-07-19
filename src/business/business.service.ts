@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { businesses, type Business, type NewBusiness } from '../database/schema';
 import { eq, or } from 'drizzle-orm';
@@ -28,7 +30,7 @@ export class BusinessService {
       .limit(1);
 
     if (existing.length > 0) {
-      throw new ConflictException('Email or login already exists');
+      throw new AppException(ErrorCode.EMAIL_OR_LOGIN_EXISTS);
     }
 
     // Hash password
@@ -91,7 +93,7 @@ export class BusinessService {
   ): Promise<Business> {
     const business = await this.findById(id);
     if (!business) {
-      throw new NotFoundException('Business not found');
+      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
     }
 
     // If password is being updated, hash it
@@ -116,7 +118,7 @@ export class BusinessService {
   async delete(id: string): Promise<void> {
     const business = await this.findById(id);
     if (!business) {
-      throw new NotFoundException('Business not found');
+      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
     }
 
     await this.dbService.db.delete(businesses).where(eq(businesses.id, id));

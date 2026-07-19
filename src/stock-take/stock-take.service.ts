@@ -1,9 +1,11 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
+import { AppException } from '../common/errors/app.exception';
+import { ErrorCode } from '../common/errors/error-codes';
 import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-  Logger,
-} from '@nestjs/common';
+  setStockTakeActive,
+  clearStockTakeActive,
+} from '../common/stock-take-lock';
 import {and, asc, desc, eq, sql} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {
@@ -30,7 +32,10 @@ type Tx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 export class StockTakeService {
   private readonly logger = new Logger(StockTakeService.name);
 
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   // ─── Acting cashier (owner or staff) — mirrors ShiftService ────────────────
   private async resolveCashier(
@@ -114,9 +119,7 @@ export class StockTakeService {
       )
       .limit(1);
     if (active) {
-      throw new BadRequestException(
-        'Another stock-take is already in progress. Finish it first.',
-      );
+      throw new AppException(ErrorCode.STOCK_TAKE_IN_PROGRESS);
     }
 
     const cashier = await this.resolveCashier(account);
@@ -177,6 +180,9 @@ export class StockTakeService {
       }
     });
 
+    // A count just opened — set the in-memory flag so the hot sale/shift path
+    // freezes without querying the DB (cleared on completion).
+    await setStockTakeActive(this.cache, businessId);
     return this.requireStockTake(businessId, id);
   }
 
@@ -188,7 +194,7 @@ export class StockTakeService {
   ): Promise<{updated: number}> {
     const stockTake = await this.requireStockTake(businessId, id);
     if (stockTake.status !== 'in_progress') {
-      throw new BadRequestException('Stock-take is already completed');
+      throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
     }
 
     let updated = 0;
@@ -234,7 +240,7 @@ export class StockTakeService {
           )
           .limit(1);
         if (!product) {
-          throw new BadRequestException(`Product not found: ${line.productId}`);
+          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, { productId: line.productId });
         }
         await tx.insert(stockTakeItems).values({
           id: generateId(),
@@ -267,7 +273,7 @@ export class StockTakeService {
   ): Promise<StockTake & {items: StockTakeItem[]}> {
     const stockTake = await this.requireStockTake(businessId, id);
     if (stockTake.status !== 'in_progress') {
-      throw new BadRequestException('Stock-take is already completed');
+      throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
     }
 
     const cashier = await this.resolveCashier(account);
@@ -285,6 +291,11 @@ export class StockTakeService {
       for (const item of items) {
         if (!item.productId) continue;
         const diffQty = item.countedQty - item.bookQty;
+        // Unchanged lines (counted == book) need no costing and no stock change:
+        // the quantity already matches (sales are frozen during a count) and the
+        // diff is zero. They're zeroed together in one bulk statement after the
+        // loop, so skip the per-row work here — this is the bulk of a full count.
+        if (diffQty === 0) continue;
 
         let unitCost = 0;
         let diffValue = 0;
@@ -326,6 +337,8 @@ export class StockTakeService {
 
         netDiffValue = round2(netDiffValue + diffValue);
 
+        // Only changed lines reach here, so this runs a handful of times, not
+        // once per catalog row.
         await tx
           .update(stockTakeItems)
           .set({
@@ -334,18 +347,28 @@ export class StockTakeService {
             diffValue: diffValue.toFixed(2),
           })
           .where(eq(stockTakeItems.id, item.id));
-
-        // Snap the product's on-hand to the counted reality.
-        await tx
-          .update(products)
-          .set({quantity: item.countedQty, updatedAt: new Date()})
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.id, item.productId),
-            ),
-          );
       }
+
+      // Snap on-hand to the counted reality for every CHANGED line in a single
+      // set-based UPDATE — no per-row round-trips. Unchanged lines already match
+      // (sales are frozen during a count), so they're left untouched.
+      await tx.execute(sql`
+        UPDATE products AS p
+        SET quantity = sti.counted_qty, updated_at = now()
+        FROM stock_take_items AS sti
+        WHERE sti.stock_take_id = ${id}
+          AND sti.product_id = p.id
+          AND p.business_id = ${businessId}
+          AND sti.counted_qty <> sti.book_qty
+      `);
+
+      // Zero the costing fields on the untouched lines in one statement so their
+      // stored diff reads 0 without a per-row write.
+      await tx.execute(sql`
+        UPDATE stock_take_items
+        SET diff_qty = 0, unit_cost = '0.00', diff_value = '0.00'
+        WHERE stock_take_id = ${id} AND counted_qty = book_qty
+      `);
 
       await tx
         .update(stockTakes)
@@ -369,6 +392,8 @@ export class StockTakeService {
       });
     });
 
+    // Count finished — drop the lock so sales/shifts resume immediately.
+    await clearStockTakeActive(this.cache, businessId);
     return this.getOne(businessId, id);
   }
 
@@ -382,7 +407,7 @@ export class StockTakeService {
       .from(stockTakes)
       .where(and(eq(stockTakes.businessId, businessId), eq(stockTakes.id, id)))
       .limit(1);
-    if (!row) throw new NotFoundException('Stock-take not found');
+    if (!row) throw new AppException(ErrorCode.STOCK_TAKE_NOT_FOUND);
     return row;
   }
 

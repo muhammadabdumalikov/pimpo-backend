@@ -20,7 +20,7 @@ export class BulkProductItemDto {
   @ApiPropertyOptional() @IsOptional() @IsString() priceOut?: string;
   @ApiPropertyOptional() @IsOptional() @IsNumber() quantity?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() quantityType?: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() markupPercent?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() priceBundle?: string;
   @ApiPropertyOptional() @IsOptional() @IsNumber() lowStockThreshold?: number;
 }
 

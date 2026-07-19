@@ -1,4 +1,6 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { JwtService } from '@nestjs/jwt';
 import { eq } from 'drizzle-orm';
 import { BusinessService } from './business.service';
@@ -23,17 +25,17 @@ export class AuthService {
     const business = await this.businessService.findByLogin(login);
 
     if (!business) {
-      throw new UnauthorizedException('Invalid login credentials');
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
 
     if (!business.isActive) {
-      throw new UnauthorizedException('Business account is inactive');
+      throw new AppException(ErrorCode.BUSINESS_INACTIVE);
     }
 
     const isPasswordValid = verifyPassword(password, business.password);
 
     if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid login credentials');
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
 
     // Remove password from returned object
@@ -50,10 +52,10 @@ export class AuthService {
 
     if (business) {
       if (!business.isActive) {
-        throw new UnauthorizedException('Business account is inactive');
+        throw new AppException(ErrorCode.BUSINESS_INACTIVE);
       }
       if (!verifyPassword(password, business.password)) {
-        throw new UnauthorizedException('Invalid login credentials');
+        throw new AppException(ErrorCode.INVALID_CREDENTIALS);
       }
       return this.buildOwnerSession(business);
     }
@@ -66,13 +68,13 @@ export class AuthService {
       .limit(1);
 
     if (!member) {
-      throw new UnauthorizedException('Invalid login credentials');
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
     if (!member.isActive) {
-      throw new UnauthorizedException('Staff account is inactive');
+      throw new AppException(ErrorCode.STAFF_INACTIVE);
     }
     if (!verifyPassword(password, member.password)) {
-      throw new UnauthorizedException('Invalid login credentials');
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
 
     return this.buildStaffSession(member);
@@ -88,7 +90,7 @@ export class AuthService {
     if (identity.type === 'business') {
       const business = await this.businessService.findById(identity.id);
       if (!business || !business.isActive) {
-        throw new UnauthorizedException('Business account is inactive');
+        throw new AppException(ErrorCode.BUSINESS_INACTIVE);
       }
       const { password: _pw, ...businessWithoutPassword } = business;
       return {
@@ -113,7 +115,7 @@ export class AuthService {
       .limit(1);
 
     if (!member || !member.isActive) {
-      throw new UnauthorizedException('Staff account is inactive');
+      throw new AppException(ErrorCode.STAFF_INACTIVE);
     }
 
     const [role] = await this.dbService.db
@@ -123,12 +125,12 @@ export class AuthService {
       .limit(1);
 
     if (!role || !role.isActive) {
-      throw new UnauthorizedException('Staff role is missing or inactive');
+      throw new AppException(ErrorCode.STAFF_ROLE_INACTIVE);
     }
 
     const business = await this.businessService.findById(member.businessId);
     if (!business || !business.isActive) {
-      throw new UnauthorizedException('Business account is inactive');
+      throw new AppException(ErrorCode.BUSINESS_INACTIVE);
     }
 
     const { password: _pw, ...businessWithoutPassword } = business;
@@ -199,12 +201,12 @@ export class AuthService {
       .limit(1);
 
     if (!role || !role.isActive) {
-      throw new UnauthorizedException('Staff role is missing or inactive');
+      throw new AppException(ErrorCode.STAFF_ROLE_INACTIVE);
     }
 
     const business = await this.businessService.findById(member.businessId);
     if (!business || !business.isActive) {
-      throw new UnauthorizedException('Business account is inactive');
+      throw new AppException(ErrorCode.BUSINESS_INACTIVE);
     }
 
     const accessToken = this.signToken({

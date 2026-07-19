@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, ConflictException, OnModuleInit, Inject } from '@nestjs/common';
+import { Injectable, OnModuleInit, Inject } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
 import { DatabaseService } from '../database/database.service';
 import {
@@ -98,7 +100,7 @@ export class SubscriptionService implements OnModuleInit {
     // Get the plan
     const plan = await this.getPlanByTier(planTier);
     if (!plan) {
-      throw new NotFoundException(`Subscription plan with tier ${planTier} not found`);
+      throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_TIER_NOT_FOUND, { tier: planTier });
     }
 
     // Deactivate current subscription
@@ -133,7 +135,7 @@ export class SubscriptionService implements OnModuleInit {
     // Get subscription with plan
     const result = await this.getBusinessSubscription(businessId);
     if (!result) {
-      throw new NotFoundException('Failed to create subscription');
+      throw new AppException(ErrorCode.SUBSCRIPTION_CREATE_FAILED);
     }
 
     return result;
@@ -195,7 +197,7 @@ export class SubscriptionService implements OnModuleInit {
     // Check if tier already exists
     const existing = await this.getPlanByTier(data.tier);
     if (existing) {
-      throw new ConflictException(`Plan with tier ${data.tier} already exists`);
+      throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_TIER_EXISTS, { tier: data.tier });
     }
 
     const { generateId } = await import('../utils/uuid');
@@ -242,7 +244,7 @@ export class SubscriptionService implements OnModuleInit {
       .limit(1);
 
     if (!existing) {
-      throw new NotFoundException(`Plan with id ${planId} not found`);
+      throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND, { planId });
     }
 
     const updateData: Partial<typeof subscriptionPlans.$inferInsert> = {};
@@ -275,7 +277,7 @@ export class SubscriptionService implements OnModuleInit {
       .limit(1);
 
     if (!plan) {
-      throw new NotFoundException(`Plan with id ${planId} not found`);
+      throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND, { planId });
     }
 
     // Soft delete - set isActive to false

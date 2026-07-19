@@ -10,9 +10,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
+import { AppException } from '../common/errors/app.exception';
+import { ErrorCode } from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -144,7 +144,7 @@ export class ProductController {
   ) {
     const trimmed = barcode?.trim();
     if (!trimmed) {
-      throw new BadRequestException('barcode query parameter is required');
+      throw new AppException(ErrorCode.BARCODE_QUERY_REQUIRED);
     }
     return this.productService.lookupBarcode(business.id, trimmed);
   }
@@ -163,7 +163,7 @@ export class ProductController {
   ) {
     const product = await this.productService.findOne(business.id, id);
     if (!product) {
-      throw new NotFoundException('Product not found');
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
     }
     return product;
   }

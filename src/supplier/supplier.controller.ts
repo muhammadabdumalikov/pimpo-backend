@@ -10,8 +10,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
-  NotFoundException,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -79,7 +80,7 @@ export class SupplierController {
   ) {
     const supplier = await this.supplierService.findOne(business.id, id);
     if (!supplier) {
-      throw new NotFoundException('Supplier not found');
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
     }
     return supplier;
   }

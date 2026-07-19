@@ -3,10 +3,11 @@ import {
   Post,
   UseInterceptors,
   UploadedFile,
-  BadRequestException,
   UseGuards,
   Body,
 } from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import * as multer from 'multer';
@@ -51,16 +52,14 @@ export class StorageController {
     @Body('prefix') prefix?: string,
   ): Promise<{ url: string; key: string }> {
     if (!this.storage.isEnabled()) {
-      throw new BadRequestException('File storage is not configured.');
+      throw new AppException(ErrorCode.STORAGE_NOT_CONFIGURED);
     }
     if (!file?.buffer) {
-      throw new BadRequestException('No file provided.');
+      throw new AppException(ErrorCode.NO_FILE_PROVIDED);
     }
     const contentType = file.mimetype || 'application/octet-stream';
     if (!ALLOWED_MIMES.includes(contentType)) {
-      throw new BadRequestException(
-        `Invalid file type. Allowed: ${ALLOWED_MIMES.join(', ')}`,
-      );
+      throw new AppException(ErrorCode.INVALID_FILE_TYPE, { allowed: ALLOWED_MIMES.join(', ') });
     }
 
     return this.storage.upload(file.buffer, {

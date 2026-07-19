@@ -22,6 +22,11 @@ export const TTL = {
   // and reflecting within a minute is fine) instead of per-register invalidation.
   RECEIPT_RESOLVE: 60 * 1000, // 60s
 
+  // Inventory-count lock: kept fresh explicitly (set on start, cleared on
+  // completion). The TTL is only a safety refresh so a stale value can't outlive
+  // a missed clear or a process restart — correctness comes from the DB fallback.
+  STOCK_TAKE_ACTIVE: 30 * 60 * 1000, // 30m
+
   // B group — heavy aggregations; short TTL instead of write-invalidation
   ORDERS_SUMMARY: 45 * 1000, // 45s
   ORDERS_REVENUE: 45 * 1000, // 45s
@@ -51,6 +56,7 @@ export const CacheKeys = {
   roles: (businessId: string) => `roles:${businessId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
+  stockTakeActive: (businessId: string) => `stocktake:active:${businessId}`,
   receiptTemplateResolve: (businessId: string, registerId?: string | null) =>
     `rt:resolve:${businessId}:${registerId ?? 'none'}`,
 
