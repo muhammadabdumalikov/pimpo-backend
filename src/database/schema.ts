@@ -4,6 +4,7 @@ import {
   timestamp,
   boolean,
   integer,
+  doublePrecision,
   decimal,
   jsonb,
   uniqueIndex,
@@ -115,17 +116,26 @@ export const products = pgTable('products', {
   // Optional bundle/set ("to'plam") selling price — used when the item is sold as
   // a pack/set. Null when the product has no separate bundle tier.
   priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
-  quantity: integer('quantity').default(0).notNull(),
+  // Stock on hand. doublePrecision (not integer) so weighed goods (quantityType
+  // 'kg') can hold fractional amounts, e.g. 0.25 kg = 250 g. Piece products just
+  // store whole numbers. Kept clean to 3 decimals (whole grams) on every write.
+  quantity: doublePrecision('quantity').default(0).notNull(),
   quantityType: varchar('quantity_type', {length: 50}),
   image: varchar('image', {length: 500}),
   categoryId: varchar('category_id', {length: 100}),
   // Reorder point: when quantity drops to or below this, the product is flagged
   // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
-  lowStockThreshold: integer('low_stock_threshold'),
+  lowStockThreshold: doublePrecision('low_stock_threshold'),
   // Optional brand this product belongs to (for filtering/reporting).
   brandId: varchar('brand_id', {length: 36}),
   // Optional default supplier this product is bought from.
   supplierId: varchar('supplier_id', {length: 36}),
+  // Branch ("do'kon") this product belongs to. A stock-take counts only its
+  // branch's products. Null on legacy rows → the business default branch
+  // (backfilled on migration); new products default to the default branch.
+  branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+    onDelete: 'set null',
+  }),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -361,7 +371,8 @@ export const orderItems = pgTable('order_items', {
   // default), 'wholesale' (ulgurji), or 'bundle' (to'plam). priceOut above holds
   // the resolved price for whichever tier was chosen.
   priceType: varchar('price_type', {length: 20}).notNull().default('unit'),
-  quantity: integer('quantity').notNull(),
+  // doublePrecision: a weighed line sells a fractional kg (0.25 = 250 g).
+  quantity: doublePrecision('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   // COGS snapshot at sale time (immutable history, independent of later price
   // changes or the costing method). 0 for pre-migration rows.
@@ -514,7 +525,8 @@ export const supplierReturnItems = pgTable('supplier_return_items', {
   productName: varchar('product_name', {length: 255}).notNull(),
   // Unit cost the goods were received at (reverses the same value).
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
-  quantity: integer('quantity').notNull(),
+  // doublePrecision: weighed goods can be returned in fractional kg.
+  quantity: doublePrecision('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -542,7 +554,8 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   priceOut: decimal('price_out', {precision: 10, scale: 2}),
   priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
   priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
-  quantity: integer('quantity').notNull(),
+  // doublePrecision: weighed goods can be received in fractional kg.
+  quantity: doublePrecision('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -572,10 +585,11 @@ export const inventoryBatches = pgTable(
     // Unit selling price of this batch (may be bumped by a later receipt when
     // priceIncreaseMode = 'REPRICE_EXISTING').
     priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
-    // Original quantity received (immutable, for audit).
-    qtyReceived: integer('qty_received').notNull(),
+    // Original quantity received (immutable, for audit). doublePrecision so a
+    // batch of weighed goods can hold a fractional kg.
+    qtyReceived: doublePrecision('qty_received').notNull(),
     // Units left in this batch; decremented as it is sold. FIFO consumes this.
-    qtyRemaining: integer('qty_remaining').notNull(),
+    qtyRemaining: doublePrecision('qty_remaining').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -791,9 +805,7 @@ export const accountBalances = pgTable(
     balance: decimal('balance', {precision: 14, scale: 4})
       .notNull()
       .default('0'),
-    frozen: decimal('frozen', {precision: 14, scale: 4})
-      .notNull()
-      .default('0'),
+    frozen: decimal('frozen', {precision: 14, scale: 4}).notNull().default('0'),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -897,19 +909,16 @@ export const accountsRelations = relations(accounts, ({one, many}) => ({
   balances: many(accountBalances),
 }));
 
-export const accountBalancesRelations = relations(
-  accountBalances,
-  ({one}) => ({
-    business: one(businesses, {
-      fields: [accountBalances.businessId],
-      references: [businesses.id],
-    }),
-    account: one(accounts, {
-      fields: [accountBalances.accountId],
-      references: [accounts.id],
-    }),
+export const accountBalancesRelations = relations(accountBalances, ({one}) => ({
+  business: one(businesses, {
+    fields: [accountBalances.businessId],
+    references: [businesses.id],
   }),
-);
+  account: one(accounts, {
+    fields: [accountBalances.accountId],
+    references: [accounts.id],
+  }),
+}));
 
 export const financialCategoriesRelations = relations(
   financialCategories,
@@ -1265,8 +1274,7 @@ export type NewAccountBalance = typeof accountBalances.$inferInsert;
 export type FinancialCategory = typeof financialCategories.$inferSelect;
 export type NewFinancialCategory = typeof financialCategories.$inferInsert;
 export type FinancialTransaction = typeof financialTransactions.$inferSelect;
-export type NewFinancialTransaction =
-  typeof financialTransactions.$inferInsert;
+export type NewFinancialTransaction = typeof financialTransactions.$inferInsert;
 
 // ─── Stock-take (Inventarizatsiya) ──────────────────────────────────────────
 // Ombor sanog'i: haqiqiy qoldiqни kitob qoldig'и bilan solishtirib tuzatish.
@@ -1303,9 +1311,9 @@ export const stockTakeItems = pgTable(
     businessId: varchar('business_id', {length: 36}).notNull(),
     productId: varchar('product_id', {length: 36}),
     productName: varchar('product_name', {length: 255}).notNull(),
-    bookQty: integer('book_qty').notNull(), // tizim qoldig'i (sanoq boshlanganда)
-    countedQty: integer('counted_qty').notNull(), // haqiqiy sanalgan
-    diffQty: integer('diff_qty').notNull(), // counted - book
+    bookQty: doublePrecision('book_qty').notNull(), // tizim qoldig'i (sanoq boshlanganда)
+    countedQty: doublePrecision('counted_qty').notNull(), // haqiqiy sanalgan
+    diffQty: doublePrecision('diff_qty').notNull(), // counted - book
     unitCost: decimal('unit_cost', {precision: 10, scale: 2}), // tannarx (COGS)
     diffValue: decimal('diff_value', {precision: 12, scale: 2}),
     // Kamomad/hisobdan chiqarish sababi (o'g'irlik/buzilish/muddat...). Ixtiyoriy.

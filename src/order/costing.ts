@@ -83,7 +83,7 @@ export async function consumeBatches(
     await tx
       .update(inventoryBatches)
       .set({
-        qtyRemaining: sql`${inventoryBatches.qtyRemaining} - ${take}`,
+        qtyRemaining: sql`ROUND((${inventoryBatches.qtyRemaining} - ${take})::numeric, 3)`,
       })
       .where(eq(inventoryBatches.id, batch.id));
     need -= take;

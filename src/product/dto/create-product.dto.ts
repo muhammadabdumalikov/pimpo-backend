@@ -1,5 +1,12 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNumber, IsOptional, Min, MinLength, MaxLength } from 'class-validator';
+import {ApiProperty} from '@nestjs/swagger';
+import {
+  IsString,
+  IsNumber,
+  IsOptional,
+  Min,
+  MinLength,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateProductDto {
   @ApiProperty({
@@ -26,7 +33,7 @@ export class CreateProductDto {
   })
   @IsString()
   @IsOptional()
-  @MaxLength(14, { message: 'Barcode must be at most 14 characters' })
+  @MaxLength(14, {message: 'Barcode must be at most 14 characters'})
   barcode?: string;
 
   @ApiProperty({
@@ -113,4 +120,13 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   supplierId?: string;
+
+  @ApiProperty({
+    description:
+      'Branch ("do\'kon") this product belongs to; defaults to the business default branch',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  branchId?: string;
 }

@@ -2,7 +2,7 @@ import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {
   IsArray,
   IsString,
-  IsInt,
+  IsNumber,
   Min,
   IsOptional,
   MaxLength,
@@ -16,8 +16,11 @@ export class CountItemDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({description: 'Actual counted quantity (>= 0)'})
-  @IsInt()
+  @ApiProperty({
+    description:
+      'Actual counted quantity (>= 0). Fractional kg for weighed goods (max 3 decimals).',
+  })
+  @IsNumber({maxDecimalPlaces: 3})
   @Min(0)
   countedQty: number;
 

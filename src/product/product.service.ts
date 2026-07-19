@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
-import { AppException } from '../common/errors/app.exception';
-import { ErrorCode } from '../common/errors/error-codes';
-import { DatabaseService } from '../database/database.service';
+import {Injectable} from '@nestjs/common';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
+import {DatabaseService} from '../database/database.service';
 import {
   products,
   inventoryBatches,
@@ -10,39 +10,47 @@ import {
   type Product,
   type NewProduct,
 } from '../database/schema';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
-import { generateId } from '../utils/uuid';
-import { SubscriptionService } from '../subscription/subscription.service';
+import {eq, and, desc, ilike, or, sql} from 'drizzle-orm';
+import {generateId} from '../utils/uuid';
+import {SubscriptionService} from '../subscription/subscription.service';
+import {BranchService} from '../branch/branch.service';
 
 @Injectable()
 export class ProductService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly branchService: BranchService,
   ) {}
 
-  async create(businessId: string, data: {
-    name: string;
-    code?: string;
-    barcode?: string;
-    priceIn: string;
-    priceOut: string;
-    quantity: number;
-    quantityType?: string;
-    image?: string;
-    categoryId?: string;
-    priceBundle?: string;
-    lowStockThreshold?: number;
-    brandId?: string;
-    supplierId?: string;
-  }): Promise<Product> {
+  async create(
+    businessId: string,
+    data: {
+      name: string;
+      code?: string;
+      barcode?: string;
+      priceIn: string;
+      priceOut: string;
+      quantity: number;
+      quantityType?: string;
+      image?: string;
+      categoryId?: string;
+      priceBundle?: string;
+      lowStockThreshold?: number;
+      brandId?: string;
+      supplierId?: string;
+      branchId?: string;
+    },
+  ): Promise<Product> {
     // Enforce the plan's product limit (null = unlimited).
-    const { productsLimit } =
+    const {productsLimit} =
       await this.subscriptionService.getSubscriptionLimits(businessId);
     if (productsLimit !== null) {
       const currentCount = await this.getCount(businessId);
       if (currentCount >= productsLimit) {
-        throw new AppException(ErrorCode.PRODUCT_LIMIT_REACHED, { limit: productsLimit });
+        throw new AppException(ErrorCode.PRODUCT_LIMIT_REACHED, {
+          limit: productsLimit,
+        });
       }
     }
 
@@ -64,6 +72,11 @@ export class ProductService {
       }
     }
 
+    // A product belongs to one branch (a stock-take counts only its branch's
+    // products). Default to the business default branch when none is chosen.
+    const branchId =
+      data.branchId || (await this.branchService.ensureDefault(businessId)).id;
+
     const newProduct: NewProduct = {
       id: generateId(),
       businessId,
@@ -80,11 +93,15 @@ export class ProductService {
       lowStockThreshold: data.lowStockThreshold ?? null,
       brandId: data.brandId || null,
       supplierId: data.supplierId || null,
+      branchId,
       isActive: true,
     };
 
     const product = await this.dbService.db.transaction(async (tx) => {
-      const [created] = await tx.insert(products).values(newProduct).returning();
+      const [created] = await tx
+        .insert(products)
+        .values(newProduct)
+        .returning();
 
       // Open an inventory batch for any initial stock so the FIFO queue stays in
       // sync with products.quantity (sales value COGS from batches).
@@ -153,8 +170,8 @@ export class ProductService {
     }>,
   ): Promise<{
     created: number;
-    skipped: Array<{ row: number; reason: string }>;
-    errors: Array<{ row: number; reason: string }>;
+    skipped: Array<{row: number; reason: string}>;
+    errors: Array<{row: number; reason: string}>;
     limitReached: boolean;
   }> {
     // Feature gate: bulk import is a paid-plan feature (not on free).
@@ -165,11 +182,11 @@ export class ProductService {
       throw new AppException(ErrorCode.PRODUCT_BULK_IMPORT_PRO_ONLY);
     }
 
-    const skipped: Array<{ row: number; reason: string }> = [];
-    const errors: Array<{ row: number; reason: string }> = [];
+    const skipped: Array<{row: number; reason: string}> = [];
+    const errors: Array<{row: number; reason: string}> = [];
 
     // Remaining slots under the plan's product limit (null = unlimited).
-    const { productsLimit } =
+    const {productsLimit} =
       await this.subscriptionService.getSubscriptionLimits(businessId);
     let remaining = Infinity;
     if (productsLimit !== null) {
@@ -179,7 +196,7 @@ export class ProductService {
 
     // Existing codes/barcodes for this business, to skip duplicates cheaply.
     const existing = await this.dbService.db
-      .select({ code: products.code, barcode: products.barcode })
+      .select({code: products.code, barcode: products.barcode})
       .from(products)
       .where(
         and(eq(products.businessId, businessId), eq(products.isActive, true)),
@@ -205,17 +222,17 @@ export class ProductService {
       // Per-row validation (backend is the source of truth).
       const name = data.name?.trim();
       if (!name) {
-        errors.push({ row, reason: 'Name is required' });
+        errors.push({row, reason: 'Name is required'});
         return;
       }
       const priceInNum = cleanNum(data.priceIn);
       const priceOutNum = cleanNum(data.priceOut);
       if (!data.priceIn || Number.isNaN(priceInNum) || priceInNum < 0) {
-        errors.push({ row, reason: 'Invalid purchase price' });
+        errors.push({row, reason: 'Invalid purchase price'});
         return;
       }
       if (!data.priceOut || Number.isNaN(priceOutNum) || priceOutNum <= 0) {
-        errors.push({ row, reason: 'Invalid selling price' });
+        errors.push({row, reason: 'Invalid selling price'});
         return;
       }
 
@@ -224,31 +241,37 @@ export class ProductService {
 
       // Duplicate detection against the DB and earlier rows in this batch.
       if (code && (existingCodes.has(code) || seenCodes.has(code))) {
-        skipped.push({ row, reason: `Duplicate code: ${code}` });
+        skipped.push({row, reason: `Duplicate code: ${code}`});
         return;
       }
-      if (barcode && (existingBarcodes.has(barcode) || seenBarcodes.has(barcode))) {
-        skipped.push({ row, reason: `Duplicate barcode: ${barcode}` });
+      if (
+        barcode &&
+        (existingBarcodes.has(barcode) || seenBarcodes.has(barcode))
+      ) {
+        skipped.push({row, reason: `Duplicate barcode: ${barcode}`});
         return;
       }
 
       // Plan limit — everything past it is skipped.
       if (toInsert.length >= remaining) {
         limitReached = true;
-        skipped.push({ row, reason: 'Product limit reached' });
+        skipped.push({row, reason: 'Product limit reached'});
         return;
       }
 
       if (code) seenCodes.add(code);
       if (barcode) seenBarcodes.add(barcode);
 
+      // Round to whole grams (3 decimals) rather than flooring, so weighed
+      // goods (quantityType 'kg') keep their fractional stock, e.g. 0.25 kg.
       const quantity =
         typeof data.quantity === 'number' && data.quantity > 0
-          ? Math.floor(data.quantity)
+          ? Math.round(data.quantity * 1000) / 1000
           : 0;
       const lowStockThreshold =
-        typeof data.lowStockThreshold === 'number' && data.lowStockThreshold >= 0
-          ? Math.floor(data.lowStockThreshold)
+        typeof data.lowStockThreshold === 'number' &&
+        data.lowStockThreshold >= 0
+          ? Math.round(data.lowStockThreshold * 1000) / 1000
           : null;
 
       toInsert.push({
@@ -272,7 +295,7 @@ export class ProductService {
     });
 
     if (toInsert.length === 0) {
-      return { created: 0, skipped, errors, limitReached };
+      return {created: 0, skipped, errors, limitReached};
     }
 
     await this.dbService.db.transaction(async (tx) => {
@@ -285,10 +308,10 @@ export class ProductService {
         .map((p) => ({
           id: generateId(),
           businessId,
-          productId: p.id as string,
+          productId: p.id,
           receiptItemId: null,
-          priceIn: p.priceIn as string,
-          priceOut: p.priceOut as string,
+          priceIn: p.priceIn,
+          priceOut: p.priceOut,
           qtyReceived: p.quantity as number,
           qtyRemaining: p.quantity as number,
         }));
@@ -321,7 +344,7 @@ export class ProductService {
       }
     });
 
-    return { created: toInsert.length, skipped, errors, limitReached };
+    return {created: toInsert.length, skipped, errors, limitReached};
   }
 
   async findAll(
@@ -331,7 +354,12 @@ export class ProductService {
       limit?: number;
       search?: string;
     },
-  ): Promise<{ products: Product[]; total: number; page: number; limit: number }> {
+  ): Promise<{
+    products: Product[];
+    total: number;
+    page: number;
+    limit: number;
+  }> {
     const page = options?.page || 1;
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
@@ -377,7 +405,10 @@ export class ProductService {
     };
   }
 
-  async findOne(businessId: string, productId: string): Promise<Product | null> {
+  async findOne(
+    businessId: string,
+    productId: string,
+  ): Promise<Product | null> {
     const [product] = await this.dbService.db
       .select()
       .from(products)
@@ -429,10 +460,7 @@ export class ProductService {
         updatedAt: new Date(),
       })
       .where(
-        and(
-          eq(products.id, productId),
-          eq(products.businessId, businessId),
-        ),
+        and(eq(products.id, productId), eq(products.businessId, businessId)),
       )
       .returning();
 
@@ -448,12 +476,9 @@ export class ProductService {
     // Soft delete
     await this.dbService.db
       .update(products)
-      .set({ isActive: false, updatedAt: new Date() })
+      .set({isActive: false, updatedAt: new Date()})
       .where(
-        and(
-          eq(products.id, productId),
-          eq(products.businessId, businessId),
-        ),
+        and(eq(products.id, productId), eq(products.businessId, businessId)),
       );
   }
 
@@ -462,10 +487,7 @@ export class ProductService {
       .select()
       .from(products)
       .where(
-        and(
-          eq(products.businessId, businessId),
-          eq(products.isActive, true),
-        ),
+        and(eq(products.businessId, businessId), eq(products.isActive, true)),
       );
 
     return result.length;
@@ -577,15 +599,15 @@ export class ProductService {
   async generateProductCode(businessId: string): Promise<string> {
     // Get the count of products for this business
     const productCount = await this.getCount(businessId);
-    
+
     // Generate code pattern: PRD-0001, PRD-0002, etc.
     let attempt = 0;
     const maxAttempts = 1000; // Prevent infinite loop
-    
+
     while (attempt < maxAttempts) {
       const codeNumber = productCount + attempt + 1;
       const generatedCode = `PRD-${String(codeNumber).padStart(4, '0')}`;
-      
+
       // Check if this code already exists
       const existing = await this.dbService.db
         .select()
@@ -598,14 +620,14 @@ export class ProductService {
           ),
         )
         .limit(1);
-      
+
       if (existing.length === 0) {
         return generatedCode;
       }
-      
+
       attempt++;
     }
-    
+
     // Fallback: use timestamp-based code if all sequential codes are taken
     const timestamp = Date.now().toString().slice(-8);
     return `PRD-${timestamp}`;

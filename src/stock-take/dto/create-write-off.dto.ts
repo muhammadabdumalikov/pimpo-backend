@@ -2,7 +2,7 @@ import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {
   IsArray,
   IsString,
-  IsInt,
+  IsNumber,
   Min,
   IsOptional,
   MaxLength,
@@ -16,9 +16,11 @@ export class WriteOffItemDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({description: 'Quantity to remove from stock (>= 1)'})
-  @IsInt()
-  @Min(1)
+  @ApiProperty({
+    description: 'Quantity to remove from stock (> 0). Fractional kg for weighed goods.',
+  })
+  @IsNumber({maxDecimalPlaces: 3})
+  @Min(0.001)
   qty: number;
 
   @ApiPropertyOptional({description: 'Per-item reason (overrides the document reason)'})

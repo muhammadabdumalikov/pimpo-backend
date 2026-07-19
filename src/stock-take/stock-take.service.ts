@@ -156,7 +156,9 @@ export class StockTakeService {
         startedAt: now,
       });
 
-      // Full count: snapshot every active product's current stock as book qty.
+      // Full count: snapshot every active product of the chosen branch (a product
+      // belongs to one branch, so a count is scoped to its store). Without a
+      // store the whole active catalogue is taken (legacy / single-branch).
       if (dto.type === 'full') {
         const catalog = await tx
           .select({
@@ -169,6 +171,7 @@ export class StockTakeService {
             and(
               eq(products.businessId, businessId),
               eq(products.isActive, true),
+              ...(dto.storeId ? [eq(products.branchId, dto.storeId)] : []),
             ),
           );
         if (catalog.length > 0) {
@@ -254,7 +257,7 @@ export class StockTakeService {
           toUpdate.push({
             id: ex.id,
             countedQty: line.countedQty,
-            diffQty: line.countedQty - ex.bookQty,
+            diffQty: Math.round((line.countedQty - ex.bookQty) * 1000) / 1000,
             reason: line.reason ?? null,
           });
         } else {
@@ -295,7 +298,7 @@ export class StockTakeService {
             productName: p.name,
             bookQty: p.quantity,
             countedQty: line.countedQty,
-            diffQty: line.countedQty - p.quantity,
+            diffQty: Math.round((line.countedQty - p.quantity) * 1000) / 1000,
             reason: line.reason ?? null,
           });
         }
@@ -315,8 +318,10 @@ export class StockTakeService {
       // (instead of an UPDATE per line). reason is only overwritten when sent.
       if (toUpdate.length > 0) {
         const tuples = toUpdate.map(
+          // double precision (not integer) so weighed goods keep fractional
+          // counted/diff quantities (e.g. 0.25 kg).
           (u) =>
-            sql`(${u.id}::varchar, ${u.countedQty}::integer, ${u.diffQty}::integer, ${u.reason}::varchar)`,
+            sql`(${u.id}::varchar, ${u.countedQty}::double precision, ${u.diffQty}::double precision, ${u.reason}::varchar)`,
         );
         await tx.execute(sql`
           UPDATE stock_take_items AS s
@@ -382,7 +387,10 @@ export class StockTakeService {
 
       for (const item of items) {
         if (!item.productId) continue;
-        const diffQty = item.countedQty - item.bookQty;
+        // Round to whole grams so weighed-goods diffs stay clean (0.3 - 0.1
+        // float noise → 0.2), which also makes the `=== 0` skip reliable.
+        const diffQty =
+          Math.round((item.countedQty - item.bookQty) * 1000) / 1000;
         // Unchanged lines (counted == book) need no costing and no stock change:
         // the quantity already matches (sales are frozen during a count) and the
         // diff is zero. They're zeroed together in one bulk statement after the

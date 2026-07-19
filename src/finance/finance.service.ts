@@ -3,6 +3,7 @@ import {
 } from '@nestjs/common';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {DatabaseService} from '../database/database.service';
 import {
   accounts,
@@ -437,10 +438,12 @@ export class FinanceService {
       conditions.push(eq(financialTransactions.categoryId, query.categoryId));
     if (query.from)
       conditions.push(
-        gte(financialTransactions.createdAt, new Date(query.from)),
+        gte(financialTransactions.createdAt, businessDayStart(query.from)),
       );
     if (query.to)
-      conditions.push(lte(financialTransactions.createdAt, new Date(query.to)));
+      conditions.push(
+        lte(financialTransactions.createdAt, businessDayEnd(query.to)),
+      );
 
     const where = and(...conditions);
 

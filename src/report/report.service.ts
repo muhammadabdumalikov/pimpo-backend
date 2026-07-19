@@ -17,6 +17,7 @@ import {
   stockTakeItems,
 } from '../database/schema';
 import {eq, and, gte, lte, gt, sql, desc} from 'drizzle-orm';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 
 export interface DateRange {
   from?: string;
@@ -43,12 +44,8 @@ export class ReportService {
   /** Inclusive [from, to] on a typed timestamp column; `to` is end-of-day. */
   private dateWhere(column: any, range?: DateRange) {
     const clauses: any[] = [];
-    if (range?.from) clauses.push(gte(column, new Date(range.from)));
-    if (range?.to) {
-      const to = new Date(range.to);
-      to.setHours(23, 59, 59, 999);
-      clauses.push(lte(column, to));
-    }
+    if (range?.from) clauses.push(gte(column, businessDayStart(range.from)));
+    if (range?.to) clauses.push(lte(column, businessDayEnd(range.to)));
     return clauses;
   }
 
@@ -224,8 +221,7 @@ export class ReportService {
       .orderBy(products.name);
 
     // Roll-back deltas after `date` (per product), if a past date is requested.
-    const asOf = date ? new Date(date) : null;
-    if (asOf) asOf.setHours(23, 59, 59, 999);
+    const asOf = date ? businessDayEnd(date) : null;
     const rollback = asOf ? await this.stockRollbackAfter(businessId, asOf) : new Map();
 
     const items = rows.map((r) => {
@@ -585,9 +581,8 @@ export class ReportService {
       .groupBy(orders.userId);
     const firstMap = new Map(firstOrders.map((f) => [f.userId, new Date(f.firstEver)]));
 
-    const fromDate = range?.from ? new Date(range.from) : null;
-    const toDate = range?.to ? new Date(range.to) : null;
-    if (toDate) toDate.setHours(23, 59, 59, 999);
+    const fromDate = range?.from ? businessDayStart(range.from) : null;
+    const toDate = range?.to ? businessDayEnd(range.to) : null;
 
     const customers = rows.map((r) => {
       const orderCount = Number(r.orderCount);

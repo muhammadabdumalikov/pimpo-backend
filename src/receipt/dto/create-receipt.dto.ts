@@ -4,7 +4,6 @@ import {
   IsString,
   IsOptional,
   IsArray,
-  IsInt,
   IsNumber,
   IsBoolean,
   IsIn,
@@ -19,9 +18,14 @@ export class ReceiptItemDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({ description: 'Quantity received', example: 100 })
-  @IsInt()
-  @Min(1)
+  @ApiProperty({
+    description:
+      'Quantity received. Whole units for piece products; a fractional ' +
+      'kilogram for weighed goods (max 3 decimals).',
+    example: 100,
+  })
+  @IsNumber({ maxDecimalPlaces: 3 })
+  @Min(0.001)
   quantity: number;
 
   @ApiProperty({ description: 'Unit cost paid for this batch', example: 5000 })

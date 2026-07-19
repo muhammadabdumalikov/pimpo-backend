@@ -17,6 +17,7 @@ import {
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {isStockTakeActive} from '../common/stock-take-lock';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {
   orders,
   orderItems,
@@ -321,7 +322,9 @@ export class OrderService {
         priceType,
         priceOverride,
       });
-      itemCount += item.quantity;
+      // Weighed goods count as one item (their fractional kg isn't a piece
+      // count), so itemCount stays a whole number for the integer column.
+      itemCount += product.quantityType === 'kg' ? 1 : item.quantity;
     }
 
     // VAT (QQS, inclusive) + costing method come from the business settings.
@@ -496,7 +499,7 @@ export class OrderService {
           await tx
             .update(products)
             .set({
-              quantity: sql`GREATEST(0, ${products.quantity} - ${line.quantity})`,
+              quantity: sql`GREATEST(0, ROUND((${products.quantity} - ${line.quantity})::numeric, 3))`,
               ...(line.frontPriceOut !== null
                 ? {priceOut: line.frontPriceOut}
                 : {}),
@@ -628,7 +631,9 @@ export class OrderService {
       }
       const lineTotal = priceOut * item.quantity;
       subtotal += lineTotal;
-      itemCount += item.quantity;
+      // Weighed goods count as one item (their fractional kg isn't a piece
+      // count), so itemCount stays a whole number for the integer column.
+      itemCount += product.quantityType === 'kg' ? 1 : item.quantity;
       lines.push({
         productId: product.id,
         productName: product.name,
@@ -838,13 +843,11 @@ export class OrderService {
       where.push(eq(orders.status, options.status));
     }
     if (options?.from) {
-      where.push(gte(orders.createdAt, new Date(options.from)));
+      where.push(gte(orders.createdAt, businessDayStart(options.from)));
     }
     if (options?.to) {
-      // Include the whole "to" day.
-      const to = new Date(options.to);
-      to.setHours(23, 59, 59, 999);
-      where.push(lte(orders.createdAt, to));
+      // Include the whole "to" day (business-local).
+      where.push(lte(orders.createdAt, businessDayEnd(options.to)));
     }
     if (options?.paymentMethod) {
       where.push(eq(orders.paymentMethod, options.paymentMethod));
@@ -1079,12 +1082,10 @@ export class OrderService {
       eq(orders.status, 'Completed'),
     ];
     if (options.from) {
-      where.push(gte(orders.createdAt, new Date(options.from)));
+      where.push(gte(orders.createdAt, businessDayStart(options.from)));
     }
     if (options.to) {
-      const to = new Date(options.to);
-      to.setHours(23, 59, 59, 999);
-      where.push(lte(orders.createdAt, to));
+      where.push(lte(orders.createdAt, businessDayEnd(options.to)));
     }
     const whereSql = and(...where)!;
 
@@ -1184,13 +1185,11 @@ export class OrderService {
       eq(orders.status, 'Completed'),
     ];
     if (options?.from) {
-      where.push(gte(orders.createdAt, new Date(options.from)));
+      where.push(gte(orders.createdAt, businessDayStart(options.from)));
     }
     if (options?.to) {
-      // Include the whole "to" day by pushing to end-of-day.
-      const to = new Date(options.to);
-      to.setHours(23, 59, 59, 999);
-      where.push(lte(orders.createdAt, to));
+      // Include the whole "to" day (business-local).
+      where.push(lte(orders.createdAt, businessDayEnd(options.to)));
     }
     if (options?.branchId) {
       where.push(eq(orders.branchId, options.branchId));
@@ -1335,12 +1334,10 @@ export class OrderService {
       eq(orders.status, 'Completed'),
     ];
     if (options.from) {
-      where.push(gte(orders.createdAt, new Date(options.from)));
+      where.push(gte(orders.createdAt, businessDayStart(options.from)));
     }
     if (options.to) {
-      const to = new Date(options.to);
-      to.setHours(23, 59, 59, 999);
-      where.push(lte(orders.createdAt, to));
+      where.push(lte(orders.createdAt, businessDayEnd(options.to)));
     }
 
     const rows = await this.dbService.db

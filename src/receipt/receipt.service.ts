@@ -3,6 +3,7 @@ import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {isStockTakeActive} from '../common/stock-take-lock';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {DatabaseService} from '../database/database.service';
 import {
   goodsReceipts,
@@ -173,7 +174,12 @@ export class ReceiptService {
     // The receipt keeps every entered line as the document of record.
     const productInfo = new Map<
       string,
-      {name: string; priceOut: string; repriceOverride?: boolean}
+      {
+        name: string;
+        priceOut: string;
+        quantityType?: string | null;
+        repriceOverride?: boolean;
+      }
     >();
     // Per-product received totals — the same product across multiple lines is
     // summed so a single stock/cost update applies the full received batch
@@ -205,7 +211,11 @@ export class ReceiptService {
             productId: item.productId,
           });
         }
-        info = {name: product.name, priceOut: product.priceOut};
+        info = {
+          name: product.name,
+          priceOut: product.priceOut,
+          quantityType: product.quantityType,
+        };
         productInfo.set(item.productId, info);
       }
       // A per-line override (last one wins) controls repricing for the product.
@@ -230,7 +240,8 @@ export class ReceiptService {
       const lineTotal = item.priceIn * item.quantity;
       const priceInBase = item.priceIn * rateToBase;
       total += lineTotal;
-      itemCount += item.quantity;
+      // Weighed goods count as one item so itemCount stays whole (integer col).
+      itemCount += info.quantityType === 'kg' ? 1 : item.quantity;
 
       lines.push({
         itemId: generateId(),
@@ -372,7 +383,7 @@ export class ReceiptService {
       await tx
         .update(products)
         .set({
-          quantity: sql`${products.quantity} + ${agg.qty}`,
+          quantity: sql`ROUND((${products.quantity} + ${agg.qty})::numeric, 3)`,
           priceIn: sql`CASE WHEN ${products.quantity} + ${agg.qty} > 0
               THEN ROUND(
                 (${products.quantity} * ${products.priceIn} + ${money(agg.value)})
@@ -611,12 +622,12 @@ export class ReceiptService {
     }
     if (options?.startDate) {
       whereConditions.push(
-        gte(goodsReceipts.createdAt, new Date(options.startDate)),
+        gte(goodsReceipts.createdAt, businessDayStart(options.startDate)),
       );
     }
     if (options?.endDate) {
       whereConditions.push(
-        lte(goodsReceipts.createdAt, new Date(options.endDate)),
+        lte(goodsReceipts.createdAt, businessDayEnd(options.endDate)),
       );
     }
 
@@ -868,6 +879,24 @@ export class ReceiptService {
       batchesByProduct.set(b.productId, list);
     }
 
+    // Unit type per returned product, so weighed goods count as one item (their
+    // fractional kg isn't a piece count) — keeps itemCount whole.
+    const requestedIds = [...requested.keys()];
+    const productMeta = requestedIds.length
+      ? await this.dbService.db
+          .select({id: products.id, quantityType: products.quantityType})
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              inArray(products.id, requestedIds),
+            ),
+          )
+      : [];
+    const qtyTypeByProduct = new Map(
+      productMeta.map((p) => [p.id, p.quantityType]),
+    );
+
     // Plan the reversal: consume the receipt's batches oldest-first and value
     // each returned unit at that batch's purchase cost.
     const returnLines: {
@@ -908,10 +937,13 @@ export class ReceiptService {
           : Number(b.priceIn);
         lineValue += take * unit;
         toReturn -= take;
-        batchUpdates.push({id: b.id, newRemaining: b.qtyRemaining - take});
+        batchUpdates.push({
+          id: b.id,
+          newRemaining: Math.round((b.qtyRemaining - take) * 1000) / 1000,
+        });
       }
       returnTotal += lineValue;
-      returnedQty += qty;
+      returnedQty += qtyTypeByProduct.get(productId) === 'kg' ? 1 : qty;
       returnLines.push({
         productId,
         productName: name,
@@ -974,7 +1006,7 @@ export class ReceiptService {
         await tx
           .update(products)
           .set({
-            quantity: sql`${products.quantity} - ${qty}`,
+            quantity: sql`GREATEST(0, ROUND((${products.quantity} - ${qty})::numeric, 3))`,
             updatedAt: new Date(),
           })
           .where(

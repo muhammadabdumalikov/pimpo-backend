@@ -4,7 +4,7 @@ import {
   IsString,
   IsOptional,
   IsArray,
-  IsInt,
+  IsNumber,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -16,9 +16,12 @@ export class ReturnItemDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({description: 'Quantity to return (> 0)', example: 5})
-  @IsInt()
-  @Min(1)
+  @ApiProperty({
+    description: 'Quantity to return (> 0). Fractional kg for weighed goods.',
+    example: 5,
+  })
+  @IsNumber({maxDecimalPlaces: 3})
+  @Min(0.001)
   quantity: number;
 }
 

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 import { DatabaseService } from '../database/database.service';
 import { userDebts, debtPayments, users, type UserDebt, type NewDebtPayment, type DebtPayment, type NewUserDebt, type User } from '../database/schema';
 import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, sql, inArray } from 'drizzle-orm';
@@ -127,12 +128,14 @@ export class DebtService {
 
     // Date range on when the debt was created (inclusive).
     if (options?.dateFrom) {
-      whereConditions.push(gte(userDebts.createdAt, new Date(options.dateFrom)));
+      whereConditions.push(
+        gte(userDebts.createdAt, businessDayStart(options.dateFrom)),
+      );
     }
     if (options?.dateTo) {
-      const to = new Date(options.dateTo);
-      to.setHours(23, 59, 59, 999);
-      whereConditions.push(lte(userDebts.createdAt, to));
+      whereConditions.push(
+        lte(userDebts.createdAt, businessDayEnd(options.dateTo)),
+      );
     }
 
     // Build search conditions for database query
@@ -228,12 +231,14 @@ export class DebtService {
       );
     }
     if (options?.dateFrom) {
-      whereConditions.push(gte(userDebts.createdAt, new Date(options.dateFrom)));
+      whereConditions.push(
+        gte(userDebts.createdAt, businessDayStart(options.dateFrom)),
+      );
     }
     if (options?.dateTo) {
-      const to = new Date(options.dateTo);
-      to.setHours(23, 59, 59, 999);
-      whereConditions.push(lte(userDebts.createdAt, to));
+      whereConditions.push(
+        lte(userDebts.createdAt, businessDayEnd(options.dateTo)),
+      );
     }
     if (options?.search) {
       whereConditions.push(

@@ -4,7 +4,6 @@ import {
   IsString,
   IsOptional,
   IsArray,
-  IsInt,
   IsNumber,
   IsDateString,
   Min,
@@ -19,9 +18,14 @@ export class OrderItemDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({description: 'Quantity ordered', example: 2})
-  @IsInt()
-  @Min(1)
+  @ApiProperty({
+    description:
+      'Quantity ordered. Whole units for piece products; a fractional ' +
+      'kilogram for weighed goods (e.g. 0.25 = 250 g), max 3 decimals.',
+    example: 2,
+  })
+  @IsNumber({maxDecimalPlaces: 3})
+  @Min(0.001)
   quantity: number;
 
   @ApiPropertyOptional({
