@@ -17,6 +17,15 @@ import {OrderItemDto} from './create-order.dto';
  * snapshot travels here — no payment fields, because nothing is paid yet.
  */
 export class HoldOrderDto {
+  @ApiPropertyOptional({
+    description:
+      'Existing held draft id to update in place (auto-save). Omit to create a ' +
+      'new draft; a stale/retired id silently creates a fresh one.',
+  })
+  @IsString()
+  @IsOptional()
+  id?: string;
+
   @ApiProperty({description: 'Cart line items', type: [OrderItemDto]})
   @IsArray()
   @ArrayMinSize(1)
@@ -29,7 +38,9 @@ export class HoldOrderDto {
   @IsOptional()
   userId?: string;
 
-  @ApiPropertyOptional({description: "Branch (do'kon); defaults to the default branch"})
+  @ApiPropertyOptional({
+    description: "Branch (do'kon); defaults to the default branch",
+  })
   @IsString()
   @IsOptional()
   branchId?: string;

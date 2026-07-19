@@ -2,7 +2,18 @@ import {Injectable, Inject} from '@nestjs/common';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
-import {eq, and, desc, ilike, or, count, sql, gte, lte, inArray} from 'drizzle-orm';
+import {
+  eq,
+  and,
+  desc,
+  ilike,
+  or,
+  count,
+  sql,
+  gte,
+  lte,
+  inArray,
+} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {isStockTakeActive} from '../common/stock-take-lock';
@@ -231,7 +242,9 @@ export class OrderService {
           .from(userDebts)
           .where(eq(userDebts.businessId, businessId));
         if (debtCount >= debtsLimit) {
-          throw new AppException(ErrorCode.DEBT_LIMIT_REACHED, {limit: debtsLimit});
+          throw new AppException(ErrorCode.DEBT_LIMIT_REACHED, {
+            limit: debtsLimit,
+          });
         }
       }
       // Resolve the customer: existing id, or find-or-create by name + phone.
@@ -283,7 +296,9 @@ export class OrderService {
         )
         .limit(1);
       if (!product) {
-        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: item.productId});
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+          productId: item.productId,
+        });
       }
       // Resolve the requested price tier to the product's configured price. An
       // unset/unknown tier — or a tier the product hasn't priced — falls back to
@@ -596,7 +611,9 @@ export class OrderService {
         )
         .limit(1);
       if (!product) {
-        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: item.productId});
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+          productId: item.productId,
+        });
       }
       // Same tier resolution as a completed sale (see create()): unknown/unpriced
       // tiers fall back to the unit price.
@@ -637,34 +654,65 @@ export class OrderService {
     }
     const total = subtotal - discountAmount;
 
-    const orderId = generateId();
     const branchId = await this.resolveBranchId(businessId, dto.branchId);
+
+    // Auto-save upsert: if a live Held draft id is supplied, update it IN PLACE
+    // (one stable draft, no id churn as the cart is auto-saved on every change);
+    // otherwise create a new draft. A stale/retired id falls through to create.
+    let targetId = dto.id ?? null;
+    if (targetId) {
+      const [existing] = await this.dbService.db
+        .select({status: orders.status})
+        .from(orders)
+        .where(and(eq(orders.businessId, businessId), eq(orders.id, targetId)))
+        .limit(1);
+      if (!existing || existing.status !== 'Held') targetId = null;
+    }
+    const orderId = targetId ?? generateId();
+
+    // Cart snapshot + rolled totals shared by both the insert and update paths.
+    const snapshot = {
+      userId: customerId,
+      customerName,
+      status: 'Held' as const,
+      totalAmount: money(total),
+      subtotalAmount: money(subtotal),
+      discountType,
+      discountValue: discountValue !== null ? money(discountValue) : null,
+      discountAmount: money(discountAmount),
+      itemCount,
+      note: dto.note ?? null,
+      branchId,
+    };
+
     await this.dbService.db.transaction(async (tx) => {
-      await tx.insert(orders).values({
-        id: orderId,
-        businessId,
-        userId: customerId,
-        customerName,
-        status: 'Held',
-        totalAmount: money(total),
-        subtotalAmount: money(subtotal),
-        discountType,
-        discountValue: discountValue !== null ? money(discountValue) : null,
-        discountAmount: money(discountAmount),
-        itemCount,
-        paymentMethod: null,
-        payments: [],
-        amountPaid: money(0),
-        changeAmount: money(0),
-        taxRate: money(0),
-        taxAmount: money(0),
-        note: dto.note ?? null,
-        source: 'admin',
-        cashierId: cashier.id,
-        cashierName: cashier.name,
-        shiftId: null,
-        branchId,
-      });
+      if (targetId) {
+        // Update the existing draft's snapshot and replace its lines. Provenance
+        // (cashier/source/shift) is left as first parked.
+        await tx
+          .update(orders)
+          .set({...snapshot, updatedAt: new Date()})
+          .where(
+            and(eq(orders.businessId, businessId), eq(orders.id, orderId)),
+          );
+        await tx.delete(orderItems).where(eq(orderItems.orderId, orderId));
+      } else {
+        await tx.insert(orders).values({
+          id: orderId,
+          businessId,
+          ...snapshot,
+          paymentMethod: null,
+          payments: [],
+          amountPaid: money(0),
+          changeAmount: money(0),
+          taxRate: money(0),
+          taxAmount: money(0),
+          source: 'admin',
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+          shiftId: null,
+        });
+      }
       await tx.insert(orderItems).values(
         lines.map((line) => ({
           id: generateId(),
@@ -754,7 +802,9 @@ export class OrderService {
       .where(eq(products.id, firstId))
       .limit(1);
     if (!product) {
-      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {productId: firstId});
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+        productId: firstId,
+      });
     }
     return this.create(product.businessId, {
       ...dto,

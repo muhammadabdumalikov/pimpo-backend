@@ -25,6 +25,7 @@ import {IBusiness, IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
+import {CreateWriteOffDto} from './dto/create-write-off.dto';
 
 @ApiTags('stock-takes')
 @Controller('stock-takes')
@@ -104,5 +105,46 @@ export class StockTakeController {
       account,
     );
     return {message: 'Stock-take completed', stockTake};
+  }
+
+  @Post(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Cancel an in-progress count: drop its rows, release the freeze',
+  })
+  @ApiParam({name: 'id', description: 'Stock-take ID'})
+  async cancel(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    const stockTake = await this.stockTakeService.cancel(business.id, id);
+    return {message: 'Stock-take cancelled', stockTake};
+  }
+}
+
+// Write-off ("hisobdan chiqarish") — the simplified, count-free stock reduction.
+// Separate route per INVENTARIZATSIYA.md §6; delegates to StockTakeService,
+// which records it as a completed stock_take of type 'writeoff'.
+@ApiTags('write-offs')
+@Controller('write-offs')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth('JWT-auth')
+export class WriteOffController {
+  constructor(private readonly stockTakeService: StockTakeService) {}
+
+  @Post()
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({summary: 'Write off stock immediately (FIFO reduce + expense)'})
+  async create(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Body() dto: CreateWriteOffDto,
+  ) {
+    const stockTake = await this.stockTakeService.writeOff(
+      business.id,
+      dto,
+      account,
+    );
+    return {message: 'Write-off recorded', stockTake};
   }
 }

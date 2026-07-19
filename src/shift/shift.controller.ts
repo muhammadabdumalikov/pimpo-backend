@@ -120,9 +120,12 @@ export class ShiftController {
   }
 
   @Get('shifts/open')
-  @ApiOperation({summary: 'All currently open shifts (one per register)'})
+  @ApiOperation({
+    summary:
+      'Open shifts (one per register) + whether a stock-take freezes the till',
+  })
   async getOpenShifts(@CurrentBusiness() business: IBusiness) {
-    return this.shiftService.getOpenShifts(business.id);
+    return this.shiftService.getOpenShiftsWithFreeze(business.id);
   }
 
   @Post('shifts/open')

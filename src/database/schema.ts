@@ -1279,8 +1279,8 @@ export const stockTakes = pgTable('stock_takes', {
     .references(() => businesses.id, {onDelete: 'cascade'}),
   name: varchar('name', {length: 255}).notNull(),
   storeId: varchar('store_id', {length: 36}), // kelajak: ko'p filial
-  type: varchar('type', {length: 10}).notNull(), // 'full' | 'partial'
-  status: varchar('status', {length: 12}).notNull().default('in_progress'), // 'in_progress' | 'completed'
+  type: varchar('type', {length: 10}).notNull(), // 'full' | 'partial' | 'writeoff'
+  status: varchar('status', {length: 12}).notNull().default('in_progress'), // 'in_progress' | 'completed' | 'cancelled'
   // Yakuniy jamlar (snapshot).
   surplusQty: decimal('surplus_qty', {precision: 14, scale: 3}),
   shortageQty: decimal('shortage_qty', {precision: 14, scale: 3}),
@@ -1308,6 +1308,8 @@ export const stockTakeItems = pgTable(
     diffQty: integer('diff_qty').notNull(), // counted - book
     unitCost: decimal('unit_cost', {precision: 10, scale: 2}), // tannarx (COGS)
     diffValue: decimal('diff_value', {precision: 12, scale: 2}),
+    // Kamomad/hisobdan chiqarish sababi (o'g'irlik/buzilish/muddat...). Ixtiyoriy.
+    reason: varchar('reason', {length: 255}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({

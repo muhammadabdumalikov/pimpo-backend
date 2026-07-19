@@ -116,6 +116,10 @@ export enum ErrorCode {
   STOCK_TAKE_IN_PROGRESS = 'STOCK_TAKE_IN_PROGRESS',
   STOCK_TAKE_ALREADY_COMPLETED = 'STOCK_TAKE_ALREADY_COMPLETED',
   STOCK_TAKE_NOT_FOUND = 'STOCK_TAKE_NOT_FOUND',
+  STOCK_TAKE_NOT_IN_PROGRESS = 'STOCK_TAKE_NOT_IN_PROGRESS',
+  RECEIPT_FROZEN_STOCK_TAKE = 'RECEIPT_FROZEN_STOCK_TAKE',
+  WRITE_OFF_EMPTY = 'WRITE_OFF_EMPTY',
+  WRITE_OFF_EXCEEDS_STOCK = 'WRITE_OFF_EXCEEDS_STOCK',
 
   // ── Storage ────────────────────────────────────────────────────────────────
   STORAGE_NOT_CONFIGURED = 'STORAGE_NOT_CONFIGURED',
@@ -149,129 +153,404 @@ export interface ErrorDefinition {
 // Single source of truth: code → { status, default message }.
 export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   // Generic
-  [ErrorCode.VALIDATION_ERROR]: {status: HttpStatus.BAD_REQUEST, message: 'Validation failed'},
-  [ErrorCode.BAD_REQUEST]: {status: HttpStatus.BAD_REQUEST, message: 'Bad request'},
-  [ErrorCode.UNAUTHORIZED]: {status: HttpStatus.UNAUTHORIZED, message: 'Unauthorized'},
+  [ErrorCode.VALIDATION_ERROR]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Validation failed',
+  },
+  [ErrorCode.BAD_REQUEST]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Bad request',
+  },
+  [ErrorCode.UNAUTHORIZED]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Unauthorized',
+  },
   [ErrorCode.FORBIDDEN]: {status: HttpStatus.FORBIDDEN, message: 'Forbidden'},
   [ErrorCode.NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Not found'},
   [ErrorCode.CONFLICT]: {status: HttpStatus.CONFLICT, message: 'Conflict'},
-  [ErrorCode.INTERNAL_ERROR]: {status: HttpStatus.INTERNAL_SERVER_ERROR, message: 'Internal server error'},
+  [ErrorCode.INTERNAL_ERROR]: {
+    status: HttpStatus.INTERNAL_SERVER_ERROR,
+    message: 'Internal server error',
+  },
 
   // Auth / business
-  [ErrorCode.INVALID_CREDENTIALS]: {status: HttpStatus.UNAUTHORIZED, message: 'Invalid login credentials'},
-  [ErrorCode.BUSINESS_INACTIVE]: {status: HttpStatus.UNAUTHORIZED, message: 'Business account is inactive'},
-  [ErrorCode.STAFF_INACTIVE]: {status: HttpStatus.UNAUTHORIZED, message: 'Staff account is inactive'},
-  [ErrorCode.STAFF_ROLE_INACTIVE]: {status: HttpStatus.UNAUTHORIZED, message: 'Staff role is missing or inactive'},
-  [ErrorCode.BUSINESS_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Business not found'},
-  [ErrorCode.EMAIL_OR_LOGIN_EXISTS]: {status: HttpStatus.CONFLICT, message: 'Email or login already exists'},
-  [ErrorCode.NO_TOKEN]: {status: HttpStatus.UNAUTHORIZED, message: 'No token provided'},
-  [ErrorCode.AUTH_BUSINESS_INVALID]: {status: HttpStatus.UNAUTHORIZED, message: 'Business not found or inactive'},
-  [ErrorCode.INVALID_TOKEN]: {status: HttpStatus.UNAUTHORIZED, message: 'Invalid token'},
-  [ErrorCode.OWNER_ONLY]: {status: HttpStatus.FORBIDDEN, message: 'Only the business owner can perform this action'},
-  [ErrorCode.PLATFORM_ADMIN_REQUIRED]: {status: HttpStatus.FORBIDDEN, message: 'Platform admin access required'},
+  [ErrorCode.INVALID_CREDENTIALS]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Invalid login credentials',
+  },
+  [ErrorCode.BUSINESS_INACTIVE]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Business account is inactive',
+  },
+  [ErrorCode.STAFF_INACTIVE]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Staff account is inactive',
+  },
+  [ErrorCode.STAFF_ROLE_INACTIVE]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Staff role is missing or inactive',
+  },
+  [ErrorCode.BUSINESS_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Business not found',
+  },
+  [ErrorCode.EMAIL_OR_LOGIN_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Email or login already exists',
+  },
+  [ErrorCode.NO_TOKEN]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'No token provided',
+  },
+  [ErrorCode.AUTH_BUSINESS_INVALID]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Business not found or inactive',
+  },
+  [ErrorCode.INVALID_TOKEN]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Invalid token',
+  },
+  [ErrorCode.OWNER_ONLY]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Only the business owner can perform this action',
+  },
+  [ErrorCode.PLATFORM_ADMIN_REQUIRED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Platform admin access required',
+  },
 
   // Branch
-  [ErrorCode.BRANCH_MAIN_DELETE_FORBIDDEN]: {status: HttpStatus.BAD_REQUEST, message: 'The main store cannot be deleted'},
-  [ErrorCode.BRANCH_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Branch not found'},
+  [ErrorCode.BRANCH_MAIN_DELETE_FORBIDDEN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The main store cannot be deleted',
+  },
+  [ErrorCode.BRANCH_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Branch not found',
+  },
 
   // Brand
-  [ErrorCode.BRAND_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Brand not found'},
+  [ErrorCode.BRAND_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Brand not found',
+  },
 
   // Category
-  [ErrorCode.CATEGORY_ALREADY_EXISTS]: {status: HttpStatus.CONFLICT, message: 'Category with this id already exists'},
-  [ErrorCode.CATEGORY_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Category not found'},
+  [ErrorCode.CATEGORY_ALREADY_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Category with this id already exists',
+  },
+  [ErrorCode.CATEGORY_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Category not found',
+  },
 
   // Debt
-  [ErrorCode.DEBT_LIMIT_REACHED]: {status: HttpStatus.FORBIDDEN, message: 'Debt limit of {limit} reached for your current plan.'},
-  [ErrorCode.DEBT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Debt not found'},
-  [ErrorCode.USER_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'User not found'},
-  [ErrorCode.DEBT_USER_INFO_REQUIRED]: {status: HttpStatus.NOT_FOUND, message: 'User ID or user name and phone are required'},
-  [ErrorCode.DEBT_INSTALLMENT_PRO_ONLY]: {status: HttpStatus.FORBIDDEN, message: 'Installment debt payments are available on the Pro plan.'},
-  [ErrorCode.DEBT_PAYMENT_AMOUNT_INVALID]: {status: HttpStatus.BAD_REQUEST, message: 'Payment amount must be greater than 0.'},
-  [ErrorCode.DEBT_PAYMENT_EXCEEDS_BALANCE]: {status: HttpStatus.BAD_REQUEST, message: 'Payment exceeds the remaining balance ({remaining}).'},
-  [ErrorCode.DEBT_PAYMENT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Payment not found'},
+  [ErrorCode.DEBT_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Debt limit of {limit} reached for your current plan.',
+  },
+  [ErrorCode.DEBT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Debt not found',
+  },
+  [ErrorCode.USER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'User not found',
+  },
+  [ErrorCode.DEBT_USER_INFO_REQUIRED]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'User ID or user name and phone are required',
+  },
+  [ErrorCode.DEBT_INSTALLMENT_PRO_ONLY]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Installment debt payments are available on the Pro plan.',
+  },
+  [ErrorCode.DEBT_PAYMENT_AMOUNT_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Payment amount must be greater than 0.',
+  },
+  [ErrorCode.DEBT_PAYMENT_EXCEEDS_BALANCE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Payment exceeds the remaining balance ({remaining}).',
+  },
+  [ErrorCode.DEBT_PAYMENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Payment not found',
+  },
 
   // Finance
-  [ErrorCode.FINANCE_ACCOUNT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Account not found'},
-  [ErrorCode.FINANCE_TRANSFER_SAME_ACCOUNT]: {status: HttpStatus.BAD_REQUEST, message: 'Source and destination must differ'},
+  [ErrorCode.FINANCE_ACCOUNT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Account not found',
+  },
+  [ErrorCode.FINANCE_TRANSFER_SAME_ACCOUNT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Source and destination must differ',
+  },
 
   // Order
-  [ErrorCode.ORDER_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Order not found'},
-  [ErrorCode.SHIFT_NOT_FOUND_FOR_BUSINESS]: {status: HttpStatus.BAD_REQUEST, message: 'Shift not found for this business'},
-  [ErrorCode.NO_CASH_REGISTER]: {status: HttpStatus.BAD_REQUEST, message: 'No cash register found. Open a cash shift before selling.'},
-  [ErrorCode.MULTIPLE_REGISTERS]: {status: HttpStatus.BAD_REQUEST, message: 'Multiple registers exist — specify registerId for the sale.'},
-  [ErrorCode.NO_OPEN_SHIFT_FOR_REGISTER]: {status: HttpStatus.BAD_REQUEST, message: 'No open cash shift for this register. Open a shift before selling.'},
-  [ErrorCode.SALES_FROZEN_STOCK_TAKE]: {status: HttpStatus.FORBIDDEN, message: 'A stock-take is in progress. Sales are frozen until it is completed.'},
-  [ErrorCode.CUSTOMER_NOT_FOUND]: {status: HttpStatus.BAD_REQUEST, message: 'Customer not found for this business'},
-  [ErrorCode.DEBT_SALE_CUSTOMER_REQUIRED]: {status: HttpStatus.BAD_REQUEST, message: 'A customer name and phone are required for a debt sale'},
-  [ErrorCode.PRODUCT_NOT_FOUND_BY_ID]: {status: HttpStatus.BAD_REQUEST, message: 'Product not found: {productId}'},
-  [ErrorCode.ORDER_EMPTY]: {status: HttpStatus.BAD_REQUEST, message: 'Order must contain at least one item'},
-  [ErrorCode.CASHIER_NOT_FOUND]: {status: HttpStatus.BAD_REQUEST, message: 'Cashier not found for this business'},
-  [ErrorCode.HELD_SALE_CHECKOUT_REQUIRED]: {status: HttpStatus.BAD_REQUEST, message: 'A held sale must be completed through checkout'},
-  [ErrorCode.DEBT_SALE_CUSTOMER_IMMUTABLE]: {status: HttpStatus.BAD_REQUEST, message: 'The customer of a debt sale cannot be changed'},
+  [ErrorCode.ORDER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Order not found',
+  },
+  [ErrorCode.SHIFT_NOT_FOUND_FOR_BUSINESS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Shift not found for this business',
+  },
+  [ErrorCode.NO_CASH_REGISTER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No cash register found. Open a cash shift before selling.',
+  },
+  [ErrorCode.MULTIPLE_REGISTERS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Multiple registers exist — specify registerId for the sale.',
+  },
+  [ErrorCode.NO_OPEN_SHIFT_FOR_REGISTER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'No open cash shift for this register. Open a shift before selling.',
+  },
+  [ErrorCode.SALES_FROZEN_STOCK_TAKE]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      'A stock-take is in progress. Sales are frozen until it is completed.',
+  },
+  [ErrorCode.CUSTOMER_NOT_FOUND]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Customer not found for this business',
+  },
+  [ErrorCode.DEBT_SALE_CUSTOMER_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A customer name and phone are required for a debt sale',
+  },
+  [ErrorCode.PRODUCT_NOT_FOUND_BY_ID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Product not found: {productId}',
+  },
+  [ErrorCode.ORDER_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Order must contain at least one item',
+  },
+  [ErrorCode.CASHIER_NOT_FOUND]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Cashier not found for this business',
+  },
+  [ErrorCode.HELD_SALE_CHECKOUT_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A held sale must be completed through checkout',
+  },
+  [ErrorCode.DEBT_SALE_CUSTOMER_IMMUTABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The customer of a debt sale cannot be changed',
+  },
 
   // Product
-  [ErrorCode.PRODUCT_LIMIT_REACHED]: {status: HttpStatus.FORBIDDEN, message: 'Product limit of {limit} reached for your current plan.'},
-  [ErrorCode.PRODUCT_BULK_IMPORT_PRO_ONLY]: {status: HttpStatus.FORBIDDEN, message: 'Bulk import is not available on the free plan.'},
-  [ErrorCode.PRODUCT_CODE_EXISTS]: {status: HttpStatus.CONFLICT, message: 'Product with this code already exists'},
-  [ErrorCode.PRODUCT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Product not found'},
-  [ErrorCode.BARCODE_QUERY_REQUIRED]: {status: HttpStatus.BAD_REQUEST, message: 'barcode query parameter is required'},
+  [ErrorCode.PRODUCT_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Product limit of {limit} reached for your current plan.',
+  },
+  [ErrorCode.PRODUCT_BULK_IMPORT_PRO_ONLY]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Bulk import is not available on the free plan.',
+  },
+  [ErrorCode.PRODUCT_CODE_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Product with this code already exists',
+  },
+  [ErrorCode.PRODUCT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Product not found',
+  },
+  [ErrorCode.BARCODE_QUERY_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'barcode query parameter is required',
+  },
 
   // Receipt template
-  [ErrorCode.RECEIPT_TEMPLATE_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Receipt template not found'},
-  [ErrorCode.RECEIPT_TEMPLATE_DEFAULT_DELETE_FORBIDDEN]: {status: HttpStatus.BAD_REQUEST, message: 'Cannot delete the default template. Set another as default first.'},
+  [ErrorCode.RECEIPT_TEMPLATE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Receipt template not found',
+  },
+  [ErrorCode.RECEIPT_TEMPLATE_DEFAULT_DELETE_FORBIDDEN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Cannot delete the default template. Set another as default first.',
+  },
 
   // Receipt
-  [ErrorCode.RECEIPT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Receipt not found'},
-  [ErrorCode.SUPPLIER_NOT_FOUND_BY_ID]: {status: HttpStatus.BAD_REQUEST, message: 'Supplier not found: {supplierId}'},
-  [ErrorCode.RECEIPT_USD_RATE_REQUIRED]: {status: HttpStatus.BAD_REQUEST, message: 'usdRate is required for a USD receipt'},
-  [ErrorCode.RECEIPT_ONLY_DRAFT_RECEIVABLE]: {status: HttpStatus.BAD_REQUEST, message: 'Only a draft receipt can be received'},
-  [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {status: HttpStatus.BAD_REQUEST, message: 'Receive the draft before adding a payment'},
-  [ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN]: {status: HttpStatus.BAD_REQUEST, message: 'Receive the draft before returning goods'},
-  [ErrorCode.RECEIPT_NOTHING_TO_RETURN]: {status: HttpStatus.BAD_REQUEST, message: 'Nothing to return'},
-  [ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT]: {status: HttpStatus.BAD_REQUEST, message: 'Product not on this receipt: {productId}'},
-  [ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK]: {status: HttpStatus.BAD_REQUEST, message: 'Cannot return {qty} of "{name}"; only {available} left in stock from this receipt'},
+  [ErrorCode.RECEIPT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Receipt not found',
+  },
+  [ErrorCode.SUPPLIER_NOT_FOUND_BY_ID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Supplier not found: {supplierId}',
+  },
+  [ErrorCode.RECEIPT_USD_RATE_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'usdRate is required for a USD receipt',
+  },
+  [ErrorCode.RECEIPT_ONLY_DRAFT_RECEIVABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only a draft receipt can be received',
+  },
+  [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Receive the draft before adding a payment',
+  },
+  [ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Receive the draft before returning goods',
+  },
+  [ErrorCode.RECEIPT_NOTHING_TO_RETURN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Nothing to return',
+  },
+  [ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Product not on this receipt: {productId}',
+  },
+  [ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Cannot return {qty} of "{name}"; only {available} left in stock from this receipt',
+  },
 
   // Role
-  [ErrorCode.ROLE_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Role not found'},
-  [ErrorCode.ROLE_NAME_EXISTS]: {status: HttpStatus.CONFLICT, message: 'A role with this name already exists'},
-  [ErrorCode.ROLE_ASSIGNED_DELETE_FORBIDDEN]: {status: HttpStatus.CONFLICT, message: 'Cannot delete a role that is still assigned to staff'},
+  [ErrorCode.ROLE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Role not found',
+  },
+  [ErrorCode.ROLE_NAME_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A role with this name already exists',
+  },
+  [ErrorCode.ROLE_ASSIGNED_DELETE_FORBIDDEN]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Cannot delete a role that is still assigned to staff',
+  },
 
   // Shift
-  [ErrorCode.REGISTER_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Register not found'},
-  [ErrorCode.REGISTER_OPEN_FROZEN_STOCK_TAKE]: {status: HttpStatus.FORBIDDEN, message: 'A stock-take is in progress. The cash register cannot be opened until it is completed.'},
-  [ErrorCode.REGISTER_ALREADY_OPEN]: {status: HttpStatus.BAD_REQUEST, message: 'This register already has an open shift. Close it first.'},
-  [ErrorCode.SHIFT_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Shift not found'},
-  [ErrorCode.SHIFT_ALREADY_CLOSED]: {status: HttpStatus.BAD_REQUEST, message: 'Shift is already closed'},
-  [ErrorCode.SHIFT_CLOSE_FORBIDDEN]: {status: HttpStatus.BAD_REQUEST, message: 'Only the cashier who opened this shift (or an owner) can close it'},
+  [ErrorCode.REGISTER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Register not found',
+  },
+  [ErrorCode.REGISTER_OPEN_FROZEN_STOCK_TAKE]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      'A stock-take is in progress. The cash register cannot be opened until it is completed.',
+  },
+  [ErrorCode.REGISTER_ALREADY_OPEN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This register already has an open shift. Close it first.',
+  },
+  [ErrorCode.SHIFT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Shift not found',
+  },
+  [ErrorCode.SHIFT_ALREADY_CLOSED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Shift is already closed',
+  },
+  [ErrorCode.SHIFT_CLOSE_FORBIDDEN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Only the cashier who opened this shift (or an owner) can close it',
+  },
 
   // Staff
-  [ErrorCode.STAFF_ROLE_NOT_FOUND]: {status: HttpStatus.BAD_REQUEST, message: 'Role not found for this business'},
-  [ErrorCode.USER_LIMIT_REACHED]: {status: HttpStatus.FORBIDDEN, message: 'User limit of {limit} reached for your current plan.'},
-  [ErrorCode.STAFF_LOGIN_EXISTS]: {status: HttpStatus.CONFLICT, message: 'Login already exists'},
-  [ErrorCode.STAFF_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Staff not found'},
+  [ErrorCode.STAFF_ROLE_NOT_FOUND]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Role not found for this business',
+  },
+  [ErrorCode.USER_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'User limit of {limit} reached for your current plan.',
+  },
+  [ErrorCode.STAFF_LOGIN_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Login already exists',
+  },
+  [ErrorCode.STAFF_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Staff not found',
+  },
 
   // Stock-take
-  [ErrorCode.STOCK_TAKE_IN_PROGRESS]: {status: HttpStatus.BAD_REQUEST, message: 'Another stock-take is already in progress. Finish it first.'},
-  [ErrorCode.STOCK_TAKE_ALREADY_COMPLETED]: {status: HttpStatus.BAD_REQUEST, message: 'Stock-take is already completed'},
-  [ErrorCode.STOCK_TAKE_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Stock-take not found'},
+  [ErrorCode.STOCK_TAKE_IN_PROGRESS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Another stock-take is already in progress. Finish it first.',
+  },
+  [ErrorCode.STOCK_TAKE_ALREADY_COMPLETED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Stock-take is already completed',
+  },
+  [ErrorCode.STOCK_TAKE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Stock-take not found',
+  },
+  [ErrorCode.STOCK_TAKE_NOT_IN_PROGRESS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only an in-progress stock-take can be cancelled',
+  },
+  [ErrorCode.RECEIPT_FROZEN_STOCK_TAKE]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      'A stock-take is in progress. Goods receipts are frozen until it is completed.',
+  },
+  [ErrorCode.WRITE_OFF_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A write-off must contain at least one item',
+  },
+  [ErrorCode.WRITE_OFF_EXCEEDS_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Cannot write off {qty} of "{name}"; only {available} in stock',
+  },
 
   // Storage
-  [ErrorCode.STORAGE_NOT_CONFIGURED]: {status: HttpStatus.BAD_REQUEST, message: 'File storage is not configured.'},
-  [ErrorCode.NO_FILE_PROVIDED]: {status: HttpStatus.BAD_REQUEST, message: 'No file provided.'},
-  [ErrorCode.INVALID_FILE_TYPE]: {status: HttpStatus.BAD_REQUEST, message: 'Invalid file type. Allowed: {allowed}'},
+  [ErrorCode.STORAGE_NOT_CONFIGURED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'File storage is not configured.',
+  },
+  [ErrorCode.NO_FILE_PROVIDED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No file provided.',
+  },
+  [ErrorCode.INVALID_FILE_TYPE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Invalid file type. Allowed: {allowed}',
+  },
 
   // Subscription
-  [ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Plan with id {planId} not found'},
-  [ErrorCode.SUBSCRIPTION_PLAN_TIER_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Subscription plan with tier {tier} not found'},
-  [ErrorCode.SUBSCRIPTION_CREATE_FAILED]: {status: HttpStatus.NOT_FOUND, message: 'Failed to create subscription'},
-  [ErrorCode.SUBSCRIPTION_PLAN_TIER_EXISTS]: {status: HttpStatus.CONFLICT, message: 'Plan with tier {tier} already exists'},
+  [ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Plan with id {planId} not found',
+  },
+  [ErrorCode.SUBSCRIPTION_PLAN_TIER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Subscription plan with tier {tier} not found',
+  },
+  [ErrorCode.SUBSCRIPTION_CREATE_FAILED]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Failed to create subscription',
+  },
+  [ErrorCode.SUBSCRIPTION_PLAN_TIER_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Plan with tier {tier} already exists',
+  },
 
   // Supplier
-  [ErrorCode.SUPPLIER_NOT_FOUND]: {status: HttpStatus.NOT_FOUND, message: 'Supplier not found'},
+  [ErrorCode.SUPPLIER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Supplier not found',
+  },
 
   // User
-  [ErrorCode.USER_PHONE_EXISTS]: {status: HttpStatus.CONFLICT, message: 'User with this phone number already exists'},
+  [ErrorCode.USER_PHONE_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'User with this phone number already exists',
+  },
 };
 
 // Maps an HTTP status to the generic code the exception filter falls back to

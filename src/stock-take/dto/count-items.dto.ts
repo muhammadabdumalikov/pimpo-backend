@@ -1,9 +1,11 @@
-import {ApiProperty} from '@nestjs/swagger';
+import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {
   IsArray,
   IsString,
   IsInt,
   Min,
+  IsOptional,
+  MaxLength,
   ValidateNested,
   ArrayNotEmpty,
 } from 'class-validator';
@@ -18,6 +20,12 @@ export class CountItemDto {
   @IsInt()
   @Min(0)
   countedQty: number;
+
+  @ApiPropertyOptional({description: 'Reason for the difference (theft/damage/…)'})
+  @IsString()
+  @IsOptional()
+  @MaxLength(255)
+  reason?: string;
 }
 
 export class CountItemsDto {

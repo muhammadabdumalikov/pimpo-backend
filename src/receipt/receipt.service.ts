@@ -1,9 +1,9 @@
-import {
-  Injectable,
-} from '@nestjs/common';
+import {Injectable, Inject} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
-import { DatabaseService } from '../database/database.service';
+import {isStockTakeActive} from '../common/stock-take-lock';
+import {DatabaseService} from '../database/database.service';
 import {
   goodsReceipts,
   goodsReceiptItems,
@@ -35,13 +35,13 @@ import {
   sql,
   getTableColumns,
 } from 'drizzle-orm';
-import { generateId } from '../utils/uuid';
-import { IAccount } from '../business/types';
-import { FinanceService } from '../finance/finance.service';
-import { BranchService } from '../branch/branch.service';
-import { CreateReceiptDto } from './dto/create-receipt.dto';
-import { AddPaymentDto } from './dto/add-payment.dto';
-import { CreateReturnDto } from './dto/create-return.dto';
+import {generateId} from '../utils/uuid';
+import {IAccount} from '../business/types';
+import {FinanceService} from '../finance/finance.service';
+import {BranchService} from '../branch/branch.service';
+import {CreateReceiptDto} from './dto/create-receipt.dto';
+import {AddPaymentDto} from './dto/add-payment.dto';
+import {CreateReturnDto} from './dto/create-return.dto';
 
 function money(value: number): string {
   return value.toFixed(2);
@@ -79,9 +79,7 @@ interface ReceiptLine {
 }
 
 // Drizzle transaction handle (parameter of db.transaction's callback).
-type DbTx = Parameters<
-  Parameters<DatabaseService['db']['transaction']>[0]
->[0];
+type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
 @Injectable()
 export class ReceiptService {
@@ -89,27 +87,28 @@ export class ReceiptService {
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
     private readonly branchService: BranchService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   // Acting cashier (owner or staff) — snapshotted onto the payment.
   private async resolveCashier(
     account?: IAccount,
-  ): Promise<{ id: string | null; name: string | null }> {
-    if (!account) return { id: null, name: null };
+  ): Promise<{id: string | null; name: string | null}> {
+    if (!account) return {id: null, name: null};
     if (account.type === 'staff') {
       const [row] = await this.dbService.db
-        .select({ name: staff.name })
+        .select({name: staff.name})
         .from(staff)
         .where(eq(staff.id, account.id))
         .limit(1);
-      return { id: account.id, name: row?.name ?? null };
+      return {id: account.id, name: row?.name ?? null};
     }
     const [row] = await this.dbService.db
-      .select({ name: businesses.name })
+      .select({name: businesses.name})
       .from(businesses)
       .where(eq(businesses.id, account.id))
       .limit(1);
-    return { id: account.id, name: row?.name ?? null };
+    return {id: account.id, name: row?.name ?? null};
   }
 
   /**
@@ -121,6 +120,15 @@ export class ReceiptService {
     businessId: string,
     dto: CreateReceiptDto,
   ): Promise<ReceiptWithItems> {
+    // Freeze inbound stock while a count is open — a receipt changes
+    // products.quantity and opens a new batch, which would desync the count's
+    // book snapshot and break the SUM(qtyRemaining)==quantity invariant when the
+    // count snaps stock back to the counted figure. Same freeze sales/shifts use
+    // (INVENTARIZATSIYA.md §9.4); guarded + fail-open if the table isn't migrated.
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
+    }
+
     // Resolve supplier (optional) and snapshot its name.
     let supplierName: string | null = null;
     if (dto.supplierId) {
@@ -135,7 +143,9 @@ export class ReceiptService {
         )
         .limit(1);
       if (!supplier) {
-        throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND_BY_ID, { supplierId: dto.supplierId });
+        throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND_BY_ID, {
+          supplierId: dto.supplierId,
+        });
       }
       supplierName = supplier.name;
     }
@@ -143,7 +153,7 @@ export class ReceiptService {
     // Default selling-price behaviour comes from the business settings, but a
     // receipt line can override it per product.
     const [settings] = await this.dbService.db
-      .select({ priceIncreaseMode: receiptSettings.priceIncreaseMode })
+      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
       .from(receiptSettings)
       .where(eq(receiptSettings.businessId, businessId))
       .limit(1);
@@ -163,12 +173,12 @@ export class ReceiptService {
     // The receipt keeps every entered line as the document of record.
     const productInfo = new Map<
       string,
-      { name: string; priceOut: string; repriceOverride?: boolean }
+      {name: string; priceOut: string; repriceOverride?: boolean}
     >();
     // Per-product received totals — the same product across multiple lines is
     // summed so a single stock/cost update applies the full received batch
     // (otherwise a second line for the same product would overwrite the first).
-    const received = new Map<string, { qty: number; value: number }>();
+    const received = new Map<string, {qty: number; value: number}>();
     const lines: ReceiptLine[] = [];
     // Wholesale + bundle prices entered per product (last line wins) → update
     // the product's tiers.
@@ -191,9 +201,11 @@ export class ReceiptService {
           )
           .limit(1);
         if (!product) {
-          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, { productId: item.productId });
+          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+            productId: item.productId,
+          });
         }
-        info = { name: product.name, priceOut: product.priceOut };
+        info = {name: product.name, priceOut: product.priceOut};
         productInfo.set(item.productId, info);
       }
       // A per-line override (last one wins) controls repricing for the product.
@@ -234,7 +246,7 @@ export class ReceiptService {
         lineTotal: money(lineTotal),
       });
 
-      const agg = received.get(item.productId) ?? { qty: 0, value: 0 };
+      const agg = received.get(item.productId) ?? {qty: 0, value: 0};
       agg.qty += item.quantity;
       agg.value += priceInBase * item.quantity;
       received.set(item.productId, agg);
@@ -309,10 +321,10 @@ export class ReceiptService {
     tx: DbTx,
     businessId: string,
     lines: ReceiptLine[],
-    received: Map<string, { qty: number; value: number }>,
+    received: Map<string, {qty: number; value: number}>,
     productInfo: Map<
       string,
-      { name: string; priceOut: string; repriceOverride?: boolean }
+      {name: string; priceOut: string; repriceOverride?: boolean}
     >,
     wholesaleByProduct: Map<string, string>,
     bundleByProduct: Map<string, string>,
@@ -322,7 +334,7 @@ export class ReceiptService {
     for (const [productId, priceWholesale] of wholesaleByProduct) {
       await tx
         .update(products)
-        .set({ priceWholesale, updatedAt: new Date() })
+        .set({priceWholesale, updatedAt: new Date()})
         .where(
           and(eq(products.businessId, businessId), eq(products.id, productId)),
         );
@@ -331,7 +343,7 @@ export class ReceiptService {
     for (const [productId, priceBundle] of bundleByProduct) {
       await tx
         .update(products)
-        .set({ priceBundle, updatedAt: new Date() })
+        .set({priceBundle, updatedAt: new Date()})
         .where(
           and(eq(products.businessId, businessId), eq(products.id, productId)),
         );
@@ -389,7 +401,7 @@ export class ReceiptService {
       if (newPriceOut > currentPriceOut && reprice) {
         await tx
           .update(inventoryBatches)
-          .set({ priceOut: money(newPriceOut) })
+          .set({priceOut: money(newPriceOut)})
           .where(
             and(
               eq(inventoryBatches.businessId, businessId),
@@ -399,7 +411,7 @@ export class ReceiptService {
           );
         await tx
           .update(products)
-          .set({ priceOut: money(newPriceOut), updatedAt: new Date() })
+          .set({priceOut: money(newPriceOut), updatedAt: new Date()})
           .where(
             and(
               eq(products.businessId, businessId),
@@ -408,7 +420,7 @@ export class ReceiptService {
           );
       } else {
         const [front] = await tx
-          .select({ priceOut: inventoryBatches.priceOut })
+          .select({priceOut: inventoryBatches.priceOut})
           .from(inventoryBatches)
           .where(
             and(
@@ -422,7 +434,7 @@ export class ReceiptService {
         if (front) {
           await tx
             .update(products)
-            .set({ priceOut: front.priceOut, updatedAt: new Date() })
+            .set({priceOut: front.priceOut, updatedAt: new Date()})
             .where(
               and(
                 eq(products.businessId, businessId),
@@ -463,7 +475,7 @@ export class ReceiptService {
       .where(eq(goodsReceiptItems.receiptId, receiptId));
 
     const [settings] = await this.dbService.db
-      .select({ priceIncreaseMode: receiptSettings.priceIncreaseMode })
+      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
       .from(receiptSettings)
       .where(eq(receiptSettings.businessId, businessId))
       .limit(1);
@@ -477,10 +489,10 @@ export class ReceiptService {
 
     // Rebuild the apply inputs from the saved lines + the products' live prices.
     const lines: ReceiptLine[] = [];
-    const received = new Map<string, { qty: number; value: number }>();
+    const received = new Map<string, {qty: number; value: number}>();
     const productInfo = new Map<
       string,
-      { name: string; priceOut: string; repriceOverride?: boolean }
+      {name: string; priceOut: string; repriceOverride?: boolean}
     >();
     const wholesaleByProduct = new Map<string, string>();
     const bundleByProduct = new Map<string, string>();
@@ -490,7 +502,7 @@ export class ReceiptService {
       let info = productInfo.get(it.productId);
       if (!info) {
         const [product] = await this.dbService.db
-          .select({ priceOut: products.priceOut })
+          .select({priceOut: products.priceOut})
           .from(products)
           .where(
             and(
@@ -526,7 +538,7 @@ export class ReceiptService {
         quantity: it.quantity,
         lineTotal: it.lineTotal,
       });
-      const agg = received.get(it.productId) ?? { qty: 0, value: 0 };
+      const agg = received.get(it.productId) ?? {qty: 0, value: 0};
       agg.qty += it.quantity;
       agg.value += priceInBase * it.quantity;
       received.set(it.productId, agg);
@@ -545,7 +557,7 @@ export class ReceiptService {
       );
       await tx
         .update(goodsReceipts)
-        .set({ status: 'received', updatedAt: new Date() })
+        .set({status: 'received', updatedAt: new Date()})
         .where(
           and(
             eq(goodsReceipts.id, receiptId),
@@ -570,7 +582,7 @@ export class ReceiptService {
       endDate?: string;
     },
   ): Promise<{
-    receipts: Array<GoodsReceipt & { branchName: string | null }>;
+    receipts: Array<GoodsReceipt & {branchName: string | null}>;
     total: number;
     page: number;
     limit: number;
@@ -615,7 +627,7 @@ export class ReceiptService {
     const total = all.length;
 
     const paginated = await this.dbService.db
-      .select({ ...getTableColumns(goodsReceipts), branchName: branches.name })
+      .select({...getTableColumns(goodsReceipts), branchName: branches.name})
       .from(goodsReceipts)
       .leftJoin(branches, eq(goodsReceipts.branchId, branches.id))
       .where(and(...whereConditions))
@@ -623,7 +635,7 @@ export class ReceiptService {
       .limit(limit)
       .offset(offset);
 
-    return { receipts: paginated, total, page, limit };
+    return {receipts: paginated, total, page, limit};
   }
 
   async findOne(
@@ -631,7 +643,7 @@ export class ReceiptService {
     receiptId: string,
   ): Promise<ReceiptWithItems | null> {
     const [receipt] = await this.dbService.db
-      .select({ ...getTableColumns(goodsReceipts), branchName: branches.name })
+      .select({...getTableColumns(goodsReceipts), branchName: branches.name})
       .from(goodsReceipts)
       .leftJoin(branches, eq(goodsReceipts.branchId, branches.id))
       .where(
@@ -654,7 +666,7 @@ export class ReceiptService {
     const payments = await this.getPayments(businessId, receiptId);
     const returns = await this.getReturns(businessId, receiptId);
 
-    return { ...receipt, items, payments, returns };
+    return {...receipt, items, payments, returns};
   }
 
   // ─── Supplier payments (T1) ───────────────────────────────────────────────
@@ -687,7 +699,7 @@ export class ReceiptService {
     receiptId: string,
     dto: AddPaymentDto,
     account?: IAccount,
-  ): Promise<{ payment: SupplierPayment; receipt: GoodsReceipt }> {
+  ): Promise<{payment: SupplierPayment; receipt: GoodsReceipt}> {
     const [receipt] = await this.dbService.db
       .select()
       .from(goodsReceipts)
@@ -757,7 +769,7 @@ export class ReceiptService {
         )
         .returning();
 
-      return { payment, receipt: updated };
+      return {payment, receipt: updated};
     });
   }
 
@@ -792,7 +804,7 @@ export class ReceiptService {
     receiptId: string,
     dto: CreateReturnDto,
     account?: IAccount,
-  ): Promise<{ return: SupplierReturn; receipt: GoodsReceipt }> {
+  ): Promise<{return: SupplierReturn; receipt: GoodsReceipt}> {
     const [receipt] = await this.dbService.db
       .select()
       .from(goodsReceipts)
@@ -865,19 +877,25 @@ export class ReceiptService {
       priceIn: string;
       lineTotal: string;
     }[] = [];
-    const batchUpdates: { id: string; newRemaining: number }[] = [];
+    const batchUpdates: {id: string; newRemaining: number}[] = [];
     let returnTotal = 0;
     let returnedQty = 0;
 
     for (const [productId, qty] of requested) {
       const name = nameByProduct.get(productId);
       if (!name) {
-        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, { productId });
+        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, {
+          productId,
+        });
       }
       const pb = batchesByProduct.get(productId) ?? [];
       const available = pb.reduce((s, b) => s + b.qtyRemaining, 0);
       if (qty > available) {
-        throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, { qty, name, available });
+        throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, {
+          qty,
+          name,
+          available,
+        });
       }
       let toReturn = qty;
       let lineValue = 0;
@@ -890,7 +908,7 @@ export class ReceiptService {
           : Number(b.priceIn);
         lineValue += take * unit;
         toReturn -= take;
-        batchUpdates.push({ id: b.id, newRemaining: b.qtyRemaining - take });
+        batchUpdates.push({id: b.id, newRemaining: b.qtyRemaining - take});
       }
       returnTotal += lineValue;
       returnedQty += qty;
@@ -947,7 +965,7 @@ export class ReceiptService {
       for (const u of batchUpdates) {
         await tx
           .update(inventoryBatches)
-          .set({ qtyRemaining: u.newRemaining })
+          .set({qtyRemaining: u.newRemaining})
           .where(eq(inventoryBatches.id, u.id));
       }
 
@@ -982,7 +1000,7 @@ export class ReceiptService {
         )
         .returning();
 
-      return { return: ret, receipt: updated };
+      return {return: ret, receipt: updated};
     });
   }
 }

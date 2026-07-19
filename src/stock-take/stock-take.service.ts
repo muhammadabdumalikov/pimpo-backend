@@ -1,12 +1,13 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
-import { AppException } from '../common/errors/app.exception';
-import { ErrorCode } from '../common/errors/error-codes';
+import {Inject, Injectable, Logger} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
+  isStockTakeActive,
   setStockTakeActive,
   clearStockTakeActive,
 } from '../common/stock-take-lock';
-import {and, asc, desc, eq, sql} from 'drizzle-orm';
+import {and, asc, desc, eq, inArray, sql} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {
   stockTakes,
@@ -24,6 +25,7 @@ import {IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
+import {CreateWriteOffDto} from './dto/create-write-off.dto';
 
 // The transaction handle type, same one db.transaction hands its callback.
 type Tx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
@@ -89,11 +91,22 @@ export class StockTakeService {
     id: string,
   ): Promise<StockTake & {items: StockTakeItem[]}> {
     const stockTake = await this.requireStockTake(businessId, id);
-    const items = await this.dbService.db
-      .select()
+    const rows = await this.dbService.db
+      .select({
+        item: stockTakeItems,
+        priceIn: products.priceIn,
+      })
       .from(stockTakeItems)
+      .leftJoin(products, eq(stockTakeItems.productId, products.id))
       .where(eq(stockTakeItems.stockTakeId, id))
       .orderBy(asc(stockTakeItems.productName));
+    // While a count is in progress unit_cost is still null (the real COGS is
+    // written on completion). Surface the product's current cost as unitCost so
+    // the client can show a running "farq summasi" (diff value) as it counts.
+    const items = rows.map(({item, priceIn}) => ({
+      ...item,
+      unitCost: item.unitCost ?? priceIn ?? null,
+    }));
     return {...stockTake, items};
   }
 
@@ -197,35 +210,62 @@ export class StockTakeService {
       throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
     }
 
+    // Dedupe by product (last line wins) so an Excel with a repeated row can't
+    // fight itself, and so the set-based reads/writes below stay one-per-product.
+    const lineByProduct = new Map<string, (typeof dto.items)[number]>();
+    for (const line of dto.items) {
+      if (line.productId) lineByProduct.set(line.productId, line);
+    }
+    const productIds = [...lineByProduct.keys()];
+    if (productIds.length === 0) return {updated: 0};
+
     let updated = 0;
     await this.dbService.db.transaction(async (tx) => {
-      for (const line of dto.items) {
-        const [existing] = await tx
-          .select()
-          .from(stockTakeItems)
-          .where(
-            and(
-              eq(stockTakeItems.stockTakeId, id),
-              eq(stockTakeItems.productId, line.productId),
-            ),
-          )
-          .limit(1);
+      // ONE read of the rows already in this count (instead of a SELECT per line).
+      const existingRows = await tx
+        .select({
+          id: stockTakeItems.id,
+          productId: stockTakeItems.productId,
+          bookQty: stockTakeItems.bookQty,
+        })
+        .from(stockTakeItems)
+        .where(
+          and(
+            eq(stockTakeItems.stockTakeId, id),
+            inArray(stockTakeItems.productId, productIds),
+          ),
+        );
+      const existingByProduct = new Map(
+        existingRows.map((r) => [r.productId as string, r]),
+      );
 
-        if (existing) {
-          await tx
-            .update(stockTakeItems)
-            .set({
-              countedQty: line.countedQty,
-              diffQty: line.countedQty - existing.bookQty,
-            })
-            .where(eq(stockTakeItems.id, existing.id));
-          updated++;
-          continue;
+      // Split into updates (already counted) and inserts (first time seen).
+      const toUpdate: {
+        id: string;
+        countedQty: number;
+        diffQty: number;
+        reason: string | null;
+      }[] = [];
+      const newIds: string[] = [];
+      for (const productId of productIds) {
+        const line = lineByProduct.get(productId)!;
+        const ex = existingByProduct.get(productId);
+        if (ex) {
+          toUpdate.push({
+            id: ex.id,
+            countedQty: line.countedQty,
+            diffQty: line.countedQty - ex.bookQty,
+            reason: line.reason ?? null,
+          });
+        } else {
+          newIds.push(productId);
         }
+      }
 
-        // Partial count: first time this product is scanned — snapshot its
-        // current stock as book qty now.
-        const [product] = await tx
+      // ONE read of the products needed to snapshot the new rows' book qty.
+      const insertRows: (typeof stockTakeItems.$inferInsert)[] = [];
+      if (newIds.length > 0) {
+        const productRows = await tx
           .select({
             id: products.id,
             name: products.name,
@@ -235,25 +275,60 @@ export class StockTakeService {
           .where(
             and(
               eq(products.businessId, businessId),
-              eq(products.id, line.productId),
+              inArray(products.id, newIds),
             ),
-          )
-          .limit(1);
-        if (!product) {
-          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, { productId: line.productId });
+          );
+        const productMap = new Map(productRows.map((p) => [p.id, p]));
+        for (const productId of newIds) {
+          const p = productMap.get(productId);
+          if (!p) {
+            throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+              productId,
+            });
+          }
+          const line = lineByProduct.get(productId)!;
+          insertRows.push({
+            id: generateId(),
+            stockTakeId: id,
+            businessId,
+            productId: p.id,
+            productName: p.name,
+            bookQty: p.quantity,
+            countedQty: line.countedQty,
+            diffQty: line.countedQty - p.quantity,
+            reason: line.reason ?? null,
+          });
         }
-        await tx.insert(stockTakeItems).values({
-          id: generateId(),
-          stockTakeId: id,
-          businessId,
-          productId: product.id,
-          productName: product.name,
-          bookQty: product.quantity,
-          countedQty: line.countedQty,
-          diffQty: line.countedQty - product.quantity,
-        });
-        updated++;
       }
+
+      // Bulk INSERT the new rows (chunked so a huge import stays under limits).
+      if (insertRows.length > 0) {
+        const CHUNK = 1000;
+        for (let i = 0; i < insertRows.length; i += CHUNK) {
+          await tx
+            .insert(stockTakeItems)
+            .values(insertRows.slice(i, i + CHUNK));
+        }
+      }
+
+      // Batch UPDATE the existing rows in ONE statement via a VALUES join
+      // (instead of an UPDATE per line). reason is only overwritten when sent.
+      if (toUpdate.length > 0) {
+        const tuples = toUpdate.map(
+          (u) =>
+            sql`(${u.id}::varchar, ${u.countedQty}::integer, ${u.diffQty}::integer, ${u.reason}::varchar)`,
+        );
+        await tx.execute(sql`
+          UPDATE stock_take_items AS s
+          SET counted_qty = v.counted,
+              diff_qty = v.diff,
+              reason = COALESCE(v.reason, s.reason)
+          FROM (VALUES ${sql.join(tuples, sql`, `)}) AS v(id, counted, diff, reason)
+          WHERE s.id = v.id
+        `);
+      }
+
+      updated = toUpdate.length + insertRows.length;
     });
 
     return {updated};
@@ -279,6 +354,20 @@ export class StockTakeService {
     const cashier = await this.resolveCashier(account);
 
     await this.dbService.db.transaction(async (tx) => {
+      // Lock the row and re-check status inside the tx: two concurrent completes
+      // must not both pass the pre-check above and double-consume batches /
+      // double-post finance. The loser sees 'completed' and aborts.
+      const [locked] = await tx
+        .select({status: stockTakes.status})
+        .from(stockTakes)
+        .where(
+          and(eq(stockTakes.businessId, businessId), eq(stockTakes.id, id)),
+        )
+        .for('update');
+      if (!locked || locked.status !== 'in_progress') {
+        throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
+      }
+
       const items = await tx
         .select()
         .from(stockTakeItems)
@@ -286,7 +375,10 @@ export class StockTakeService {
 
       let surplusQty = 0;
       let shortageQty = 0;
-      let netDiffValue = 0;
+      // Gross values kept apart so a mixed count's shrinkage isn't hidden by
+      // netting it against surplus (each posts its own finance line below).
+      let surplusValue = 0;
+      let shortageValue = 0;
 
       for (const item of items) {
         if (!item.productId) continue;
@@ -319,6 +411,7 @@ export class StockTakeService {
           });
           diffValue = round2(diffQty * unitCost);
           surplusQty += diffQty;
+          surplusValue = round2(surplusValue + diffValue);
         } else if (diffQty < 0) {
           // Shortage: draw down the FIFO batch queue and value the COGS lost.
           const costing = await consumeBatches(
@@ -333,9 +426,8 @@ export class StockTakeService {
           unitCost = costing.costIn;
           diffValue = round2(-costing.costTotal);
           shortageQty += -diffQty;
+          shortageValue = round2(shortageValue + costing.costTotal);
         }
-
-        netDiffValue = round2(netDiffValue + diffValue);
 
         // Only changed lines reach here, so this runs a handful of times, not
         // once per catalog row.
@@ -370,6 +462,10 @@ export class StockTakeService {
         WHERE stock_take_id = ${id} AND counted_qty = book_qty
       `);
 
+      // Net is still stored as the document's headline figure (list/report),
+      // but the two gross legs are what post to finance.
+      const netDiffValue = round2(surplusValue - shortageValue);
+
       await tx
         .update(stockTakes)
         .set({
@@ -382,18 +478,197 @@ export class StockTakeService {
         })
         .where(eq(stockTakes.id, id));
 
-      // Finance: net COGS diff → income (surplus) / expense (shortage).
-      await this.writeFinanceDiff(tx, {
+      // Finance: surplus and shortage post as SEPARATE ledger lines (income /
+      // expense) so a mixed count records both, not just the net.
+      await this.writeFinanceLines(tx, {
         businessId,
-        stockTakeName: stockTake.name,
-        netDiffValue,
         cashierId: cashier.id,
         cashierName: cashier.name,
+        lines: [
+          {
+            kind: 'income',
+            amount: surplusValue,
+            categoryName: 'Inventarizatsiya ortiqchasi',
+            note: `Inventarizatsiya (ortiqcha): ${stockTake.name}`,
+          },
+          {
+            kind: 'expense',
+            amount: shortageValue,
+            categoryName: 'Inventarizatsiya kamomadi',
+            note: `Inventarizatsiya (kamomad): ${stockTake.name}`,
+          },
+        ],
       });
     });
 
     // Count finished — drop the lock so sales/shifts resume immediately.
     await clearStockTakeActive(this.cache, businessId);
+    return this.getOne(businessId, id);
+  }
+
+  // ─── Cancel (abandon an in-progress count, release the freeze) ──────────────
+  // A 'full' count freezes ALL sales/shifts/receipts; without this the only way
+  // out is to complete it. Marks the count 'cancelled', drops its snapshot rows
+  // (they adjust nothing), and clears the lock so the till resumes.
+  async cancel(businessId: string, id: string): Promise<StockTake> {
+    const stockTake = await this.requireStockTake(businessId, id);
+    if (stockTake.status !== 'in_progress') {
+      throw new AppException(ErrorCode.STOCK_TAKE_NOT_IN_PROGRESS);
+    }
+
+    await this.dbService.db.transaction(async (tx) => {
+      // Lock + re-check so a cancel can't race a complete (or another cancel).
+      const [locked] = await tx
+        .select({status: stockTakes.status})
+        .from(stockTakes)
+        .where(
+          and(eq(stockTakes.businessId, businessId), eq(stockTakes.id, id)),
+        )
+        .for('update');
+      if (!locked || locked.status !== 'in_progress') {
+        throw new AppException(ErrorCode.STOCK_TAKE_NOT_IN_PROGRESS);
+      }
+      await tx.delete(stockTakeItems).where(eq(stockTakeItems.stockTakeId, id));
+      await tx
+        .update(stockTakes)
+        .set({status: 'cancelled', completedAt: new Date()})
+        .where(eq(stockTakes.id, id));
+    });
+
+    await clearStockTakeActive(this.cache, businessId);
+    return this.requireStockTake(businessId, id);
+  }
+
+  // ─── Write-off (immediate stock reduction — no count, no freeze) ────────────
+  // The simplified "hisobdan chiqarish" flow: damaged/lost goods leave stock
+  // right away in one atomic transaction — drawn down FIFO (COGS-valued), stock
+  // reduced, an expense line posted. Recorded as a completed stock_take of
+  // type 'writeoff' so it shows in the list and the movement report's
+  // "written-off" column. Blocked while a count is open (would desync its
+  // book snapshot, same reason receipts are frozen).
+  async writeOff(
+    businessId: string,
+    dto: CreateWriteOffDto,
+    account?: IAccount,
+  ): Promise<StockTake & {items: StockTakeItem[]}> {
+    if (!dto.items?.length) {
+      throw new AppException(ErrorCode.WRITE_OFF_EMPTY);
+    }
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.STOCK_TAKE_IN_PROGRESS);
+    }
+
+    const cashier = await this.resolveCashier(account);
+    const now = new Date();
+    const name =
+      dto.name?.trim() ||
+      `Hisobdan chiqarish ${now.toISOString().slice(0, 16).replace('T', ' ')}`;
+    const id = generateId();
+
+    await this.dbService.db.transaction(async (tx) => {
+      await tx.insert(stockTakes).values({
+        id,
+        businessId,
+        name,
+        type: 'writeoff',
+        status: 'completed',
+        createdByCashierId: cashier.id,
+        createdByCashierName: cashier.name,
+        note: dto.note ?? null,
+        startedAt: now,
+        completedAt: now,
+      });
+
+      let shortageQty = 0;
+      let shortageValue = 0;
+
+      for (const line of dto.items) {
+        // Lock the product row so a concurrent sale can't let us over-draw.
+        const [product] = await tx
+          .select({
+            id: products.id,
+            name: products.name,
+            quantity: products.quantity,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.id, line.productId),
+            ),
+          )
+          .for('update')
+          .limit(1);
+        if (!product) {
+          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+            productId: line.productId,
+          });
+        }
+        if (line.qty > product.quantity) {
+          throw new AppException(ErrorCode.WRITE_OFF_EXCEEDS_STOCK, {
+            qty: line.qty,
+            name: product.name,
+            available: product.quantity,
+          });
+        }
+
+        const costing = await consumeBatches(
+          tx,
+          businessId,
+          product.id,
+          line.qty,
+          'FIFO',
+          await this.lastPriceIn(tx, businessId, product.id),
+          0,
+        );
+        const diffValue = round2(-costing.costTotal);
+        shortageQty += line.qty;
+        shortageValue = round2(shortageValue + costing.costTotal);
+
+        await tx.insert(stockTakeItems).values({
+          id: generateId(),
+          stockTakeId: id,
+          businessId,
+          productId: product.id,
+          productName: product.name,
+          bookQty: product.quantity,
+          countedQty: product.quantity - line.qty,
+          diffQty: -line.qty,
+          unitCost: costing.costIn.toFixed(2),
+          diffValue: diffValue.toFixed(2),
+          reason: line.reason ?? dto.reason ?? null,
+        });
+
+        await tx
+          .update(products)
+          .set({quantity: product.quantity - line.qty, updatedAt: new Date()})
+          .where(eq(products.id, product.id));
+      }
+
+      await tx
+        .update(stockTakes)
+        .set({
+          surplusQty: '0.000',
+          shortageQty: shortageQty.toFixed(3),
+          diffValue: round2(-shortageValue).toFixed(2),
+        })
+        .where(eq(stockTakes.id, id));
+
+      await this.writeFinanceLines(tx, {
+        businessId,
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+        lines: [
+          {
+            kind: 'expense',
+            amount: shortageValue,
+            categoryName: 'Hisobdan chiqarish',
+            note: `Hisobdan chiqarish: ${name}`,
+          },
+        ],
+      });
+    });
+
     return this.getOne(businessId, id);
   }
 
@@ -453,20 +728,27 @@ export class StockTakeService {
     return Number(product?.priceOut ?? 0);
   }
 
-  // Writes the aggregate stock-take diff to the finance ledger IF the finance
-  // module is present. Guarded by to_regclass so this module stays independent
-  // of MOLIYA's rollout (see AGENT-SYNC.md). Contract: MOLIYA.md §4.4.
-  private async writeFinanceDiff(
+  // Writes stock-take finance legs to the ledger IF the finance module is
+  // present. Guarded by to_regclass so this module stays independent of MOLIYA's
+  // rollout (see AGENT-SYNC.md). Contract: MOLIYA.md §4.4. Surplus and shortage
+  // are written as SEPARATE lines (income + expense) so gross shrinkage isn't
+  // hidden by netting; zero-amount legs are dropped.
+  private async writeFinanceLines(
     tx: Tx,
     p: {
       businessId: string;
-      stockTakeName: string;
-      netDiffValue: number;
       cashierId: string | null;
       cashierName: string | null;
+      lines: Array<{
+        kind: 'income' | 'expense';
+        amount: number; // positive magnitude; 0 is skipped
+        categoryName: string;
+        note: string;
+      }>;
     },
   ): Promise<void> {
-    if (!p.netDiffValue) return;
+    const lines = p.lines.filter((l) => l.amount > 0);
+    if (lines.length === 0) return;
     try {
       // db.execute() returns a bare row array or a { rows } object depending on
       // the driver — normalise both before indexing.
@@ -478,17 +760,17 @@ export class StockTakeService {
         (regResult as Array<{t: string | null}>);
       if (!regRows?.[0]?.t) return; // finance module not migrated yet — skip
 
-      const kind = p.netDiffValue > 0 ? 'income' : 'expense';
-      const amount = Math.abs(p.netDiffValue).toFixed(4);
-      const note = `Inventarizatsiya: ${p.stockTakeName}`;
-      await tx.execute(sql`
-        INSERT INTO financial_transactions
-          (id, business_id, kind, is_cash, amount, currency,
-           cashier_id, cashier_name, note, operation_date, created_at)
-        VALUES
-          (${generateId()}, ${p.businessId}, ${kind}, false, ${amount}, 'UZS',
-           ${p.cashierId}, ${p.cashierName}, ${note}, now(), now())
-      `);
+      for (const line of lines) {
+        await tx.execute(sql`
+          INSERT INTO financial_transactions
+            (id, business_id, kind, is_cash, amount, currency,
+             category_name, cashier_id, cashier_name, note, operation_date, created_at)
+          VALUES
+            (${generateId()}, ${p.businessId}, ${line.kind}, false,
+             ${line.amount.toFixed(4)}, 'UZS', ${line.categoryName},
+             ${p.cashierId}, ${p.cashierName}, ${line.note}, now(), now())
+        `);
+      }
     } catch (err) {
       // Never fail the stock-take because finance is mid-migration/renamed.
       this.logger.warn(

@@ -1,0 +1,1 @@
+ALTER TABLE "stock_take_items" ADD COLUMN "reason" varchar(255);

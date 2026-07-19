@@ -27,6 +27,11 @@ export const TTL = {
   // a missed clear or a process restart — correctness comes from the DB fallback.
   STOCK_TAKE_ACTIVE: 30 * 60 * 1000, // 30m
 
+  // Open shifts gate selling on the till and are hit on every checkout mount /
+  // focus (refreshShift). A cashShift row is only written on open/close (never
+  // by a sale), so we invalidate explicitly there; the TTL is a safety net.
+  OPEN_SHIFTS: 60 * 1000, // 60s
+
   // B group — heavy aggregations; short TTL instead of write-invalidation
   ORDERS_SUMMARY: 45 * 1000, // 45s
   ORDERS_REVENUE: 45 * 1000, // 45s
@@ -57,6 +62,7 @@ export const CacheKeys = {
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
   stockTakeActive: (businessId: string) => `stocktake:active:${businessId}`,
+  openShifts: (businessId: string) => `shifts:open:${businessId}`,
   receiptTemplateResolve: (businessId: string, registerId?: string | null) =>
     `rt:resolve:${businessId}:${registerId ?? 'none'}`,
 

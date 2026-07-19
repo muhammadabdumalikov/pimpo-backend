@@ -3,6 +3,7 @@ import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {isStockTakeActive} from '../common/stock-take-lock';
+import {CacheKeys, TTL} from '../cache/cache.util';
 import {DatabaseService} from '../database/database.service';
 import {
   cashRegisters,
@@ -263,16 +264,46 @@ export class ShiftService {
 
   /** All currently open shifts for the business (one per register at most). */
   async getOpenShifts(businessId: string): Promise<CashShift[]> {
-    return this.dbService.db
-      .select()
-      .from(cashShifts)
-      .where(
-        and(
-          eq(cashShifts.businessId, businessId),
-          eq(cashShifts.status, 'open'),
-        ),
-      )
-      .orderBy(desc(cashShifts.openedAt));
+    // Cache-aside: this is polled on every checkout mount/focus (refreshShift).
+    // A cashShift row only changes on open/close, both of which del this key, so
+    // the cached list stays correct; the TTL is just a safety refresh.
+    return this.cache.wrap(
+      CacheKeys.openShifts(businessId),
+      () =>
+        this.dbService.db
+          .select()
+          .from(cashShifts)
+          .where(
+            and(
+              eq(cashShifts.businessId, businessId),
+              eq(cashShifts.status, 'open'),
+            ),
+          )
+          .orderBy(desc(cashShifts.openedAt)),
+      TTL.OPEN_SHIFTS,
+    );
+  }
+
+  /** Drop the cached open-shift list after a shift opens or closes. */
+  private async invalidateOpenShifts(businessId: string): Promise<void> {
+    await this.cache.del(CacheKeys.openShifts(businessId));
+  }
+
+  /**
+   * Open shifts + whether a stock-take is freezing the till, in one round-trip.
+   * The checkout polls this on load/focus, so folding the freeze flag in here
+   * lets the client drop its separate `stock-takes` request. The shift list is
+   * cached (invalidated on open/close); the freeze flag comes from its own
+   * cache (fresh — set on count start, cleared on completion/cancel).
+   */
+  async getOpenShiftsWithFreeze(
+    businessId: string,
+  ): Promise<{shifts: CashShift[]; stockTakeActive: boolean}> {
+    const [shifts, stockTakeActive] = await Promise.all([
+      this.getOpenShifts(businessId),
+      isStockTakeActive(this.cache, this.dbService.db, businessId),
+    ]);
+    return {shifts, stockTakeActive};
   }
 
   // Blocks opening a shift while an inventory count is in progress. Cache-aside
@@ -327,6 +358,7 @@ export class ShiftService {
         note: dto.note ?? null,
       })
       .returning();
+    await this.invalidateOpenShifts(businessId);
     return shift;
   }
 
@@ -582,7 +614,7 @@ export class ShiftService {
     // Persist the Z-report and mirror the shift's SALES into the finance ledger
     // in one atomic transaction. Manual movements were already mirrored on
     // addMovement, so only sales are recorded here (no double-counting).
-    return this.dbService.db.transaction(async (tx) => {
+    const closedShift = await this.dbService.db.transaction(async (tx) => {
       const [closed] = await tx
         .update(cashShifts)
         .set({
@@ -602,7 +634,10 @@ export class ShiftService {
           updatedAt: new Date(),
         })
         .where(
-          and(eq(cashShifts.id, shiftId), eq(cashShifts.businessId, businessId)),
+          and(
+            eq(cashShifts.id, shiftId),
+            eq(cashShifts.businessId, businessId),
+          ),
         )
         .returning();
 
@@ -620,5 +655,7 @@ export class ShiftService {
 
       return closed;
     });
+    await this.invalidateOpenShifts(businessId);
+    return closedShift;
   }
 }
