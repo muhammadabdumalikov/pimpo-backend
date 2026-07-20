@@ -5,15 +5,17 @@ import {DatabaseService} from '../database/database.service';
 import {
   products,
   inventoryBatches,
+  branchStock,
   globalBarcodes,
   mxikClassifier,
   type Product,
   type NewProduct,
 } from '../database/schema';
-import {eq, and, desc, ilike, or, sql} from 'drizzle-orm';
+import {eq, and, desc, ilike, or, sql, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {BranchService} from '../branch/branch.service';
+import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 
 @Injectable()
 export class ProductService {
@@ -103,13 +105,24 @@ export class ProductService {
         .values(newProduct)
         .returning();
 
-      // Open an inventory batch for any initial stock so the FIFO queue stays in
-      // sync with products.quantity (sales value COGS from batches).
+      // Seed the product's per-branch stock row (its whole initial qty lives in
+      // its assigned branch; products.quantity already equals this sum).
+      await tx.insert(branchStock).values({
+        id: generateId(),
+        businessId,
+        productId: created.id,
+        branchId,
+        quantity: data.quantity,
+      });
+
+      // Open an inventory batch (in that branch) for any initial stock so the
+      // FIFO queue stays in sync with the stock (sales value COGS from batches).
       if (data.quantity > 0) {
         await tx.insert(inventoryBatches).values({
           id: generateId(),
           businessId,
           productId: created.id,
+          branchId,
           receiptItemId: null,
           priceIn: data.priceIn,
           priceOut: data.priceOut,
@@ -213,6 +226,10 @@ export class ProductService {
     const toInsert: NewProduct[] = [];
     let limitReached = false;
 
+    // Imported products land in the business default branch.
+    const defaultBranchId = (await this.branchService.ensureDefault(businessId))
+      .id;
+
     const cleanNum = (v: unknown): number =>
       Number(String(v ?? '').replace(/[^\d.]/g, ''));
 
@@ -290,6 +307,7 @@ export class ProductService {
         lowStockThreshold,
         brandId: null,
         supplierId: null,
+        branchId: defaultBranchId,
         isActive: true,
       });
     });
@@ -301,14 +319,27 @@ export class ProductService {
     await this.dbService.db.transaction(async (tx) => {
       await tx.insert(products).values(toInsert);
 
-      // Opening inventory batches for rows with initial stock (keeps the FIFO
-      // queue in sync with products.quantity).
+      // Seed each product's per-branch stock row in the default branch (its whole
+      // initial qty; products.quantity already equals this sum).
+      await tx.insert(branchStock).values(
+        toInsert.map((p) => ({
+          id: generateId(),
+          businessId,
+          productId: p.id,
+          branchId: defaultBranchId,
+          quantity: p.quantity ?? 0,
+        })),
+      );
+
+      // Opening inventory batches (in that branch) for rows with initial stock
+      // (keeps the FIFO queue in sync with the stock).
       const batches = toInsert
         .filter((p) => (p.quantity ?? 0) > 0)
         .map((p) => ({
           id: generateId(),
           businessId,
           productId: p.id,
+          branchId: defaultBranchId,
           receiptItemId: null,
           priceIn: p.priceIn,
           priceOut: p.priceOut,
@@ -353,6 +384,9 @@ export class ProductService {
       page?: number;
       limit?: number;
       search?: string;
+      // Scope to one branch: filter to its products and report THAT branch's
+      // stock as `quantity` (instead of the cross-branch sum).
+      branchId?: string;
     },
   ): Promise<{
     products: Product[];
@@ -364,6 +398,7 @@ export class ProductService {
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
     const search = options?.search;
+    const branchId = options?.branchId;
 
     // Build where conditions
     const whereConditions = [
@@ -381,14 +416,44 @@ export class ProductService {
       );
     }
 
-    // Get total count
-    const allProducts = await this.dbService.db
-      .select()
+    // Per-branch: a product belongs to a branch's catalogue when it has a
+    // branch_stock row there — seeded for its home branch at creation, and added
+    // by a transfer for any branch it was moved into. An INNER JOIN scopes the
+    // list to exactly those products and reports THAT branch's on-hand as
+    // `quantity` (instead of the cross-branch sum). Without a branch, the whole
+    // catalogue is returned with the row's own quantity (the sum).
+    if (branchId) {
+      const branchJoin = and(
+        eq(branchStock.productId, products.id),
+        eq(branchStock.branchId, branchId),
+      );
+
+      const [{value: total}] = await this.dbService.db
+        .select({value: sql<number>`count(*)::int`})
+        .from(products)
+        .innerJoin(branchStock, branchJoin)
+        .where(and(...whereConditions));
+
+      const paginatedProducts = await this.dbService.db
+        .select({
+          ...getTableColumns(products),
+          quantity: branchStock.quantity,
+        })
+        .from(products)
+        .innerJoin(branchStock, branchJoin)
+        .where(and(...whereConditions))
+        .orderBy(desc(products.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return {products: paginatedProducts, total, page, limit};
+    }
+
+    const [{value: total}] = await this.dbService.db
+      .select({value: sql<number>`count(*)::int`})
       .from(products)
       .where(and(...whereConditions));
-    const total = allProducts.length;
 
-    // Get paginated results
     const paginatedProducts = await this.dbService.db
       .select()
       .from(products)
@@ -453,18 +518,93 @@ export class ProductService {
       }
     }
 
-    const [product] = await this.dbService.db
-      .update(products)
-      .set({
-        ...data,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(eq(products.id, productId), eq(products.businessId, businessId)),
-      )
-      .returning();
+    // Stock is per-branch, so a quantity edit and a branch reassignment can't be
+    // a plain column write — route them through branch_stock (+ batches) so the
+    // (product, branch) rows and the products.quantity sum never drift.
+    const oldBranch =
+      existing.branchId ??
+      (await this.branchService.ensureDefault(businessId)).id;
+    const newBranch = data.branchId ?? oldBranch;
+    const branchChanged = data.branchId != null && data.branchId !== oldBranch;
+    const qtyChanged =
+      data.quantity != null && data.quantity !== existing.quantity;
+    // quantity is applied via branch_stock, never as a direct column set.
+    const {quantity: _q, ...rest} = data;
+    void _q;
 
-    return product;
+    return await this.dbService.db.transaction(async (tx) => {
+      await tx
+        .update(products)
+        .set({...rest, updatedAt: new Date()})
+        .where(
+          and(eq(products.id, productId), eq(products.businessId, businessId)),
+        );
+
+      // Reassigned to another branch: move its lots + stock across, leaving the
+      // total (products.quantity) unchanged.
+      if (branchChanged) {
+        await tx
+          .update(inventoryBatches)
+          .set({branchId: newBranch})
+          .where(
+            and(
+              eq(inventoryBatches.productId, productId),
+              eq(inventoryBatches.branchId, oldBranch),
+            ),
+          );
+        const moved = await getBranchStock(tx, productId, oldBranch);
+        if (moved !== 0) {
+          await tx
+            .update(branchStock)
+            .set({quantity: 0, updatedAt: new Date()})
+            .where(
+              and(
+                eq(branchStock.productId, productId),
+                eq(branchStock.branchId, oldBranch),
+              ),
+            );
+          await tx
+            .insert(branchStock)
+            .values({
+              id: generateId(),
+              businessId,
+              productId,
+              branchId: newBranch,
+              quantity: moved,
+            })
+            .onConflictDoUpdate({
+              target: [branchStock.productId, branchStock.branchId],
+              set: {
+                quantity: sql`ROUND((${branchStock.quantity} + ${moved})::numeric, 3)`,
+                updatedAt: new Date(),
+              },
+            });
+        }
+      }
+
+      // Manual quantity edit → adjust the (current) branch by the difference,
+      // which also moves the products.quantity sum by the same amount.
+      if (qtyChanged) {
+        const delta =
+          Math.round((data.quantity! - existing.quantity) * 1000) / 1000;
+        await applyBranchStockDelta(
+          tx,
+          businessId,
+          productId,
+          newBranch,
+          delta,
+        );
+      }
+
+      const [product] = await tx
+        .select()
+        .from(products)
+        .where(
+          and(eq(products.id, productId), eq(products.businessId, businessId)),
+        )
+        .limit(1);
+      return product;
+    });
   }
 
   async remove(businessId: string, productId: string): Promise<void> {

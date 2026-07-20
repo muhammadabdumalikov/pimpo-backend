@@ -121,6 +121,12 @@ export enum ErrorCode {
   WRITE_OFF_EMPTY = 'WRITE_OFF_EMPTY',
   WRITE_OFF_EXCEEDS_STOCK = 'WRITE_OFF_EXCEEDS_STOCK',
 
+  // ── Stock transfer (filiallararo ko'chirish) ───────────────────────────────
+  TRANSFER_EMPTY = 'TRANSFER_EMPTY',
+  TRANSFER_SAME_BRANCH = 'TRANSFER_SAME_BRANCH',
+  TRANSFER_EXCEEDS_STOCK = 'TRANSFER_EXCEEDS_STOCK',
+  TRANSFER_NOT_FOUND = 'TRANSFER_NOT_FOUND',
+
   // ── Storage ────────────────────────────────────────────────────────────────
   STORAGE_NOT_CONFIGURED = 'STORAGE_NOT_CONFIGURED',
   NO_FILE_PROVIDED = 'NO_FILE_PROVIDED',
@@ -506,6 +512,25 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.WRITE_OFF_EXCEEDS_STOCK]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Cannot write off {qty} of "{name}"; only {available} in stock',
+  },
+
+  // Stock transfer
+  [ErrorCode.TRANSFER_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A transfer must contain at least one item',
+  },
+  [ErrorCode.TRANSFER_SAME_BRANCH]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Source and destination store must differ',
+  },
+  [ErrorCode.TRANSFER_EXCEEDS_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Cannot transfer {qty} of "{name}"; only {available} in the source store',
+  },
+  [ErrorCode.TRANSFER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Transfer not found',
   },
 
   // Storage

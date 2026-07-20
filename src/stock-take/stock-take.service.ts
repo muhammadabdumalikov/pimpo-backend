@@ -14,6 +14,8 @@ import {
   stockTakeItems,
   products,
   inventoryBatches,
+  branchStock,
+  branches,
   staff,
   businesses,
   type StockTake,
@@ -21,6 +23,7 @@ import {
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
 import {consumeBatches} from '../order/costing';
+import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 import {IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
@@ -58,6 +61,31 @@ export class StockTakeService {
       .where(eq(businesses.id, account.id))
       .limit(1);
     return {id: account.id, name: row?.name ?? null};
+  }
+
+  // The branch a count adjusts: its storeId, else the default branch (legacy
+  // counts started before the store became required).
+  private async resolveBranch(
+    tx: Tx,
+    businessId: string,
+    storeId: string | null,
+  ): Promise<string> {
+    if (storeId) return storeId;
+    const [def] = await tx
+      .select({id: branches.id})
+      .from(branches)
+      .where(
+        and(eq(branches.businessId, businessId), eq(branches.isDefault, true)),
+      )
+      .limit(1);
+    if (def) return def.id;
+    const [any] = await tx
+      .select({id: branches.id})
+      .from(branches)
+      .where(eq(branches.businessId, businessId))
+      .limit(1);
+    if (any) return any.id;
+    throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
   }
 
   // ─── List ──────────────────────────────────────────────────────────────────
@@ -156,24 +184,46 @@ export class StockTakeService {
         startedAt: now,
       });
 
-      // Full count: snapshot every active product of the chosen branch (a product
-      // belongs to one branch, so a count is scoped to its store). Without a
-      // store the whole active catalogue is taken (legacy / single-branch).
+      // Full count: snapshot every active product STOCKED IN the chosen branch —
+      // i.e. it has a branch_stock row there (its home branch, or any branch it
+      // was transferred into). The book qty is that branch's on-hand. Without a
+      // store the whole active catalogue is taken at products.quantity (legacy).
       if (dto.type === 'full') {
-        const catalog = await tx
-          .select({
-            id: products.id,
-            name: products.name,
-            quantity: products.quantity,
-          })
-          .from(products)
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.isActive, true),
-              ...(dto.storeId ? [eq(products.branchId, dto.storeId)] : []),
-            ),
-          );
+        const storeId = dto.storeId;
+        const catalog = storeId
+          ? await tx
+              .select({
+                id: products.id,
+                name: products.name,
+                quantity: branchStock.quantity,
+              })
+              .from(products)
+              .innerJoin(
+                branchStock,
+                and(
+                  eq(branchStock.productId, products.id),
+                  eq(branchStock.branchId, storeId),
+                ),
+              )
+              .where(
+                and(
+                  eq(products.businessId, businessId),
+                  eq(products.isActive, true),
+                ),
+              )
+          : await tx
+              .select({
+                id: products.id,
+                name: products.name,
+                quantity: products.quantity,
+              })
+              .from(products)
+              .where(
+                and(
+                  eq(products.businessId, businessId),
+                  eq(products.isActive, true),
+                ),
+              );
         if (catalog.length > 0) {
           // Insert in chunks so a very large catalog doesn't blow the query size.
           const CHUNK = 500;
@@ -265,16 +315,29 @@ export class StockTakeService {
         }
       }
 
-      // ONE read of the products needed to snapshot the new rows' book qty.
+      // ONE read of the products needed to snapshot the new rows' book qty —
+      // taken from THIS COUNT'S BRANCH stock (branch_stock), not the sum.
       const insertRows: (typeof stockTakeItems.$inferInsert)[] = [];
       if (newIds.length > 0) {
+        const branchId = await this.resolveBranch(
+          tx,
+          businessId,
+          stockTake.storeId,
+        );
         const productRows = await tx
           .select({
             id: products.id,
             name: products.name,
-            quantity: products.quantity,
+            quantity: sql<number>`COALESCE(${branchStock.quantity}, 0)`,
           })
           .from(products)
+          .leftJoin(
+            branchStock,
+            and(
+              eq(branchStock.productId, products.id),
+              eq(branchStock.branchId, branchId),
+            ),
+          )
           .where(
             and(
               eq(products.businessId, businessId),
@@ -373,6 +436,13 @@ export class StockTakeService {
         throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
       }
 
+      // Every adjustment below targets this count's branch.
+      const branchId = await this.resolveBranch(
+        tx,
+        businessId,
+        stockTake.storeId,
+      );
+
       const items = await tx
         .select()
         .from(stockTakeItems)
@@ -412,6 +482,7 @@ export class StockTakeService {
             id: generateId(),
             businessId,
             productId: item.productId,
+            branchId,
             priceIn: unitCost.toFixed(2),
             priceOut: priceOut.toFixed(2),
             qtyReceived: diffQty,
@@ -421,7 +492,7 @@ export class StockTakeService {
           surplusQty += diffQty;
           surplusValue = round2(surplusValue + diffValue);
         } else if (diffQty < 0) {
-          // Shortage: draw down the FIFO batch queue and value the COGS lost.
+          // Shortage: draw down THIS branch's FIFO queue and value the COGS lost.
           const costing = await consumeBatches(
             tx,
             businessId,
@@ -430,6 +501,7 @@ export class StockTakeService {
             'FIFO',
             await this.lastPriceIn(tx, businessId, item.productId),
             0,
+            branchId,
           );
           unitCost = costing.costIn;
           diffValue = round2(-costing.costTotal);
@@ -447,20 +519,21 @@ export class StockTakeService {
             diffValue: diffValue.toFixed(2),
           })
           .where(eq(stockTakeItems.id, item.id));
+
+        // Snap THIS branch's stock to the counted reality: bookQty was this
+        // branch's on-hand at start and sales are frozen, so applying diffQty
+        // lands branch_stock at countedQty and moves products.quantity (the
+        // cross-branch sum) by the same amount.
+        await applyBranchStockDelta(
+          tx,
+          businessId,
+          item.productId,
+          branchId,
+          diffQty,
+        );
       }
 
-      // Snap on-hand to the counted reality for every CHANGED line in a single
-      // set-based UPDATE — no per-row round-trips. Unchanged lines already match
-      // (sales are frozen during a count), so they're left untouched.
-      await tx.execute(sql`
-        UPDATE products AS p
-        SET quantity = sti.counted_qty, updated_at = now()
-        FROM stock_take_items AS sti
-        WHERE sti.stock_take_id = ${id}
-          AND sti.product_id = p.id
-          AND p.business_id = ${businessId}
-          AND sti.counted_qty <> sti.book_qty
-      `);
+      // (products.quantity + branch_stock were adjusted per changed line above.)
 
       // Zero the costing fields on the untouched lines in one statement so their
       // stored diff reads 0 without a per-row write.
@@ -596,7 +669,7 @@ export class StockTakeService {
           .select({
             id: products.id,
             name: products.name,
-            quantity: products.quantity,
+            branchId: products.branchId,
           })
           .from(products)
           .where(
@@ -612,11 +685,18 @@ export class StockTakeService {
             productId: line.productId,
           });
         }
-        if (line.qty > product.quantity) {
+        // Write off from the product's home branch's stock.
+        const branchId = await this.resolveBranch(
+          tx,
+          businessId,
+          product.branchId,
+        );
+        const available = await getBranchStock(tx, product.id, branchId);
+        if (line.qty > available) {
           throw new AppException(ErrorCode.WRITE_OFF_EXCEEDS_STOCK, {
             qty: line.qty,
             name: product.name,
-            available: product.quantity,
+            available,
           });
         }
 
@@ -628,6 +708,7 @@ export class StockTakeService {
           'FIFO',
           await this.lastPriceIn(tx, businessId, product.id),
           0,
+          branchId,
         );
         const diffValue = round2(-costing.costTotal);
         shortageQty += line.qty;
@@ -639,18 +720,21 @@ export class StockTakeService {
           businessId,
           productId: product.id,
           productName: product.name,
-          bookQty: product.quantity,
-          countedQty: product.quantity - line.qty,
+          bookQty: available,
+          countedQty: available - line.qty,
           diffQty: -line.qty,
           unitCost: costing.costIn.toFixed(2),
           diffValue: diffValue.toFixed(2),
           reason: line.reason ?? dto.reason ?? null,
         });
 
-        await tx
-          .update(products)
-          .set({quantity: product.quantity - line.qty, updatedAt: new Date()})
-          .where(eq(products.id, product.id));
+        await applyBranchStockDelta(
+          tx,
+          businessId,
+          product.id,
+          branchId,
+          -line.qty,
+        );
       }
 
       await tx

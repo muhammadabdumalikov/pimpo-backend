@@ -3,6 +3,7 @@ import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {isStockTakeActive} from '../common/stock-take-lock';
+import {BranchService} from '../branch/branch.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {DatabaseService} from '../database/database.service';
 import {
@@ -17,7 +18,7 @@ import {
   type CashShift,
   type CashMovement,
 } from '../database/schema';
-import {eq, and, desc, ne} from 'drizzle-orm';
+import {eq, and, desc, ne, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
@@ -55,6 +56,7 @@ export class ShiftService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
+    private readonly branchService: BranchService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -100,10 +102,12 @@ export class ShiftService {
       .orderBy(cashRegisters.createdAt);
 
     if (regs.length === 0) {
+      const branchId = (await this.branchService.ensureDefault(businessId)).id;
       await this.dbService.db.insert(cashRegisters).values({
         id: generateId(),
         businessId,
         name: DEFAULT_REGISTER_NAME,
+        branchId,
         isActive: true,
       });
       return;
@@ -144,8 +148,11 @@ export class ShiftService {
 
   async createRegister(
     businessId: string,
-    data: {name: string; storeId?: string},
+    data: {name: string; storeId?: string; branchId?: string},
   ): Promise<CashRegister> {
+    // A register sells from one branch; default to the business default branch.
+    const branchId =
+      data.branchId ?? (await this.branchService.ensureDefault(businessId)).id;
     const [register] = await this.dbService.db
       .insert(cashRegisters)
       .values({
@@ -153,6 +160,7 @@ export class ShiftService {
         businessId,
         name: data.name,
         storeId: data.storeId ?? null,
+        branchId,
         isActive: true,
       })
       .returning();
@@ -162,7 +170,7 @@ export class ShiftService {
   async updateRegister(
     businessId: string,
     registerId: string,
-    data: {name?: string; isActive?: boolean},
+    data: {name?: string; isActive?: boolean; branchId?: string},
   ): Promise<CashRegister> {
     const [existing] = await this.dbService.db
       .select()
@@ -262,8 +270,12 @@ export class ShiftService {
     return shift ?? null;
   }
 
-  /** All currently open shifts for the business (one per register at most). */
-  async getOpenShifts(businessId: string): Promise<CashShift[]> {
+  /** All currently open shifts for the business (one per register at most). Each
+   *  carries the branch its register sells from, so the till knows which store's
+   *  stock to show/deplete. */
+  async getOpenShifts(
+    businessId: string,
+  ): Promise<(CashShift & {branchId: string | null})[]> {
     // Cache-aside: this is polled on every checkout mount/focus (refreshShift).
     // A cashShift row only changes on open/close, both of which del this key, so
     // the cached list stays correct; the TTL is just a safety refresh.
@@ -271,8 +283,12 @@ export class ShiftService {
       CacheKeys.openShifts(businessId),
       () =>
         this.dbService.db
-          .select()
+          .select({
+            ...getTableColumns(cashShifts),
+            branchId: cashRegisters.branchId,
+          })
           .from(cashShifts)
+          .leftJoin(cashRegisters, eq(cashShifts.registerId, cashRegisters.id))
           .where(
             and(
               eq(cashShifts.businessId, businessId),
@@ -296,9 +312,10 @@ export class ShiftService {
    * cached (invalidated on open/close); the freeze flag comes from its own
    * cache (fresh — set on count start, cleared on completion/cancel).
    */
-  async getOpenShiftsWithFreeze(
-    businessId: string,
-  ): Promise<{shifts: CashShift[]; stockTakeActive: boolean}> {
+  async getOpenShiftsWithFreeze(businessId: string): Promise<{
+    shifts: (CashShift & {branchId: string | null})[];
+    stockTakeActive: boolean;
+  }> {
     const [shifts, stockTakeActive] = await Promise.all([
       this.getOpenShifts(businessId),
       isStockTakeActive(this.cache, this.dbService.db, businessId),

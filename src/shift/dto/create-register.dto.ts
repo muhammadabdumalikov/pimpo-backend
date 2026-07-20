@@ -12,4 +12,13 @@ export class CreateRegisterDto {
   @IsOptional()
   @MaxLength(36)
   storeId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Branch (do'kon) this register sells from; defaults to default",
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(36)
+  branchId?: string;
 }

@@ -580,6 +580,11 @@ export const inventoryBatches = pgTable(
       () => goodsReceiptItems.id,
       {onDelete: 'set null'},
     ),
+    // Branch ("do'kon") this batch's stock lives in, so FIFO/COGS is per-branch.
+    // Null on legacy rows → the product's assigned branch (backfilled).
+    branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+      onDelete: 'set null',
+    }),
     // Unit purchase cost of this batch (immutable).
     priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
     // Unit selling price of this batch (may be bumped by a later receipt when
@@ -598,6 +603,41 @@ export const inventoryBatches = pgTable(
       table.businessId,
       table.productId,
       table.qtyRemaining,
+    ),
+  }),
+);
+
+// Per-branch stock ("do'kon qoldig'i") — the source of truth for how much of a
+// product is on hand IN EACH BRANCH. products.quantity is kept as the sum across
+// branches (denormalised) for backward compat. Sales deduct, receipts add, and
+// stock-takes reconcile the row for the document's branch. One row per
+// (product, branch).
+export const branchStock = pgTable(
+  'branch_stock',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    branchId: varchar('branch_id', {length: 36})
+      .notNull()
+      .references(() => branches.id, {onDelete: 'cascade'}),
+    // On hand for this product in this branch. doublePrecision for weighed goods.
+    quantity: doublePrecision('quantity').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    productBranchUq: uniqueIndex('branch_stock_product_branch_uq').on(
+      table.productId,
+      table.branchId,
+    ),
+    businessBranchIdx: index('branch_stock_business_branch_idx').on(
+      table.businessId,
+      table.branchId,
     ),
   }),
 );
@@ -687,6 +727,11 @@ export const cashRegisters = pgTable('cash_registers', {
     .references(() => businesses.id, {onDelete: 'cascade'}),
   name: varchar('name', {length: 255}).notNull(),
   storeId: varchar('store_id', {length: 36}),
+  // Branch ("do'kon") this register sells from. Sales rung on it draw from this
+  // branch's stock. Null on legacy rows → the business default branch.
+  branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+    onDelete: 'set null',
+  }),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -1258,6 +1303,8 @@ export type GoodsReceiptItem = typeof goodsReceiptItems.$inferSelect;
 export type NewGoodsReceiptItem = typeof goodsReceiptItems.$inferInsert;
 export type InventoryBatch = typeof inventoryBatches.$inferSelect;
 export type NewInventoryBatch = typeof inventoryBatches.$inferInsert;
+export type BranchStock = typeof branchStock.$inferSelect;
+export type NewBranchStock = typeof branchStock.$inferInsert;
 export type CashRegister = typeof cashRegisters.$inferSelect;
 export type NewCashRegister = typeof cashRegisters.$inferInsert;
 export type CashOperationCategory = typeof cashOperationCategories.$inferSelect;
@@ -1348,3 +1395,102 @@ export type StockTake = typeof stockTakes.$inferSelect;
 export type NewStockTake = typeof stockTakes.$inferInsert;
 export type StockTakeItem = typeof stockTakeItems.$inferSelect;
 export type NewStockTakeItem = typeof stockTakeItems.$inferInsert;
+
+// ─── Stock transfer (Filiallararo ko'chirish) ───────────────────────────────
+// Bir do'kondan boshqasiga qoldiq (va uning partiyalari) ko'chirish. Umumiy
+// qoldiq (products.quantity) o'zgarmaydi — faqat filiallar orasida siljiydi:
+// manba filial branch_stock kamayadi, qabul qiluvchi filial ko'payadi, va
+// partiyalar (FIFO/COGS) manbadan yechilib qabul qiluvchida ochiladi. Pul
+// harakati yo'q — moliyaga yozilmaydi. Har doim 'completed' bo'lib yaratiladi.
+export const stockTransfers = pgTable('stock_transfers', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Manba do'kon (qoldiq shu yerdan kamayadi).
+  fromBranchId: varchar('from_branch_id', {length: 36})
+    .notNull()
+    .references(() => branches.id),
+  fromBranchName: varchar('from_branch_name', {length: 255}), // snapshot
+  // Qabul qiluvchi do'kon (qoldiq shu yerga qo'shiladi).
+  toBranchId: varchar('to_branch_id', {length: 36})
+    .notNull()
+    .references(() => branches.id),
+  toBranchName: varchar('to_branch_name', {length: 255}), // snapshot
+  status: varchar('status', {length: 12}).notNull().default('completed'), // 'completed'
+  itemCount: integer('item_count').notNull().default(0),
+  // Ko'chirilgan jami miqdor (weighed goods uchun kasrli).
+  totalQty: decimal('total_qty', {precision: 14, scale: 3})
+    .notNull()
+    .default('0'),
+  // Ko'chirilgan qoldiqning COGS (tannarx) qiymati — audit uchun.
+  totalValue: decimal('total_value', {precision: 14, scale: 2})
+    .notNull()
+    .default('0'),
+  createdByCashierId: varchar('created_by_cashier_id', {length: 36}),
+  createdByCashierName: varchar('created_by_cashier_name', {length: 255}),
+  note: varchar('note', {length: 500}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const stockTransferItems = pgTable(
+  'stock_transfer_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    transferId: varchar('transfer_id', {length: 36})
+      .notNull()
+      .references(() => stockTransfers.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36}).notNull(),
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    // doublePrecision: weighed goods ko'chirilishi mumkin (kasrli kg).
+    quantity: doublePrecision('quantity').notNull(),
+    // Ko'chirilgan partiyalarning o'rtacha tannarxi (snapshot).
+    unitCost: decimal('unit_cost', {precision: 10, scale: 2}),
+    lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    transferIdx: index('stock_transfer_items_transfer_idx').on(
+      table.transferId,
+    ),
+  }),
+);
+
+export const stockTransfersRelations = relations(
+  stockTransfers,
+  ({one, many}) => ({
+    business: one(businesses, {
+      fields: [stockTransfers.businessId],
+      references: [businesses.id],
+    }),
+    fromBranch: one(branches, {
+      fields: [stockTransfers.fromBranchId],
+      references: [branches.id],
+    }),
+    toBranch: one(branches, {
+      fields: [stockTransfers.toBranchId],
+      references: [branches.id],
+    }),
+    items: many(stockTransferItems),
+  }),
+);
+
+export const stockTransferItemsRelations = relations(
+  stockTransferItems,
+  ({one}) => ({
+    transfer: one(stockTransfers, {
+      fields: [stockTransferItems.transferId],
+      references: [stockTransfers.id],
+    }),
+    product: one(products, {
+      fields: [stockTransferItems.productId],
+      references: [products.id],
+    }),
+  }),
+);
+
+export type StockTransfer = typeof stockTransfers.$inferSelect;
+export type NewStockTransfer = typeof stockTransfers.$inferInsert;
+export type StockTransferItem = typeof stockTransferItems.$inferSelect;
+export type NewStockTransferItem = typeof stockTransferItems.$inferInsert;

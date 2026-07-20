@@ -10,6 +10,7 @@ import {
   goodsReceiptItems,
   inventoryBatches,
   products,
+  branchStock,
   suppliers,
   receiptSettings,
   supplierPayments,
@@ -308,6 +309,7 @@ export class ReceiptService {
         await this.applyReceiptStockTx(
           tx,
           businessId,
+          branchId,
           lines,
           received,
           productInfo,
@@ -331,6 +333,7 @@ export class ReceiptService {
   private async applyReceiptStockTx(
     tx: DbTx,
     businessId: string,
+    branchId: string,
     lines: ReceiptLine[],
     received: Map<string, {qty: number; value: number}>,
     productInfo: Map<
@@ -361,12 +364,14 @@ export class ReceiptService {
     }
 
     // Open one inventory batch per line — the FIFO/cost source of truth. Same
-    // product at different prices stays as separate lots.
+    // product at different prices stays as separate lots. The batch belongs to
+    // the receipt's branch so per-branch FIFO draws from the right store.
     await tx.insert(inventoryBatches).values(
       lines.map((line) => ({
         id: generateId(),
         businessId,
         productId: line.productId,
+        branchId,
         receiptItemId: line.itemId,
         // Batches hold cost in base UZS (converted from the receipt currency).
         priceIn: line.priceInBase,
@@ -375,6 +380,26 @@ export class ReceiptService {
         qtyRemaining: line.quantity,
       })),
     );
+
+    // Add the received quantity to the receipt's BRANCH stock (upsert the row).
+    for (const [productId, agg] of received) {
+      await tx
+        .insert(branchStock)
+        .values({
+          id: generateId(),
+          businessId,
+          productId,
+          branchId,
+          quantity: agg.qty,
+        })
+        .onConflictDoUpdate({
+          target: [branchStock.productId, branchStock.branchId],
+          set: {
+            quantity: sql`ROUND((${branchStock.quantity} + ${agg.qty})::numeric, 3)`,
+            updatedAt: new Date(),
+          },
+        });
+    }
 
     // One atomic update per product: add the received quantity and roll the
     // purchase cost into a weighted average, computed in SQL against the live
@@ -555,10 +580,14 @@ export class ReceiptService {
       received.set(it.productId, agg);
     }
 
+    const receiveBranchId =
+      receipt.branchId ??
+      (await this.branchService.ensureDefault(businessId)).id;
     await this.dbService.db.transaction(async (tx) => {
       await this.applyReceiptStockTx(
         tx,
         businessId,
+        receiveBranchId,
         lines,
         received,
         productInfo,
@@ -962,6 +991,9 @@ export class ReceiptService {
       Number(receipt.totalAmount),
     );
 
+    const returnBranchId =
+      receipt.branchId ??
+      (await this.branchService.ensureDefault(businessId)).id;
     return this.dbService.db.transaction(async (tx) => {
       const [ret] = await tx
         .insert(supplierReturns)
@@ -1001,8 +1033,25 @@ export class ReceiptService {
           .where(eq(inventoryBatches.id, u.id));
       }
 
-      // … and the product stock by the same amount (keeps the invariant).
+      // … and the stock by the same amount, off the receipt's branch (and the
+      // products.quantity sum), keeping the batch ↔ stock invariant.
       for (const [productId, qty] of requested) {
+        await tx
+          .insert(branchStock)
+          .values({
+            id: generateId(),
+            businessId,
+            productId,
+            branchId: returnBranchId,
+            quantity: -qty,
+          })
+          .onConflictDoUpdate({
+            target: [branchStock.productId, branchStock.branchId],
+            set: {
+              quantity: sql`ROUND((${branchStock.quantity} - ${qty})::numeric, 3)`,
+              updatedAt: new Date(),
+            },
+          });
         await tx
           .update(products)
           .set({

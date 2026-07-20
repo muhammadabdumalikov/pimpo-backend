@@ -22,6 +22,7 @@ import {
   orders,
   orderItems,
   products,
+  branchStock,
   categories,
   users,
   userDebts,
@@ -86,6 +87,32 @@ export class OrderService {
     explicit?: string,
   ): Promise<string> {
     if (explicit) return explicit;
+    return (await this.branchService.ensureDefault(businessId)).id;
+  }
+
+  // The branch a sale draws stock from: an explicit branch, else the branch of
+  // the register the shift is on, else the default branch. This is what makes a
+  // sale deplete the right store's stock.
+  private async resolveSaleBranch(
+    businessId: string,
+    explicit: string | undefined,
+    shiftId: string | null,
+  ): Promise<string> {
+    if (explicit) return explicit;
+    if (shiftId) {
+      const [row] = await this.dbService.db
+        .select({branchId: cashRegisters.branchId})
+        .from(cashShifts)
+        .innerJoin(cashRegisters, eq(cashShifts.registerId, cashRegisters.id))
+        .where(
+          and(
+            eq(cashShifts.id, shiftId),
+            eq(cashShifts.businessId, businessId),
+          ),
+        )
+        .limit(1);
+      if (row?.branchId) return row.branchId;
+    }
     return (await this.branchService.ensureDefault(businessId)).id;
   }
 
@@ -343,7 +370,11 @@ export class OrderService {
       settings?.costingMethod === 'FIFO' ? 'FIFO' : 'AVERAGE';
 
     const orderId = generateId();
-    const branchId = await this.resolveBranchId(businessId, dto.branchId);
+    const branchId = await this.resolveSaleBranch(
+      businessId,
+      dto.branchId,
+      shiftId,
+    );
 
     try {
       await this.dbService.db.transaction(async (tx) => {
@@ -372,6 +403,7 @@ export class OrderService {
             method,
             p.priceIn,
             p.priceOut,
+            branchId, // draw from the sale's branch lots
             p.priceOverride,
           );
           total += c.revenueTotal;
@@ -493,13 +525,30 @@ export class OrderService {
           })),
         );
 
-        // Decrement stock (never below zero) and keep the displayed selling price
-        // tracking the new FIFO-front batch (the next unit to be sold).
+        // Draw the sold qty from the sale's BRANCH stock, keep products.quantity
+        // (the cross-branch sum) in step, and track the displayed selling price
+        // to the new FIFO-front batch (the next unit to be sold).
         for (const line of lines) {
+          await tx
+            .insert(branchStock)
+            .values({
+              id: generateId(),
+              businessId,
+              productId: line.productId,
+              branchId,
+              quantity: -line.quantity,
+            })
+            .onConflictDoUpdate({
+              target: [branchStock.productId, branchStock.branchId],
+              set: {
+                quantity: sql`ROUND((${branchStock.quantity} - ${line.quantity})::numeric, 3)`,
+                updatedAt: new Date(),
+              },
+            });
           await tx
             .update(products)
             .set({
-              quantity: sql`GREATEST(0, ROUND((${products.quantity} - ${line.quantity})::numeric, 3))`,
+              quantity: sql`ROUND((${products.quantity} - ${line.quantity})::numeric, 3)`,
               ...(line.frontPriceOut !== null
                 ? {priceOut: line.frontPriceOut}
                 : {}),

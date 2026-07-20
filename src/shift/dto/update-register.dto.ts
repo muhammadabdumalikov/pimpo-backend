@@ -12,4 +12,12 @@ export class UpdateRegisterDto {
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description: "Branch (do'kon) this register sells from",
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(36)
+  branchId?: string;
 }

@@ -11,8 +11,8 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { AppException } from '../common/errors/app.exception';
-import { ErrorCode } from '../common/errors/error-codes';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
 import {
   ApiTags,
   ApiOperation,
@@ -21,13 +21,13 @@ import {
   ApiParam,
   ApiQuery,
 } from '@nestjs/swagger';
-import { ProductService } from './product.service';
-import { JwtAuthGuard } from '../business/jwt-auth.guard';
-import { CurrentBusiness } from '../business/decorators/current-business.decorator';
-import { IBusiness } from '../business/types';
-import { CreateProductDto } from './dto/create-product.dto';
-import { UpdateProductDto } from './dto/update-product.dto';
-import { BulkCreateProductDto } from './dto/bulk-create-product.dto';
+import {ProductService} from './product.service';
+import {JwtAuthGuard} from '../business/jwt-auth.guard';
+import {CurrentBusiness} from '../business/decorators/current-business.decorator';
+import {IBusiness} from '../business/types';
+import {CreateProductDto} from './dto/create-product.dto';
+import {UpdateProductDto} from './dto/update-product.dto';
+import {BulkCreateProductDto} from './dto/bulk-create-product.dto';
 
 @ApiTags('products')
 @Controller('products')
@@ -38,17 +38,20 @@ export class ProductController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a new product' })
+  @ApiOperation({summary: 'Create a new product'})
   @ApiResponse({
     status: 201,
     description: 'Product created successfully',
   })
-  @ApiResponse({ status: 409, description: 'Product code already exists' })
+  @ApiResponse({status: 409, description: 'Product code already exists'})
   async create(
     @CurrentBusiness() business: IBusiness,
     @Body() createProductDto: CreateProductDto,
   ) {
-    const product = await this.productService.create(business.id, createProductDto);
+    const product = await this.productService.create(
+      business.id,
+      createProductDto,
+    );
     return {
       message: 'Product created successfully',
       product,
@@ -57,12 +60,17 @@ export class ProductController {
 
   @Post('bulk')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Bulk-import products from a spreadsheet (Excel/CSV)' })
+  @ApiOperation({
+    summary: 'Bulk-import products from a spreadsheet (Excel/CSV)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Import result: created count + skipped/errored rows',
   })
-  @ApiResponse({ status: 403, description: 'Bulk import not available on this plan' })
+  @ApiResponse({
+    status: 403,
+    description: 'Bulk import not available on this plan',
+  })
   async bulkCreate(
     @CurrentBusiness() business: IBusiness,
     @Body() bulkCreateProductDto: BulkCreateProductDto,
@@ -78,10 +86,31 @@ export class ProductController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all products for current business' })
-  @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
-  @ApiQuery({ name: 'search', required: false, type: String, description: 'Search term' })
+  @ApiOperation({summary: 'Get all products for current business'})
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    type: Number,
+    description: 'Page number',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Items per page',
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Search term',
+  })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    type: String,
+    description: "Scope stock to a branch (do'kon)",
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -91,53 +120,62 @@ export class ProductController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
+    @Query('branchId') branchId?: string,
   ) {
     const result = await this.productService.findAll(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
+      branchId: branchId || undefined,
     });
     return result;
   }
 
   @Get('count')
-  @ApiOperation({ summary: 'Get total product count for current business' })
+  @ApiOperation({summary: 'Get total product count for current business'})
   @ApiResponse({
     status: 200,
     description: 'Product count',
   })
   async getCount(@CurrentBusiness() business: IBusiness) {
     const count = await this.productService.getCount(business.id);
-    return { count };
+    return {count};
   }
 
   @Get('generate-code')
-  @ApiOperation({ summary: 'Generate a unique product code for current business' })
+  @ApiOperation({
+    summary: 'Generate a unique product code for current business',
+  })
   @ApiResponse({
     status: 200,
     description: 'Generated product code',
   })
   async generateCode(@CurrentBusiness() business: IBusiness) {
     const code = await this.productService.generateProductCode(business.id);
-    return { code };
+    return {code};
   }
 
   @Get('generate-barcode')
   @ApiOperation({
     summary: 'Generate a fresh, unique EAN-13 barcode for current business',
   })
-  @ApiResponse({ status: 200, description: 'Generated barcode' })
+  @ApiResponse({status: 200, description: 'Generated barcode'})
   async generateBarcode(@CurrentBusiness() business: IBusiness) {
     const barcode = await this.productService.generateBarcode(business.id);
-    return { barcode };
+    return {barcode};
   }
 
   @Get('lookup')
   @ApiOperation({
     summary: 'Look up a scanned barcode against own + shared community catalog',
   })
-  @ApiQuery({ name: 'barcode', required: true, type: String, description: 'Barcode to look up' })
-  @ApiResponse({ status: 200, description: 'Barcode lookup result' })
+  @ApiQuery({
+    name: 'barcode',
+    required: true,
+    type: String,
+    description: 'Barcode to look up',
+  })
+  @ApiResponse({status: 200, description: 'Barcode lookup result'})
   async lookup(
     @CurrentBusiness() business: IBusiness,
     @Query('barcode') barcode?: string,
@@ -150,13 +188,13 @@ export class ProductController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get a product by ID' })
-  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiOperation({summary: 'Get a product by ID'})
+  @ApiParam({name: 'id', description: 'Product ID'})
   @ApiResponse({
     status: 200,
     description: 'Product details',
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiResponse({status: 404, description: 'Product not found'})
   async findOne(
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
@@ -170,20 +208,24 @@ export class ProductController {
 
   @Put(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Update a product' })
-  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiOperation({summary: 'Update a product'})
+  @ApiParam({name: 'id', description: 'Product ID'})
   @ApiResponse({
     status: 200,
     description: 'Product updated successfully',
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
-  @ApiResponse({ status: 409, description: 'Product code already exists' })
+  @ApiResponse({status: 404, description: 'Product not found'})
+  @ApiResponse({status: 409, description: 'Product code already exists'})
   async update(
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
     @Body() updateProductDto: UpdateProductDto,
   ) {
-    const product = await this.productService.update(business.id, id, updateProductDto);
+    const product = await this.productService.update(
+      business.id,
+      id,
+      updateProductDto,
+    );
     return {
       message: 'Product updated successfully',
       product,
@@ -192,13 +234,13 @@ export class ProductController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Delete a product' })
-  @ApiParam({ name: 'id', description: 'Product ID' })
+  @ApiOperation({summary: 'Delete a product'})
+  @ApiParam({name: 'id', description: 'Product ID'})
   @ApiResponse({
     status: 200,
     description: 'Product deleted successfully',
   })
-  @ApiResponse({ status: 404, description: 'Product not found' })
+  @ApiResponse({status: 404, description: 'Product not found'})
   async remove(
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,

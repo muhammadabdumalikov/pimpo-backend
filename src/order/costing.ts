@@ -1,6 +1,6 @@
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
-import { inventoryBatches } from '../database/schema';
-import { DatabaseService } from '../database/database.service';
+import {and, asc, eq, gt, sql} from 'drizzle-orm';
+import {inventoryBatches} from '../database/schema';
+import {DatabaseService} from '../database/database.service';
 
 // The transaction handle passed to consumeBatches (same type the db.transaction
 // callback receives), so batch reads/writes commit atomically with the sale.
@@ -48,6 +48,9 @@ export async function consumeBatches(
   method: CostingMethod,
   fallbackPriceIn: number,
   fallbackPriceOut: number,
+  // Draw only from this branch's lots (per-branch FIFO). Null = any lot (legacy
+  // / single-branch), so pre-per-branch callers keep working.
+  branchId: string | null = null,
   priceOverride?: number | null,
 ): Promise<LineCosting> {
   const batches = await tx
@@ -63,6 +66,7 @@ export async function consumeBatches(
         eq(inventoryBatches.businessId, businessId),
         eq(inventoryBatches.productId, productId),
         gt(inventoryBatches.qtyRemaining, 0),
+        ...(branchId ? [eq(inventoryBatches.branchId, branchId)] : []),
       ),
     )
     .orderBy(asc(inventoryBatches.createdAt))
@@ -108,13 +112,14 @@ export async function consumeBatches(
 
   // Oldest open batch left after consuming — the next price the till shows.
   const [front] = await tx
-    .select({ priceOut: inventoryBatches.priceOut })
+    .select({priceOut: inventoryBatches.priceOut})
     .from(inventoryBatches)
     .where(
       and(
         eq(inventoryBatches.businessId, businessId),
         eq(inventoryBatches.productId, productId),
         gt(inventoryBatches.qtyRemaining, 0),
+        ...(branchId ? [eq(inventoryBatches.branchId, branchId)] : []),
       ),
     )
     .orderBy(asc(inventoryBatches.createdAt))
