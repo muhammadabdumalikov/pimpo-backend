@@ -27,6 +27,11 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
+import {
+  UpdateBillingProfileDto,
+  TopUpBalanceDto,
+  CreateDiscountDto,
+} from './dto/billing.dto';
 import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
 
 export class UpdateSubscriptionDto {
@@ -129,6 +134,18 @@ export class SubscriptionController {
   })
   async getLimits(@CurrentBusiness() business: IBusiness) {
     return await this.subscriptionService.getSubscriptionLimits(business.id);
+  }
+
+  @Get('billing')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Get billing info for current business: balance, legal details, monthly breakdown, discounts',
+  })
+  @ApiResponse({ status: 200, description: 'Billing info' })
+  async getBilling(@CurrentBusiness() business: IBusiness) {
+    return await this.subscriptionService.getBillingInfo(business.id);
   }
 
   // Business endpoints for managing their own subscription
@@ -268,6 +285,75 @@ export class SubscriptionController {
     return {
       message: 'Plan deleted successfully',
     };
+  }
+
+  // ============================================
+  // ADMIN ENDPOINTS - Billing (balance / legal details / discounts)
+  // ============================================
+
+  @Put('billing/:businessId/profile')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Update a business's billing legal details (platform admin only)" })
+  @ApiParam({ name: 'businessId', description: 'Business ID' })
+  async updateBillingProfile(
+    @Param('businessId') businessId: string,
+    @Body() dto: UpdateBillingProfileDto,
+  ) {
+    const profile = await this.subscriptionService.updateBillingProfile(
+      businessId,
+      dto,
+    );
+    return { message: 'Billing profile updated successfully', profile };
+  }
+
+  @Post('billing/:businessId/topup')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Credit a business's prepaid balance (platform admin only; manual until a payment provider is wired)",
+  })
+  @ApiParam({ name: 'businessId', description: 'Business ID' })
+  async topUpBalance(
+    @Param('businessId') businessId: string,
+    @Body() dto: TopUpBalanceDto,
+  ) {
+    const profile = await this.subscriptionService.topUpBalance(
+      businessId,
+      dto.amount,
+    );
+    return { message: 'Balance topped up successfully', profile };
+  }
+
+  @Post('billing/:businessId/discounts')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Grant a promo discount to a business (platform admin only)' })
+  @ApiParam({ name: 'businessId', description: 'Business ID' })
+  async createDiscount(
+    @Param('businessId') businessId: string,
+    @Body() dto: CreateDiscountDto,
+  ) {
+    const discount = await this.subscriptionService.createDiscount(
+      businessId,
+      dto,
+    );
+    return { message: 'Discount created successfully', discount };
+  }
+
+  @Delete('billing/discounts/:id')
+  @UseGuards(PlatformAdminGuard)
+  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Deactivate a discount (platform admin only)' })
+  @ApiParam({ name: 'id', description: 'Discount ID' })
+  async deleteDiscount(@Param('id') discountId: string) {
+    await this.subscriptionService.deleteDiscount(discountId);
+    return { message: 'Discount deleted successfully' };
   }
 
 }

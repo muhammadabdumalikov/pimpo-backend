@@ -19,6 +19,8 @@ export const businesses = pgTable('businesses', {
   email: varchar('email', {length: 255}).notNull().unique(),
   login: varchar('login', {length: 100}).notNull().unique(),
   password: varchar('password', {length: 255}).notNull(),
+  // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
+  avatarUrl: varchar('avatar_url', {length: 500}),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -59,6 +61,8 @@ export const staff = pgTable('staff', {
   // Globally unique so the unified login lookup is unambiguous.
   login: varchar('login', {length: 100}).notNull().unique(),
   password: varchar('password', {length: 255}).notNull(),
+  // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
+  avatarUrl: varchar('avatar_url', {length: 500}),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -120,7 +124,14 @@ export const products = pgTable('products', {
   // 'kg') can hold fractional amounts, e.g. 0.25 kg = 250 g. Piece products just
   // store whole numbers. Kept clean to 3 decimals (whole grams) on every write.
   quantity: doublePrecision('quantity').default(0).notNull(),
+  // Legacy weighted-vs-piece marker ('kg' | 'piece' | 'others'). When unitId is
+  // set, this is DERIVED from the unit on write ('kg' if precision > 0, else
+  // 'piece') so older consumers (mobile, checkout) keep working.
   quantityType: varchar('quantity_type', {length: 50}),
+  // Unit of measure (units table; business-owned or global system row).
+  unitId: varchar('unit_id', {length: 36}).references(() => units.id, {
+    onDelete: 'set null',
+  }),
   image: varchar('image', {length: 500}),
   categoryId: varchar('category_id', {length: 100}),
   // Reorder point: when quantity drops to or below this, the product is flagged
@@ -295,6 +306,9 @@ export const orders = pgTable(
     }),
     // Snapshot of the customer name (for guest/store orders without a user row).
     customerName: varchar('customer_name', {length: 255}),
+    // Contact phone snapshot (storefront checkout / debt sales) — no user row
+    // required, so the store can call the customer back about the order.
+    customerPhone: varchar('customer_phone', {length: 32}),
     status: varchar('status', {length: 20}).notNull().default('Pending'), // 'Pending' | 'Completed' | 'Cancelled' | 'Held' (parked cart — stock untouched)
     totalAmount: decimal('total_amount', {precision: 12, scale: 2})
       .notNull()
@@ -1519,3 +1533,138 @@ export type StockTransfer = typeof stockTransfers.$inferSelect;
 export type NewStockTransfer = typeof stockTransfers.$inferInsert;
 export type StockTransferItem = typeof stockTransferItems.$inferSelect;
 export type NewStockTransferItem = typeof stockTransferItems.$inferInsert;
+
+// Billing profile — one row per business: prepaid account balance plus the
+// legal details shown on the subscription page (and later on fiscal receipts,
+// see SOZLAMALAR.md S6). Balance is only ever mutated by platform-admin
+// top-ups / charges, never by the business itself.
+export const billingProfiles = pgTable('billing_profiles', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  balance: decimal('balance', {precision: 14, scale: 2}).notNull().default('0'),
+  // Legal entity shown on the subscription page ("WELL DOING GROUP" MChJ).
+  legalName: varchar('legal_name', {length: 255}),
+  inn: varchar('inn', {length: 20}),
+  contractNumber: varchar('contract_number', {length: 50}),
+  contractDate: timestamp('contract_date', {withTimezone: true}),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Promo discounts applied to a business's monthly subscription bill. Active
+// percents are summed (capped at 100) when computing the monthly total.
+export const subscriptionDiscounts = pgTable('subscription_discounts', {
+  id: varchar('id', {length: 36}).primaryKey().notNull(),
+  businessId: varchar('business_id', {length: 36})
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Human label shown on the page, e.g. "6 oyga 10% chegirma".
+  label: varchar('label', {length: 255}).notNull(),
+  percent: integer('percent').notNull(),
+  // null = open-ended; otherwise the discount stops applying after this date.
+  validUntil: timestamp('valid_until', {withTimezone: true}),
+  isActive: boolean('is_active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const billingProfilesRelations = relations(billingProfiles, ({one}) => ({
+  business: one(businesses, {
+    fields: [billingProfiles.businessId],
+    references: [businesses.id],
+  }),
+}));
+
+export const subscriptionDiscountsRelations = relations(
+  subscriptionDiscounts,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [subscriptionDiscounts.businessId],
+      references: [businesses.id],
+    }),
+  }),
+);
+
+export type BillingProfile = typeof billingProfiles.$inferSelect;
+export type NewBillingProfile = typeof billingProfiles.$inferInsert;
+export type SubscriptionDiscount = typeof subscriptionDiscounts.$inferSelect;
+export type NewSubscriptionDiscount = typeof subscriptionDiscounts.$inferInsert;
+
+// Units of measure (SOZLAMALAR.md S2): unit catalogue with a decimal
+// precision — how many fraction digits a quantity in this unit may carry
+// (0 = whole pieces, 3 = e.g. kilograms sold by the gram).
+// businessId NULL = global system unit (Dona, Kilogramm) visible to every
+// business and immutable; per-business rows are editable. Extra defaults
+// (Litr, Metr) are seeded lazily per business on first list.
+// Products/checkout wiring comes in a later pass (products still carry the
+// legacy free-form quantityType).
+export const units = pgTable(
+  'units',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36}).references(
+      () => businesses.id,
+      {onDelete: 'cascade'},
+    ),
+    name: varchar('name', {length: 100}).notNull(),
+    shortName: varchar('short_name', {length: 20}).notNull(),
+    precision: integer('precision').default(0).notNull(),
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessIdx: index('units_business_idx').on(table.businessId),
+  }),
+);
+
+export const unitsRelations = relations(units, ({one}) => ({
+  business: one(businesses, {
+    fields: [units.businessId],
+    references: [businesses.id],
+  }),
+}));
+
+export type Unit = typeof units.$inferSelect;
+export type NewUnit = typeof units.$inferInsert;
+
+// Configurable payment methods (SOZLAMALAR.md S1). System rows (Naqd, Karta,
+// UzCard, HUMO, VISA, Mastercard, UnionPay, Click) are seeded per business on
+// first list — visibility is a per-business choice, so unlike units these are
+// not global rows. `code` is the stable machine value stored on order payments
+// ('cash' keeps its special change/reconciliation semantics).
+export const paymentMethods = pgTable(
+  'payment_methods',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    code: varchar('code', {length: 50}).notNull(),
+    name: varchar('name', {length: 100}).notNull(),
+    // 'system' rows can only be toggled/hidden; 'custom' rows are fully editable.
+    type: varchar('type', {length: 10}).notNull().default('custom'),
+    isVisible: boolean('is_visible').default(true).notNull(),
+    sortOrder: integer('sort_order').default(0).notNull(),
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessIdx: index('payment_methods_business_idx').on(table.businessId),
+    uniqueCodeBusiness: uniqueIndex('unique_payment_method_code').on(
+      table.businessId,
+      table.code,
+    ),
+  }),
+);
+
+export const paymentMethodsRelations = relations(paymentMethods, ({one}) => ({
+  business: one(businesses, {
+    fields: [paymentMethods.businessId],
+    references: [businesses.id],
+  }),
+}));
+
+export type PaymentMethod = typeof paymentMethods.$inferSelect;
+export type NewPaymentMethod = typeof paymentMethods.$inferInsert;

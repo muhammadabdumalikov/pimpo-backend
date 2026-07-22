@@ -86,6 +86,7 @@ export class OrderController {
   @ApiQuery({name: 'limit', required: false})
   @ApiQuery({name: 'search', required: false})
   @ApiQuery({name: 'status', required: false})
+  @ApiQuery({name: 'source', required: false, description: "'admin' | 'store'"})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'paymentMethod', required: false})
@@ -98,6 +99,7 @@ export class OrderController {
     @Query('limit') limit?: string,
     @Query('search') search?: string,
     @Query('status') status?: string,
+    @Query('source') source?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('paymentMethod') paymentMethod?: string,
@@ -115,6 +117,7 @@ export class OrderController {
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
       status,
+      source,
       from,
       to,
       paymentMethod,
@@ -140,8 +143,14 @@ export class OrderController {
 
   @Get('count')
   @ApiOperation({summary: 'Get total order count'})
-  async getCount(@CurrentBusiness() business: IBusiness) {
-    return {count: await this.orderService.getCount(business.id)};
+  @ApiQuery({name: 'status', required: false})
+  @ApiQuery({name: 'source', required: false, description: "'admin' | 'store'"})
+  async getCount(
+    @CurrentBusiness() business: IBusiness,
+    @Query('status') status?: string,
+    @Query('source') source?: string,
+  ) {
+    return {count: await this.orderService.getCount(business.id, {status, source})};
   }
 
   @Get('revenue')

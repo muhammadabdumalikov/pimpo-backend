@@ -79,6 +79,55 @@ async function ensureDemoStaff(
   );
 }
 
+/**
+ * Idempotently ensure the demo business has billing data, so the subscription
+ * status page (balance, legal details, monthly breakdown, discounts) has
+ * something to show. Requires migration 0036 (billing_profiles +
+ * subscription_discounts) to be applied.
+ */
+async function ensureDemoBilling(
+  db: ReturnType<typeof drizzle>,
+  businessId: string,
+) {
+  const existingProfile = await db
+    .select()
+    .from(schema.billingProfiles)
+    .where(eq(schema.billingProfiles.businessId, businessId))
+    .limit(1);
+  if (existingProfile.length === 0) {
+    await db.insert(schema.billingProfiles).values({
+      businessId,
+      balance: '1250000.00',
+      legalName: '"DEMO MARKET" MChJ',
+      inn: '308912345',
+      contractNumber: '2150/2024',
+      contractDate: new Date('2024-12-17'),
+    });
+    console.log('✓ Demo billing profile created (balance: 1 250 000)');
+  } else {
+    console.log('↩ Demo billing profile already exists — skipping.');
+  }
+
+  const existingDiscount = await db
+    .select()
+    .from(schema.subscriptionDiscounts)
+    .where(eq(schema.subscriptionDiscounts.businessId, businessId))
+    .limit(1);
+  if (existingDiscount.length === 0) {
+    await db.insert(schema.subscriptionDiscounts).values({
+      id: generateId(),
+      businessId,
+      label: '6 oyga 10% chegirma',
+      percent: 10,
+      validUntil: daysFromNow(180),
+      isActive: true,
+    });
+    console.log('✓ Demo subscription discount created (−10%, 6 months)');
+  } else {
+    console.log('↩ Demo subscription discount already exists — skipping.');
+  }
+}
+
 async function seed() {
   const connectionString =
     process.env.DATABASE_URL ||
@@ -106,6 +155,8 @@ async function seed() {
       // Still ensure the demo role/staff exist (feature added after the
       // original seed), so the permission feature is testable.
       await ensureDemoStaff(db, existing[0].id);
+      // Likewise the billing data (feature added after the original seed).
+      await ensureDemoBilling(db, existing[0].id);
       return;
     }
 
@@ -419,6 +470,9 @@ async function seed() {
 
     // 8. A demo "Cashier" role + staff account (sees only products & checkout).
     await ensureDemoStaff(db, businessId);
+
+    // 9. Billing data for the subscription status page.
+    await ensureDemoBilling(db, businessId);
 
     console.log('\n🌱 Seed complete.');
   } finally {

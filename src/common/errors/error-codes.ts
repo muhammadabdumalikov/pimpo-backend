@@ -36,6 +36,15 @@ export enum ErrorCode {
   BRANCH_NOT_FOUND = 'BRANCH_NOT_FOUND',
   BRANCH_LIMIT_REACHED = 'BRANCH_LIMIT_REACHED',
 
+  // ── Units of measure ───────────────────────────────────────────────────────
+  UNIT_NOT_FOUND = 'UNIT_NOT_FOUND',
+  UNIT_NAME_EXISTS = 'UNIT_NAME_EXISTS',
+
+  // ── Payment methods ────────────────────────────────────────────────────────
+  PAYMENT_METHOD_NOT_FOUND = 'PAYMENT_METHOD_NOT_FOUND',
+  PAYMENT_METHOD_NAME_EXISTS = 'PAYMENT_METHOD_NAME_EXISTS',
+  PAYMENT_METHOD_SYSTEM_IMMUTABLE = 'PAYMENT_METHOD_SYSTEM_IMMUTABLE',
+
   // ── Plan / feature gating ──────────────────────────────────────────────────
   PLAN_UPGRADE_REQUIRED = 'PLAN_UPGRADE_REQUIRED',
 
@@ -115,6 +124,10 @@ export enum ErrorCode {
   USER_LIMIT_REACHED = 'USER_LIMIT_REACHED',
   STAFF_LOGIN_EXISTS = 'STAFF_LOGIN_EXISTS',
   STAFF_NOT_FOUND = 'STAFF_NOT_FOUND',
+
+  // ── Store (online storefront) ──────────────────────────────────────────────
+  STORE_INSUFFICIENT_STOCK = 'STORE_INSUFFICIENT_STOCK',
+  ORDER_CANCELLED_IMMUTABLE = 'ORDER_CANCELLED_IMMUTABLE',
 
   // ── Stock-take ─────────────────────────────────────────────────────────────
   STOCK_TAKE_IN_PROGRESS = 'STOCK_TAKE_IN_PROGRESS',
@@ -241,6 +254,26 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BRANCH_LIMIT_REACHED]: {
     status: HttpStatus.FORBIDDEN,
     message: 'Branch limit reached for your plan',
+  },
+  [ErrorCode.UNIT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Unit not found',
+  },
+  [ErrorCode.UNIT_NAME_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A unit with this name already exists',
+  },
+  [ErrorCode.PAYMENT_METHOD_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Payment method not found',
+  },
+  [ErrorCode.PAYMENT_METHOD_NAME_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A payment method with this name already exists',
+  },
+  [ErrorCode.PAYMENT_METHOD_SYSTEM_IMMUTABLE]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'System payment methods cannot be renamed or deleted',
   },
 
   // Plan / feature gating
@@ -495,6 +528,16 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.STAFF_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Staff not found',
+  },
+
+  // Store (online storefront)
+  [ErrorCode.STORE_INSUFFICIENT_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Cannot order {qty} of "{name}"; only {available} in stock',
+  },
+  [ErrorCode.ORDER_CANCELLED_IMMUTABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A cancelled order cannot change status',
   },
 
   // Stock-take

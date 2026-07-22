@@ -76,6 +76,15 @@ export class UpdateProductDto {
   quantityType?: string;
 
   @ApiProperty({
+    description:
+      'Unit of measure id (units table). When set, quantityType is derived from the unit.',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  unitId?: string;
+
+  @ApiProperty({
     description: 'Product image URL',
     example: '/images/product/product-01.jpg',
     required: false,

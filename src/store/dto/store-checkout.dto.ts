@@ -5,6 +5,8 @@ import {
   IsOptional,
   IsArray,
   IsInt,
+  Matches,
+  MaxLength,
   Min,
   ArrayMinSize,
   ValidateNested,
@@ -31,16 +33,18 @@ export class StoreCheckoutDto {
 
   @ApiProperty({ description: 'Customer name', required: false })
   @IsString()
+  @MaxLength(255)
   @IsOptional()
   customerName?: string;
 
-  @ApiProperty({ description: 'Customer phone', required: false })
+  @ApiProperty({ description: 'Customer contact phone', example: '+998901234567' })
   @IsString()
-  @IsOptional()
-  phone?: string;
+  @Matches(/^\+?[\d\s()-]{9,20}$/, { message: 'phone must be a valid phone number' })
+  phone: string;
 
   @ApiProperty({ description: 'Note', required: false })
   @IsString()
+  @MaxLength(500)
   @IsOptional()
   note?: string;
 }

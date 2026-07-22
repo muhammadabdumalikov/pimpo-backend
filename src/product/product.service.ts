@@ -8,10 +8,12 @@ import {
   branchStock,
   globalBarcodes,
   mxikClassifier,
+  units,
   type Product,
   type NewProduct,
+  type Unit,
 } from '../database/schema';
-import {eq, and, desc, ilike, or, sql, getTableColumns} from 'drizzle-orm';
+import {eq, and, desc, ilike, or, sql, isNull, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
@@ -26,6 +28,34 @@ export class ProductService {
     private readonly branchService: BranchService,
   ) {}
 
+  /**
+   * Resolve a unit the business may use: its own row or a global system row
+   * (businessId NULL). Throws when missing/inactive.
+   */
+  private async resolveUnit(businessId: string, unitId: string): Promise<Unit> {
+    const [unit] = await this.dbService.db
+      .select()
+      .from(units)
+      .where(
+        and(
+          eq(units.id, unitId),
+          or(eq(units.businessId, businessId), isNull(units.businessId)),
+          eq(units.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!unit) throw new AppException(ErrorCode.UNIT_NOT_FOUND);
+    return unit;
+  }
+
+  /**
+   * Legacy weighted-vs-piece marker derived from the unit, so consumers that
+   * still branch on quantityType ('kg' = fractional) keep working.
+   */
+  private static quantityTypeForUnit(unit: Unit): string {
+    return unit.precision > 0 ? 'kg' : 'piece';
+  }
+
   async create(
     businessId: string,
     data: {
@@ -36,6 +66,7 @@ export class ProductService {
       priceOut: string;
       quantity: number;
       quantityType?: string;
+      unitId?: string;
       image?: string;
       categoryId?: string;
       priceBundle?: string;
@@ -80,6 +111,15 @@ export class ProductService {
     const branchId =
       data.branchId || (await this.branchService.ensureDefault(businessId)).id;
 
+    // Unit of measure: when given, it also drives the legacy quantityType.
+    let unitId: string | null = null;
+    let quantityType = data.quantityType || null;
+    if (data.unitId) {
+      const unit = await this.resolveUnit(businessId, data.unitId);
+      unitId = unit.id;
+      quantityType = ProductService.quantityTypeForUnit(unit);
+    }
+
     const newProduct: NewProduct = {
       id: generateId(),
       businessId,
@@ -89,7 +129,8 @@ export class ProductService {
       priceIn: data.priceIn,
       priceOut: data.priceOut,
       quantity: data.quantity,
-      quantityType: data.quantityType || null,
+      quantityType,
+      unitId,
       image: data.image || null,
       categoryId: data.categoryId || null,
       priceBundle: data.priceBundle || null,
@@ -577,6 +618,12 @@ export class ProductService {
     const existing = await this.findOne(businessId, productId);
     if (!existing) {
       throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
+    }
+
+    // Unit change: validate it and keep the derived legacy marker in sync.
+    if (data.unitId) {
+      const unit = await this.resolveUnit(businessId, data.unitId);
+      data.quantityType = ProductService.quantityTypeForUnit(unit);
     }
 
     // Check if code already exists for another product

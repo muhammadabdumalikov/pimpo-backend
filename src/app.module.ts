@@ -17,6 +17,7 @@ import {OrderModule} from './order/order.module';
 import {SettingsModule} from './settings/settings.module';
 import {SupplierModule} from './supplier/supplier.module';
 import {BranchModule} from './branch/branch.module';
+import {UnitModule} from './unit/unit.module';
 import {BrandModule} from './brand/brand.module';
 import {ReceiptModule} from './receipt/receipt.module';
 import {ReceiptTemplateModule} from './receipt-template/receipt-template.module';
@@ -80,6 +81,7 @@ class JwtGlobalModule {}
     SettingsModule,
     SupplierModule,
     BranchModule,
+    UnitModule,
     BrandModule,
     ReceiptModule,
     ReceiptTemplateModule,

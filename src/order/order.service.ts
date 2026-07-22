@@ -23,6 +23,7 @@ import {
   orderItems,
   products,
   branchStock,
+  inventoryBatches,
   categories,
   users,
   userDebts,
@@ -488,6 +489,7 @@ export class OrderService {
           clientId: dto.clientId ?? null,
           userId: customerId,
           customerName,
+          customerPhone: dto.phone ?? null,
           status: dto.status ?? 'Pending',
           totalAmount: money(total),
           subtotalAmount: money(subtotal),
@@ -875,6 +877,7 @@ export class OrderService {
       limit?: number;
       search?: string;
       status?: string;
+      source?: string;
       from?: string;
       to?: string;
       paymentMethod?: string;
@@ -890,6 +893,9 @@ export class OrderService {
     const where = [eq(orders.businessId, businessId)];
     if (options?.status) {
       where.push(eq(orders.status, options.status));
+    }
+    if (options?.source) {
+      where.push(eq(orders.source, options.source));
     }
     if (options?.from) {
       where.push(gte(orders.createdAt, businessDayStart(options.from)));
@@ -914,6 +920,7 @@ export class OrderService {
       where.push(
         or(
           ilike(orders.customerName, `%${options.search}%`),
+          ilike(orders.customerPhone, `%${options.search}%`),
           ilike(orders.id, `%${options.search}%`),
           ilike(orders.cashierName, `%${options.search}%`),
         )!,
@@ -989,11 +996,89 @@ export class OrderService {
     if (!existing) {
       throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
+    if (existing.status === status) return existing;
     // A held sale never decremented stock, so promoting it here would create a
     // sale that no inventory ever backed. It must be completed via checkout.
     if (existing.status === 'Held' && status !== 'Cancelled') {
       throw new AppException(ErrorCode.HELD_SALE_CHECKOUT_REQUIRED);
     }
+    // Cancelling a store order restored its stock (below) — reopening it would
+    // sell inventory that was already put back.
+    if (existing.status === 'Cancelled') {
+      throw new AppException(ErrorCode.ORDER_CANCELLED_IMMUTABLE);
+    }
+
+    // A storefront order consumed stock when it was placed, so cancelling it
+    // puts the goods back: one restock batch per line (at the line's cost/price
+    // snapshot, in the order's branch) + the branch/product quantities.
+    const restock =
+      status === 'Cancelled' &&
+      existing.source === 'store' &&
+      existing.status !== 'Held';
+    if (restock) {
+      await this.dbService.db.transaction(async (tx) => {
+        for (const item of existing.items) {
+          if (!item.productId) continue;
+          const [product] = await tx
+            .select({id: products.id})
+            .from(products)
+            .where(
+              and(
+                eq(products.businessId, businessId),
+                eq(products.id, item.productId),
+              ),
+            )
+            .limit(1);
+          if (!product) continue; // product deleted since the sale
+          await tx.insert(inventoryBatches).values({
+            id: generateId(),
+            businessId,
+            productId: item.productId,
+            branchId: existing.branchId ?? null,
+            priceIn: item.costIn,
+            priceOut: item.priceOut,
+            qtyReceived: item.quantity,
+            qtyRemaining: item.quantity,
+          });
+          if (existing.branchId) {
+            await tx
+              .insert(branchStock)
+              .values({
+                id: generateId(),
+                businessId,
+                productId: item.productId,
+                branchId: existing.branchId,
+                quantity: item.quantity,
+              })
+              .onConflictDoUpdate({
+                target: [branchStock.productId, branchStock.branchId],
+                set: {
+                  quantity: sql`ROUND((${branchStock.quantity} + ${item.quantity})::numeric, 3)`,
+                  updatedAt: new Date(),
+                },
+              });
+          }
+          await tx
+            .update(products)
+            .set({
+              quantity: sql`ROUND((${products.quantity} + ${item.quantity})::numeric, 3)`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(products.businessId, businessId),
+                eq(products.id, item.productId),
+              ),
+            );
+        }
+        await tx
+          .update(orders)
+          .set({status, updatedAt: new Date()})
+          .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+      });
+      return this.findOne(businessId, id) as Promise<OrderWithItems>;
+    }
+
     await this.dbService.db
       .update(orders)
       .set({status, updatedAt: new Date()})
@@ -1187,11 +1272,21 @@ export class OrderService {
     };
   }
 
-  async getCount(businessId: string): Promise<number> {
+  async getCount(
+    businessId: string,
+    options?: {status?: string; source?: string},
+  ): Promise<number> {
+    const where = [eq(orders.businessId, businessId)];
+    if (options?.status) {
+      where.push(eq(orders.status, options.status));
+    }
+    if (options?.source) {
+      where.push(eq(orders.source, options.source));
+    }
     const result = await this.dbService.db
       .select({count: count()})
       .from(orders)
-      .where(eq(orders.businessId, businessId));
+      .where(and(...where));
     return result[0].count;
   }
 

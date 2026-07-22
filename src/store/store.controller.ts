@@ -63,16 +63,15 @@ export class StoreController {
   @ApiOperation({ summary: 'Place a store order (public)' })
   @ApiResponse({ status: 201, description: 'Order created' })
   async createOrder(@Body() dto: StoreCheckoutDto) {
-    // Fold the optional phone into the note so it is captured on the order.
-    const noteParts = [
-      dto.phone ? `Tel: ${dto.phone}` : null,
-      dto.note || null,
-    ].filter(Boolean);
+    // Scope + stock guard: products must be in the storefront's catalog and
+    // on hand, else the customer gets a clear error instead of an oversell.
+    await this.storeService.assertOrderable(dto.items);
 
     const order = await this.orderService.createStore({
       items: dto.items,
       customerName: dto.customerName,
-      note: noteParts.length ? noteParts.join(' — ') : undefined,
+      phone: dto.phone,
+      note: dto.note || undefined,
     });
 
     return {

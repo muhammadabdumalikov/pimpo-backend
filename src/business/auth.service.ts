@@ -5,8 +5,8 @@ import { JwtService } from '@nestjs/jwt';
 import { eq } from 'drizzle-orm';
 import { BusinessService } from './business.service';
 import { DatabaseService } from '../database/database.service';
-import { staff, roles } from '../database/schema';
-import { verifyPassword } from '../utils/password';
+import { staff, roles, businesses } from '../database/schema';
+import { verifyPassword, hashPassword } from '../utils/password';
 import { JwtPayload } from './jwt-auth.guard';
 import { IBusiness, IAccount } from './types';
 
@@ -100,6 +100,7 @@ export class AuthService {
           id: business.id,
           name: business.name,
           login: business.login,
+          avatarUrl: business.avatarUrl ?? null,
           roleId: null,
           roleName: null,
           menuKeys: [ALL_MENUS],
@@ -141,6 +142,7 @@ export class AuthService {
         id: member.id,
         name: member.name,
         login: member.login,
+        avatarUrl: member.avatarUrl ?? null,
         roleId: role.id,
         roleName: role.name,
         menuKeys: role.menuKeys ?? [],
@@ -157,6 +159,7 @@ export class AuthService {
     name: string;
     email: string;
     login: string;
+    avatarUrl?: string | null;
     isActive: boolean;
     createdAt: Date;
     updatedAt: Date;
@@ -186,6 +189,7 @@ export class AuthService {
         id: business.id,
         name: business.name,
         login: business.login,
+        avatarUrl: business.avatarUrl ?? null,
         roleId: null,
         roleName: null,
         menuKeys: [ALL_MENUS],
@@ -235,10 +239,73 @@ export class AuthService {
         id: member.id,
         name: member.name,
         login: member.login,
+        avatarUrl: member.avatarUrl ?? null,
         roleId: role.id,
         roleName: role.name,
         menuKeys: role.menuKeys ?? [],
       },
     };
+  }
+
+  /**
+   * Update the acting account's own profile (name / avatar). Owner edits the
+   * business row, staff edit their staff row. Returns the refreshed account
+   * payload (same shape as GET /businesses/me/account).
+   */
+  async updateMyProfile(
+    identity: IAccount,
+    data: { name?: string; avatarUrl?: string | null },
+  ) {
+    const set: { name?: string; avatarUrl?: string | null; updatedAt: Date } = {
+      updatedAt: new Date(),
+    };
+    if (data.name !== undefined) set.name = data.name;
+    if (data.avatarUrl !== undefined) set.avatarUrl = data.avatarUrl;
+
+    if (identity.type === 'business') {
+      await this.dbService.db
+        .update(businesses)
+        .set(set)
+        .where(eq(businesses.id, identity.id));
+    } else {
+      await this.dbService.db
+        .update(staff)
+        .set(set)
+        .where(eq(staff.id, identity.id));
+    }
+
+    return this.getCurrentUser(identity);
+  }
+
+  /** Change the acting account's own password, verifying the current one. */
+  async changeMyPassword(
+    identity: IAccount,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    if (identity.type === 'business') {
+      const business = await this.businessService.findById(identity.id);
+      if (!business || !verifyPassword(currentPassword, business.password)) {
+        throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+      }
+      await this.dbService.db
+        .update(businesses)
+        .set({ password: hashPassword(newPassword), updatedAt: new Date() })
+        .where(eq(businesses.id, identity.id));
+      return;
+    }
+
+    const [member] = await this.dbService.db
+      .select()
+      .from(staff)
+      .where(eq(staff.id, identity.id))
+      .limit(1);
+    if (!member || !verifyPassword(currentPassword, member.password)) {
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+    }
+    await this.dbService.db
+      .update(staff)
+      .set({ password: hashPassword(newPassword), updatedAt: new Date() })
+      .where(eq(staff.id, identity.id));
   }
 }

@@ -6,13 +6,44 @@ import { DatabaseService } from '../database/database.service';
 import {
   subscriptionPlans,
   businessSubscriptions,
+  billingProfiles,
+  subscriptionDiscounts,
+  branches,
   type SubscriptionPlan,
   type BusinessSubscription,
+  type BillingProfile,
+  type SubscriptionDiscount,
 } from '../database/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
 import { TIER_RANK, type Tier } from './tier';
+
+// Monthly price of each branch beyond the first (base) one. Mirrors the
+// "+150 000" extra-location line in the plan comparison table.
+const EXTRA_BRANCH_PRICE = 150_000;
+
+// Shape returned by GET /subscriptions/billing — everything the subscription
+// status page needs in one call.
+export type BillingInfo = {
+  balance: number;
+  legalName: string | null;
+  inn: string | null;
+  contractNumber: string | null;
+  contractDate: Date | null;
+  monthly: {
+    planTier: string | null;
+    planName: string | null;
+    planPrice: number;
+    extraBranches: number;
+    extraBranchPrice: number;
+    extraBranchesTotal: number;
+    discountPercent: number;
+    discountAmount: number;
+    total: number;
+  };
+  discounts: Pick<SubscriptionDiscount, 'id' | 'label' | 'percent' | 'validUntil'>[];
+};
 
 // Limits applied to a business with no active plan (never subscribed, or trial
 // expired). Mirrors the deactivated internal `free` floor.
@@ -333,5 +364,183 @@ export class SubscriptionService implements OnModuleInit {
       .limit(1);
 
     return plan || null;
+  }
+
+  // ============================================
+  // Billing — balance, legal details, monthly breakdown, discounts
+  // ============================================
+
+  /** Everything the subscription status page needs, in one cached call. */
+  async getBillingInfo(businessId: string): Promise<BillingInfo> {
+    return this.cache.wrap(
+      CacheKeys.subscriptionBilling(businessId),
+      () => this.fetchBillingInfo(businessId),
+      TTL.SUBSCRIPTION,
+    );
+  }
+
+  private async fetchBillingInfo(businessId: string): Promise<BillingInfo> {
+    const [profile, subscription, branchRows, discountRows] = await Promise.all([
+      this.getBillingProfile(businessId),
+      this.getBusinessSubscription(businessId),
+      this.dbService.db
+        .select({ id: branches.id })
+        .from(branches)
+        .where(
+          and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+        ),
+      this.dbService.db
+        .select()
+        .from(subscriptionDiscounts)
+        .where(
+          and(
+            eq(subscriptionDiscounts.businessId, businessId),
+            eq(subscriptionDiscounts.isActive, true),
+          ),
+        )
+        .orderBy(desc(subscriptionDiscounts.createdAt)),
+    ]);
+
+    const now = new Date();
+    const activeDiscounts = discountRows.filter(
+      (d) => !d.validUntil || d.validUntil > now,
+    );
+
+    const planPrice = subscription ? Number(subscription.plan.price) : 0;
+    // First branch is included in the plan; each extra one is billed monthly.
+    const extraBranches = Math.max(0, branchRows.length - 1);
+    const extraBranchesTotal = extraBranches * EXTRA_BRANCH_PRICE;
+    const subtotal = planPrice + extraBranchesTotal;
+    const discountPercent = Math.min(
+      100,
+      activeDiscounts.reduce((sum, d) => sum + d.percent, 0),
+    );
+    const discountAmount = Math.round((subtotal * discountPercent) / 100);
+
+    return {
+      balance: profile ? Number(profile.balance) : 0,
+      legalName: profile?.legalName ?? null,
+      inn: profile?.inn ?? null,
+      contractNumber: profile?.contractNumber ?? null,
+      contractDate: profile?.contractDate ?? null,
+      monthly: {
+        planTier: subscription?.plan.tier ?? null,
+        planName: subscription?.plan.name ?? null,
+        planPrice,
+        extraBranches,
+        extraBranchPrice: EXTRA_BRANCH_PRICE,
+        extraBranchesTotal,
+        discountPercent,
+        discountAmount,
+        total: subtotal - discountAmount,
+      },
+      discounts: activeDiscounts.map((d) => ({
+        id: d.id,
+        label: d.label,
+        percent: d.percent,
+        validUntil: d.validUntil,
+      })),
+    };
+  }
+
+  private async getBillingProfile(
+    businessId: string,
+  ): Promise<BillingProfile | null> {
+    const [profile] = await this.dbService.db
+      .select()
+      .from(billingProfiles)
+      .where(eq(billingProfiles.businessId, businessId))
+      .limit(1);
+    return profile || null;
+  }
+
+  /** Platform admin: upsert the legal details of a business's billing profile. */
+  async updateBillingProfile(
+    businessId: string,
+    data: {
+      legalName?: string;
+      inn?: string;
+      contractNumber?: string;
+      contractDate?: string;
+    },
+  ): Promise<BillingProfile> {
+    const set = {
+      ...(data.legalName !== undefined && { legalName: data.legalName }),
+      ...(data.inn !== undefined && { inn: data.inn }),
+      ...(data.contractNumber !== undefined && {
+        contractNumber: data.contractNumber,
+      }),
+      ...(data.contractDate !== undefined && {
+        contractDate: new Date(data.contractDate),
+      }),
+      updatedAt: new Date(),
+    };
+
+    const [profile] = await this.dbService.db
+      .insert(billingProfiles)
+      .values({ businessId, ...set })
+      .onConflictDoUpdate({ target: billingProfiles.businessId, set })
+      .returning();
+
+    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
+    return profile;
+  }
+
+  /** Platform admin: credit the prepaid balance (manual top-up until a payment provider is wired). */
+  async topUpBalance(businessId: string, amount: number): Promise<BillingProfile> {
+    const current = await this.getBillingProfile(businessId);
+    const nextBalance = (current ? Number(current.balance) : 0) + amount;
+
+    const [profile] = await this.dbService.db
+      .insert(billingProfiles)
+      .values({
+        businessId,
+        balance: nextBalance.toFixed(2),
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: billingProfiles.businessId,
+        set: { balance: nextBalance.toFixed(2), updatedAt: new Date() },
+      })
+      .returning();
+
+    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
+    return profile;
+  }
+
+  /** Platform admin: grant a promo discount on the monthly bill. */
+  async createDiscount(
+    businessId: string,
+    data: { label: string; percent: number; validUntil?: string },
+  ): Promise<SubscriptionDiscount> {
+    const { generateId } = await import('../utils/uuid');
+    const [discount] = await this.dbService.db
+      .insert(subscriptionDiscounts)
+      .values({
+        id: generateId(),
+        businessId,
+        label: data.label,
+        percent: data.percent,
+        validUntil: data.validUntil ? new Date(data.validUntil) : null,
+      })
+      .returning();
+
+    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
+    return discount;
+  }
+
+  /** Platform admin: deactivate a discount. */
+  async deleteDiscount(discountId: string): Promise<void> {
+    const [discount] = await this.dbService.db
+      .update(subscriptionDiscounts)
+      .set({ isActive: false })
+      .where(eq(subscriptionDiscounts.id, discountId))
+      .returning();
+
+    if (!discount) {
+      throw new AppException(ErrorCode.NOT_FOUND, { discountId });
+    }
+
+    await this.cache.del(CacheKeys.subscriptionBilling(discount.businessId));
   }
 }

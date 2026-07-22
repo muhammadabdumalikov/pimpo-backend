@@ -253,6 +253,55 @@
       "when": 1784522020530,
       "tag": "0035_flaky_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784736387096,
+      "tag": "0036_billing_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784738894668,
+      "tag": "0037_profile_avatars",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1784739752600,
+      "tag": "0038_units",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1784740329457,
+      "tag": "0039_system_units",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1784740695872,
+      "tag": "0040_products_unit_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1784741846556,
+      "tag": "0041_payment_methods",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1784741900000,
+      "tag": "0042_store_order_phone",
+      "breakpoints": true
     }
   ]
 }

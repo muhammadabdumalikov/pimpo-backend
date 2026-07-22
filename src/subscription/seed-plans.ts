@@ -33,7 +33,7 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       isActive: true,
       debtsLimit: null,
       productsLimit: null,
-      usersLimit: 4,
+      usersLimit: 10,
       branchesLimit: 4,
     },
     {
@@ -45,7 +45,7 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       isActive: true,
       debtsLimit: null,
       productsLimit: null,
-      usersLimit: 10,
+      usersLimit: 20,
       branchesLimit: 6,
     },
     {
@@ -57,7 +57,7 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       isActive: true,
       debtsLimit: null,
       productsLimit: null,
-      usersLimit: null,
+      usersLimit: 50,
       branchesLimit: null,
     },
   ];

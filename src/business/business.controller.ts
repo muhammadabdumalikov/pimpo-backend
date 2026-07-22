@@ -28,6 +28,7 @@ import { IBusiness, IAccount } from './types';
 import { CreateBusinessDto } from './dto/create-business.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateBusinessDto } from './dto/update-business.dto';
+import { UpdateMyProfileDto, ChangeMyPasswordDto } from './dto/profile.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
 import { CurrentUserResponseDto } from './dto/current-user-response.dto';
@@ -118,6 +119,45 @@ export class BusinessController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getCurrentUser(@CurrentAccount() account: IAccount) {
     return this.authService.getCurrentUser(account);
+  }
+
+  // NOTE: the `me/*` routes must stay declared before the `:id` routes below,
+  // otherwise Nest would match "me" as an :id param.
+
+  @Put('me/profile')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Update the acting account's own profile (name / avatar)",
+  })
+  @ApiResponse({ status: 200, description: 'Updated account payload' })
+  async updateMyProfile(
+    @CurrentAccount() account: IAccount,
+    @Body() dto: UpdateMyProfileDto,
+  ) {
+    return this.authService.updateMyProfile(account, dto);
+  }
+
+  @Put('me/password')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Change the acting account's own password (verifies the current one)",
+  })
+  @ApiResponse({ status: 200, description: 'Password changed' })
+  @ApiResponse({ status: 401, description: 'Current password is wrong' })
+  async changeMyPassword(
+    @CurrentAccount() account: IAccount,
+    @Body() dto: ChangeMyPasswordDto,
+  ) {
+    await this.authService.changeMyPassword(
+      account,
+      dto.currentPassword,
+      dto.newPassword,
+    );
+    return { message: 'Password changed successfully' };
   }
 
   @Get(':id')
