@@ -251,6 +251,24 @@ export class ReportController {
     );
   }
 
+  @Get('transfer-suggestions')
+  @ApiOperation({summary: 'Filiallararo transfer tavsiyasi (rebalans)'})
+  @ApiQuery({name: 'days', required: false, description: 'Velocity window (default 30)'})
+  @ApiQuery({name: 'coverDays', required: false, description: 'Cover target days (default 14)'})
+  async getTransferSuggestions(
+    @CurrentBusiness() business: IBusiness,
+    @Query('days') days?: string,
+    @Query('coverDays') coverDays?: string,
+  ) {
+    const d = Number(days);
+    const c = Number(coverDays);
+    return this.reportService.getTransferSuggestions(
+      business.id,
+      Number.isFinite(d) && d > 0 ? d : 30,
+      Number.isFinite(c) && c > 0 ? c : 14,
+    );
+  }
+
   @Get('suppliers')
   @ApiOperation({summary: "Ta'minotchilar hisoboti (xarid, to'langan, qarz)"})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})

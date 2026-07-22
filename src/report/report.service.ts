@@ -14,6 +14,7 @@ import {
   inventoryBatches,
   goodsReceipts,
   goodsReceiptItems,
+  suppliers,
   supplierReturns,
   supplierReturnItems,
   stockTakes,
@@ -30,6 +31,32 @@ export interface DateRange {
   to?: string;
   /** Optional branch ("do'kon") filter; omitted = all stores. */
   branchId?: string;
+}
+
+/** One recommended inter-branch move of a single product (see getTransferSuggestions). */
+export interface TransferSuggestion {
+  productId: string;
+  name: string;
+  code: string | null;
+  fromBranchId: string;
+  fromBranchName: string | null;
+  toBranchId: string;
+  toBranchName: string | null;
+  quantity: number;
+  priceIn: number;
+  valueMoved: number;
+}
+
+/** All suggested moves along one from→to route (maps to CreateStockTransferDto). */
+export interface TransferRoute {
+  fromBranchId: string;
+  fromBranchName: string | null;
+  toBranchId: string;
+  toBranchName: string | null;
+  items: TransferSuggestion[];
+  products: number;
+  totalQty: number;
+  totalValue: number;
 }
 
 /**
@@ -1456,6 +1483,8 @@ export class ReportService {
             name: products.name,
             code: products.code,
             threshold: products.lowStockThreshold,
+            supplierId: products.supplierId,
+            priceIn: products.priceIn,
             qty: branchStock.quantity,
           })
           .from(products)
@@ -1478,6 +1507,8 @@ export class ReportService {
             name: products.name,
             code: products.code,
             threshold: products.lowStockThreshold,
+            supplierId: products.supplierId,
+            priceIn: products.priceIn,
             qty: products.quantity,
           })
           .from(products)
@@ -1506,27 +1537,76 @@ export class ReportService {
       .groupBy(orderItems.productId);
     const soldMap = new Map(soldRows.map((r) => [r.productId, Number(r.units)]));
 
+    // First time each product was stocked (earliest inventory batch), so we can
+    // correct velocity for products introduced mid-window (see availableDays).
+    const firstStockRows = await this.db
+      .select({
+        productId: inventoryBatches.productId,
+        first: sql<string>`MIN(${inventoryBatches.createdAt})`,
+      })
+      .from(inventoryBatches)
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          ...(branchId ? [eq(inventoryBatches.branchId, branchId)] : []),
+        ),
+      )
+      .groupBy(inventoryBatches.productId);
+    const firstStockMap = new Map(
+      firstStockRows.map((r) => [r.productId, new Date(r.first)]),
+    );
+
+    // Supplier names, to group the reorder list into per-supplier draft orders.
+    const supplierRows = await this.db
+      .select({id: suppliers.id, name: suppliers.name})
+      .from(suppliers)
+      .where(eq(suppliers.businessId, businessId));
+    const supplierMap = new Map(supplierRows.map((s) => [s.id, s.name]));
+
+    const now = Date.now();
     const items = candidates
       .map((p) => {
         const qty = Number(p.qty);
         const threshold = p.threshold === null ? null : Number(p.threshold);
+        const priceIn = Number(p.priceIn);
         const soldWindow = p.id ? (soldMap.get(p.id) ?? 0) : 0;
-        const velocity = soldWindow / days; // units per day
+
+        // Days the product was actually sellable inside the window. A product
+        // first stocked mid-window must not be averaged over the full window, or
+        // its velocity — and the suggested order — is badly understated. Clamp to
+        // [1, days]. NOTE: mid-window stockouts of long-standing products are NOT
+        // corrected — we have no daily stock ledger, only the first-batch date.
+        const firstStockAt = p.id ? firstStockMap.get(p.id) : undefined;
+        let availableDays = days;
+        if (firstStockAt && firstStockAt.getTime() > since.getTime()) {
+          availableDays = Math.max(
+            1,
+            Math.min(days, (now - firstStockAt.getTime()) / 86_400_000),
+          );
+        }
+        const velocity = soldWindow / availableDays; // units per day
+
         const daysOfStock = velocity > 0 ? qty / velocity : null;
         const belowThreshold = threshold !== null && qty <= threshold;
         const runningOut = daysOfStock !== null && daysOfStock < coverDays;
         const suggestedQty =
           velocity > 0 ? Math.max(0, Math.ceil(velocity * coverDays - qty)) : 0;
+        const supplierId = p.supplierId ?? null;
         return {
           productId: p.id,
           name: p.name,
           code: p.code,
+          supplierId,
+          supplierName: supplierId ? (supplierMap.get(supplierId) ?? null) : null,
           quantity: qty,
           threshold,
+          priceIn,
           soldWindow,
+          availableDays,
           dailyVelocity: velocity,
           daysOfStock,
           suggestedQty,
+          estimatedCost: suggestedQty * priceIn,
           flagged: belowThreshold || runningOut,
         };
       })
@@ -1538,13 +1618,284 @@ export class ReportService {
           (b.daysOfStock ?? Number.POSITIVE_INFINITY),
       );
 
+    // Group the flagged items into per-supplier draft purchase orders. Products
+    // with no default supplier fall into a single null-supplier bucket the owner
+    // still needs to assign. Ordered by spend (largest draft order first).
+    const groups = new Map<
+      string,
+      {
+        supplierId: string | null;
+        supplierName: string | null;
+        items: typeof items;
+        products: number;
+        suggestedUnits: number;
+        estimatedCost: number;
+      }
+    >();
+    for (const it of items) {
+      const key = it.supplierId ?? '__none__';
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          supplierId: it.supplierId,
+          supplierName: it.supplierName,
+          items: [],
+          products: 0,
+          suggestedUnits: 0,
+          estimatedCost: 0,
+        };
+        groups.set(key, g);
+      }
+      g.items.push(it);
+      g.products += 1;
+      g.suggestedUnits += it.suggestedQty;
+      g.estimatedCost += it.estimatedCost;
+    }
+    const bySupplier = [...groups.values()].sort(
+      (a, b) => b.estimatedCost - a.estimatedCost,
+    );
+
     return {
       days,
       coverDays,
       items,
+      bySupplier,
       totals: {
         products: items.length,
         suggestedUnits: items.reduce((s, i) => s + i.suggestedQty, 0),
+        estimatedCost: items.reduce((s, i) => s + i.estimatedCost, 0),
+      },
+    };
+  }
+
+  // ─── Transfer suggestions (inter-branch rebalancing) ──────────────────────
+  /**
+   * Recommends inter-branch stock transfers. For every product it computes, per
+   * branch: on-hand, sales velocity (stockout-corrected like getReorder), and a
+   * `coverDays` target (`need = velocity × coverDays`). A branch with more than
+   * its target is a DONOR (excess = qty − need); one below its target is a
+   * RECEIVER (deficit = need − qty). For each product with both, stock is greedily
+   * moved from the most-overstocked branches to the most-starved ones — so slow/
+   * dead stock in one branch covers a stockout in another instead of a purchase.
+   * Suggestions are grouped by from→to route, matching CreateStockTransferDto so
+   * a route can later be turned into a real transfer in one call.
+   */
+  async getTransferSuggestions(businessId: string, days = 30, coverDays = 14) {
+    const since = new Date(Date.now() - days * 86_400_000);
+
+    const branchRows = await this.db
+      .select({id: branches.id, name: branches.name})
+      .from(branches)
+      .where(
+        and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+      );
+    // Nothing to rebalance with fewer than two branches.
+    if (branchRows.length < 2) {
+      return {
+        days,
+        coverDays,
+        suggestions: [] as TransferSuggestion[],
+        byRoute: [] as TransferRoute[],
+        totals: {routes: 0, products: 0, moves: 0, totalValue: 0},
+      };
+    }
+    const branchName = new Map(branchRows.map((b) => [b.id, b.name]));
+
+    // On-hand per (product, branch).
+    const stockRows = await this.db
+      .select({
+        productId: branchStock.productId,
+        branchId: branchStock.branchId,
+        qty: branchStock.quantity,
+      })
+      .from(branchStock)
+      .innerJoin(products, eq(products.id, branchStock.productId))
+      .where(
+        and(
+          eq(branchStock.businessId, businessId),
+          eq(products.isActive, true),
+        ),
+      );
+
+    // Units sold in the window per (product, branch).
+    const soldRows = await this.db
+      .select({
+        productId: orderItems.productId,
+        branchId: orders.branchId,
+        units: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          gte(orders.createdAt, since),
+        ),
+      )
+      .groupBy(orderItems.productId, orders.branchId);
+
+    // Earliest batch per (product, branch) → correct velocity for stock that was
+    // only introduced to a branch mid-window (same rule as getReorder).
+    const firstStockRows = await this.db
+      .select({
+        productId: inventoryBatches.productId,
+        branchId: inventoryBatches.branchId,
+        first: sql<string>`MIN(${inventoryBatches.createdAt})`,
+      })
+      .from(inventoryBatches)
+      .where(eq(inventoryBatches.businessId, businessId))
+      .groupBy(inventoryBatches.productId, inventoryBatches.branchId);
+
+    const productRows = await this.db
+      .select({
+        id: products.id,
+        name: products.name,
+        code: products.code,
+        priceIn: products.priceIn,
+      })
+      .from(products)
+      .where(
+        and(eq(products.businessId, businessId), eq(products.isActive, true)),
+      );
+    const productMeta = new Map(productRows.map((p) => [p.id, p]));
+
+    const key = (pid: string, bid: string | null) => `${pid}|${bid ?? ''}`;
+    const firstStockMap = new Map(
+      firstStockRows.map((r) => [
+        key(r.productId, r.branchId),
+        new Date(r.first),
+      ]),
+    );
+
+    // Collect the set of branches each product appears in (stock or sales).
+    const perProduct = new Map<
+      string,
+      Map<string, {qty: number; sold: number}>
+    >();
+    const touch = (pid: string, bid: string) => {
+      let m = perProduct.get(pid);
+      if (!m) {
+        m = new Map();
+        perProduct.set(pid, m);
+      }
+      let cell = m.get(bid);
+      if (!cell) {
+        cell = {qty: 0, sold: 0};
+        m.set(bid, cell);
+      }
+      return cell;
+    };
+    for (const r of stockRows) touch(r.productId, r.branchId).qty = Number(r.qty);
+    for (const r of soldRows) {
+      if (r.productId && r.branchId)
+        touch(r.productId, r.branchId).sold = Number(r.units);
+    }
+
+    const now = Date.now();
+    type Node = {branchId: string; excess: number; deficit: number};
+    const suggestions: TransferSuggestion[] = [];
+
+    for (const [productId, byBranch] of perProduct) {
+      const meta = productMeta.get(productId);
+      if (!meta) continue;
+      const priceIn = Number(meta.priceIn);
+
+      const donors: Node[] = [];
+      const receivers: Node[] = [];
+      for (const [branchId, cell] of byBranch) {
+        // Days the product was sellable in this branch inside the window.
+        const firstAt = firstStockMap.get(key(productId, branchId));
+        let availableDays = days;
+        if (firstAt && firstAt.getTime() > since.getTime()) {
+          availableDays = Math.max(
+            1,
+            Math.min(days, (now - firstAt.getTime()) / 86_400_000),
+          );
+        }
+        const velocity = cell.sold / availableDays;
+        const need = Math.ceil(velocity * coverDays);
+        const excess = cell.qty - need;
+        if (excess > 0) donors.push({branchId, excess, deficit: 0});
+        else if (need - cell.qty > 0)
+          receivers.push({branchId, excess: 0, deficit: need - cell.qty});
+      }
+      if (donors.length === 0 || receivers.length === 0) continue;
+
+      // Move from the most-overstocked branch to the most-starved one first.
+      donors.sort((a, b) => b.excess - a.excess);
+      receivers.sort((a, b) => b.deficit - a.deficit);
+
+      let di = 0;
+      for (const rcv of receivers) {
+        let remainingDeficit = rcv.deficit;
+        while (remainingDeficit > 0 && di < donors.length) {
+          const don = donors[di];
+          if (don.excess <= 0) {
+            di++;
+            continue;
+          }
+          const move = Math.min(don.excess, remainingDeficit);
+          // Round to 3 decimals (whole grams / whole units) to match stock model.
+          const qty = Math.round(move * 1000) / 1000;
+          if (qty > 0) {
+            suggestions.push({
+              productId,
+              name: meta.name,
+              code: meta.code,
+              fromBranchId: don.branchId,
+              fromBranchName: branchName.get(don.branchId) ?? null,
+              toBranchId: rcv.branchId,
+              toBranchName: branchName.get(rcv.branchId) ?? null,
+              quantity: qty,
+              priceIn,
+              valueMoved: qty * priceIn,
+            });
+          }
+          don.excess -= move;
+          remainingDeficit -= move;
+          if (don.excess <= 0) di++;
+        }
+      }
+    }
+
+    // Group per from→to route — one route maps to one CreateStockTransferDto.
+    const routes = new Map<string, TransferRoute>();
+    for (const s of suggestions) {
+      const rk = `${s.fromBranchId}>${s.toBranchId}`;
+      let r = routes.get(rk);
+      if (!r) {
+        r = {
+          fromBranchId: s.fromBranchId,
+          fromBranchName: s.fromBranchName,
+          toBranchId: s.toBranchId,
+          toBranchName: s.toBranchName,
+          items: [],
+          products: 0,
+          totalQty: 0,
+          totalValue: 0,
+        };
+        routes.set(rk, r);
+      }
+      r.items.push(s);
+      r.products += 1;
+      r.totalQty += s.quantity;
+      r.totalValue += s.valueMoved;
+    }
+    const byRoute = [...routes.values()].sort(
+      (a, b) => b.totalValue - a.totalValue,
+    );
+
+    return {
+      days,
+      coverDays,
+      suggestions,
+      byRoute,
+      totals: {
+        routes: byRoute.length,
+        products: suggestions.length,
+        moves: suggestions.length,
+        totalValue: suggestions.reduce((s, i) => s + i.valueMoved, 0),
       },
     };
   }
