@@ -25,6 +25,9 @@ import {StockTakeModule} from './stock-take/stock-take.module';
 import {StockTransferModule} from './stock-transfer/stock-transfer.module';
 import {FinanceModule} from './finance/finance.module';
 import {ReportModule} from './report/report.module';
+import {TargetModule} from './target/target.module';
+import {DigestModule} from './digest/digest.module';
+import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
 
@@ -59,6 +62,8 @@ class JwtGlobalModule {}
     // everywhere without importing CacheModule per feature module). Per-call
     // TTLs are passed explicitly via cache.wrap(); this default is a fallback.
     CacheModule.register({isGlobal: true, ttl: 60_000}),
+    // In-process cron scheduler (R30 daily digest at 21:00 Asia/Tashkent).
+    ScheduleModule.forRoot(),
     JwtGlobalModule,
     DatabaseModule,
     BusinessModule,
@@ -83,6 +88,8 @@ class JwtGlobalModule {}
     StockTransferModule,
     FinanceModule,
     ReportModule,
+    TargetModule,
+    DigestModule,
   ],
   controllers: [AppController],
   providers: [AppService],

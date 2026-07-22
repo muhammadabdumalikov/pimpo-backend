@@ -5,7 +5,10 @@ import {
   orderItems,
   products,
   categories,
+  brands,
   users,
+  userDebts,
+  debtPayments,
   financialTransactions,
   cashShifts,
   inventoryBatches,
@@ -15,8 +18,11 @@ import {
   supplierReturnItems,
   stockTakes,
   stockTakeItems,
+  stockTransfers,
+  branches,
+  branchStock,
 } from '../database/schema';
-import {eq, and, gte, lte, gt, sql, desc} from 'drizzle-orm';
+import {eq, and, or, gte, lte, gt, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 
 export interface DateRange {
@@ -763,6 +769,1106 @@ export class ReportService {
       totals: {
         stockTakes: items.length,
         diffValue: items.reduce((s, i) => s + i.diffValue, 0),
+      },
+    };
+  }
+
+  // ═══ Level-1 reports (HISOBOTLAR.md §6) ═══════════════════════════════════
+
+  // ─── R9: Sotuvlar dinamikasi (Do'kon) ─────────────────────────────────────
+  /**
+   * Sales over time, bucketed by business-day / week / month. Two aggregates —
+   * orders (revenue/discount/units) and COGS — are computed per bucket and
+   * merged, so each row carries revenue, discount, units, COGS and gross profit.
+   * Buckets are truncated in the business zone (+05:00), matching how the day
+   * filters bound a sale (business-time.ts). A join is NOT used for revenue (it
+   * would fan out and multiply totals by item count) — COGS is a second query.
+   */
+  async getSales(
+    businessId: string,
+    range?: DateRange,
+    groupBy: 'day' | 'week' | 'month' = 'day',
+  ) {
+    const unit =
+      groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
+    const fmt = groupBy === 'month' ? 'YYYY-MM' : 'YYYY-MM-DD';
+    // Inline the (whitelisted) unit/format as literals, not bind params. A reused
+    // sql fragment re-emits its params with fresh placeholders ($1 in SELECT, $3
+    // in GROUP BY), and Postgres then treats the two occurrences as different
+    // expressions — tripping "orders.created_at must appear in the GROUP BY
+    // clause". Literal text is byte-identical in both spots, so GROUP BY matches.
+    const bucket = sql<string>`to_char(date_trunc('${sql.raw(unit)}', ${orders.createdAt} + interval '5 hours'), '${sql.raw(fmt)}')`;
+
+    const where = and(
+      eq(orders.businessId, businessId),
+      eq(orders.status, 'Completed'),
+      ...this.dateWhere(orders.createdAt, range),
+      ...this.branchWhere(orders.branchId, range),
+    );
+
+    const salesRows = await this.db
+      .select({
+        period: bucket,
+        orderCount: sql<string>`COUNT(*)`,
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        discounts: sql<string>`COALESCE(SUM(${orders.discountAmount}), 0)`,
+        units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
+      })
+      .from(orders)
+      .where(where)
+      .groupBy(bucket)
+      .orderBy(bucket);
+
+    const cogsRows = await this.db
+      .select({
+        period: bucket,
+        cogs: sql<string>`COALESCE(SUM(
+          CASE WHEN ${orderItems.costTotal} > 0
+            THEN ${orderItems.costTotal}
+            ELSE ${orderItems.quantity} * COALESCE(${products.priceIn}, 0)
+          END
+        ), 0)`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(where)
+      .groupBy(bucket);
+
+    const cogsMap = new Map(cogsRows.map((r) => [r.period, Number(r.cogs)]));
+
+    const buckets = salesRows.map((r) => {
+      const orderCount = Number(r.orderCount);
+      const revenue = Number(r.revenue);
+      const cogs = cogsMap.get(r.period) ?? 0;
+      const profit = revenue - cogs;
+      return {
+        period: r.period,
+        orderCount,
+        revenue,
+        discounts: Number(r.discounts),
+        units: Number(r.units),
+        cogs,
+        profit,
+        avgCheck: orderCount > 0 ? revenue / orderCount : 0,
+        margin: revenue > 0 ? (profit / revenue) * 100 : 0,
+      };
+    });
+
+    const sum = (f: (b: (typeof buckets)[number]) => number) =>
+      buckets.reduce((s, b) => s + f(b), 0);
+    const tRevenue = sum((b) => b.revenue);
+    const tOrders = sum((b) => b.orderCount);
+    const tProfit = sum((b) => b.profit);
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      groupBy,
+      buckets,
+      totals: {
+        orderCount: tOrders,
+        revenue: tRevenue,
+        discounts: sum((b) => b.discounts),
+        units: sum((b) => b.units),
+        cogs: sum((b) => b.cogs),
+        profit: tProfit,
+        avgCheck: tOrders > 0 ? tRevenue / tOrders : 0,
+        margin: tRevenue > 0 ? (tProfit / tRevenue) * 100 : 0,
+      },
+    };
+  }
+
+  // ─── R10: Soat × hafta kuni yuklama (heatmap) ─────────────────────────────
+  /**
+   * Order traffic by weekday × hour-of-day (business zone). Returns one cell per
+   * (dow, hour) pair that has sales; the frontend lays them into a 7×24 grid.
+   * dow is Postgres EXTRACT(DOW): 0 = Sunday … 6 = Saturday.
+   */
+  async getTraffic(businessId: string, range?: DateRange) {
+    const dow = sql<string>`EXTRACT(DOW FROM ${orders.createdAt} + interval '5 hours')`;
+    const hour = sql<string>`EXTRACT(HOUR FROM ${orders.createdAt} + interval '5 hours')`;
+
+    const rows = await this.db
+      .select({
+        dow,
+        hour,
+        orderCount: sql<string>`COUNT(*)`,
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          ...this.dateWhere(orders.createdAt, range),
+          ...this.branchWhere(orders.branchId, range),
+        ),
+      )
+      .groupBy(dow, hour);
+
+    const cells = rows.map((r) => ({
+      dow: Number(r.dow),
+      hour: Number(r.hour),
+      orders: Number(r.orderCount),
+      revenue: Number(r.revenue),
+    }));
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      cells,
+      totals: {
+        orders: cells.reduce((s, c) => s + c.orders, 0),
+        revenue: cells.reduce((s, c) => s + c.revenue, 0),
+      },
+    };
+  }
+
+  // ─── R11: Kassa smenalari yig'masi (Z-hisobot) ────────────────────────────
+  /**
+   * Closed cash shifts in a range, plus a per-cashier rollup. The rollup surfaces
+   * repeat shortages (a cashier whose reconciliation is short again and again is
+   * the classic theft signal). branchId is not applicable — a shift belongs to a
+   * register, not a branch — so it is ignored here.
+   */
+  async getShifts(businessId: string, range?: DateRange) {
+    const rows = await this.db
+      .select({
+        id: cashShifts.id,
+        registerName: cashShifts.registerName,
+        closedByCashierId: cashShifts.closedByCashierId,
+        closedByCashierName: cashShifts.closedByCashierName,
+        openingFloat: cashShifts.openingFloat,
+        cashIn: cashShifts.cashIn,
+        cashOut: cashShifts.cashOut,
+        expectedCash: cashShifts.expectedCash,
+        countedCash: cashShifts.countedCash,
+        difference: cashShifts.difference,
+        orderCount: cashShifts.orderCount,
+        openedAt: cashShifts.openedAt,
+        closedAt: cashShifts.closedAt,
+      })
+      .from(cashShifts)
+      .where(
+        and(
+          eq(cashShifts.businessId, businessId),
+          eq(cashShifts.status, 'closed'),
+          ...this.dateWhere(cashShifts.closedAt, range),
+        ),
+      )
+      .orderBy(desc(cashShifts.closedAt));
+
+    const shifts = rows.map((r) => ({
+      id: r.id,
+      registerName: r.registerName ?? '—',
+      cashierName: r.closedByCashierName ?? '—',
+      openingFloat: Number(r.openingFloat ?? 0),
+      cashIn: Number(r.cashIn ?? 0),
+      cashOut: Number(r.cashOut ?? 0),
+      expectedCash: Number(r.expectedCash ?? 0),
+      countedCash: Number(r.countedCash ?? 0),
+      difference: Number(r.difference ?? 0),
+      orderCount: Number(r.orderCount ?? 0),
+      openedAt: r.openedAt,
+      closedAt: r.closedAt,
+    }));
+
+    // Per-cashier rollup (keyed by closer). A recurring shortage = theft signal.
+    const byMap = new Map<
+      string,
+      {
+        cashierName: string;
+        shifts: number;
+        difference: number;
+        shortages: number;
+        surpluses: number;
+      }
+    >();
+    rows.forEach((r) => {
+      const key = r.closedByCashierId ?? r.closedByCashierName ?? '—';
+      const diff = Number(r.difference ?? 0);
+      const agg =
+        byMap.get(key) ??
+        {
+          cashierName: r.closedByCashierName ?? '—',
+          shifts: 0,
+          difference: 0,
+          shortages: 0,
+          surpluses: 0,
+        };
+      agg.shifts += 1;
+      agg.difference += diff;
+      if (diff < 0) agg.shortages += 1;
+      else if (diff > 0) agg.surpluses += 1;
+      byMap.set(key, agg);
+    });
+    const byCashier = [...byMap.values()].sort(
+      (a, b) => a.difference - b.difference,
+    );
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      shifts,
+      byCashier,
+      totals: {
+        shifts: shifts.length,
+        difference: shifts.reduce((s, x) => s + x.difference, 0),
+        cashIn: shifts.reduce((s, x) => s + x.cashIn, 0),
+        cashOut: shifts.reduce((s, x) => s + x.cashOut, 0),
+        shortages: shifts.filter((x) => x.difference < 0).length,
+      },
+    };
+  }
+
+  // ─── R12: To'lov usullari bo'yicha ────────────────────────────────────────
+  /**
+   * Tender received per payment method over completed orders in the range. The
+   * per-method amounts live in orders.payments (a jsonb array of {method,amount})
+   * which is unnested and summed — so split payments contribute their real
+   * per-method share. Raw SQL is used because the unnest sits in the FROM clause.
+   */
+  async getPaymentMethods(businessId: string, range?: DateRange) {
+    // Bind the day bounds as UTC "YYYY-MM-DD HH:mm:ss.SSS" strings, not Date
+    // objects: postgres-js rejects a bare Date param inside a raw sql template
+    // ("string argument must be ... Received an instance of Date"). created_at is
+    // stored in UTC wall-time, and businessDayStart/End give the correct UTC
+    // instant, so the stringified form compares identically to the query-builder
+    // gte/lte used by the other reports.
+    const toPg = (d: Date) => d.toISOString().slice(0, 23).replace('T', ' ');
+    const conds: any[] = [
+      sql`o.business_id = ${businessId}`,
+      sql`o.status = 'Completed'`,
+    ];
+    if (range?.from) conds.push(sql`o.created_at >= ${toPg(businessDayStart(range.from))}`);
+    if (range?.to) conds.push(sql`o.created_at <= ${toPg(businessDayEnd(range.to))}`);
+    if (range?.branchId) conds.push(sql`o.branch_id = ${range.branchId}`);
+
+    const rows = (await this.db.execute(sql`
+      SELECT elem->>'method' AS method,
+             COALESCE(SUM((elem->>'amount')::numeric), 0) AS amount,
+             COUNT(DISTINCT o.id) AS orders
+      FROM orders o,
+           LATERAL jsonb_array_elements(COALESCE(o.payments, '[]'::jsonb)) elem
+      WHERE ${sql.join(conds, sql` AND `)}
+      GROUP BY elem->>'method'
+      ORDER BY amount DESC
+    `)) as unknown as Array<{
+      method: string | null;
+      amount: string;
+      orders: string;
+    }>;
+
+    const rawMethods = rows.map((r) => ({
+      method: r.method ?? 'other',
+      amount: Number(r.amount),
+      orders: Number(r.orders),
+    }));
+    const total = rawMethods.reduce((s, m) => s + m.amount, 0);
+    const methods = rawMethods.map((m) => ({
+      ...m,
+      share: total > 0 ? (m.amount / total) * 100 : 0,
+    }));
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      total,
+      methods,
+    };
+  }
+
+  // ─── R13: Chegirmalar (kassir kesimida) ───────────────────────────────────
+  /**
+   * Discounts given per cashier over completed orders in the range. Rate is the
+   * whole-receipt discount relative to gross (subtotal before the discount).
+   * Uncontrolled discounting is the fastest-leaking hole in retail — this is the
+   * report an owner opens to see who is giving it away.
+   */
+  async getDiscounts(businessId: string, range?: DateRange) {
+    const rows = await this.db
+      .select({
+        cashierId: orders.cashierId,
+        cashierName: sql<string | null>`MAX(${orders.cashierName})`,
+        orderCount: sql<string>`COUNT(*)`,
+        discountedOrders: sql<string>`COUNT(*) FILTER (WHERE ${orders.discountAmount} > 0)`,
+        discountTotal: sql<string>`COALESCE(SUM(${orders.discountAmount}), 0)`,
+        gross: sql<string>`COALESCE(SUM(${orders.subtotalAmount}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          ...this.dateWhere(orders.createdAt, range),
+          ...this.branchWhere(orders.branchId, range),
+        ),
+      )
+      .groupBy(orders.cashierId)
+      .orderBy(desc(sql`SUM(${orders.discountAmount})`));
+
+    const sellers = rows.map((r) => {
+      const gross = Number(r.gross);
+      const discountTotal = Number(r.discountTotal);
+      return {
+        cashierId: r.cashierId,
+        cashierName: r.cashierName ?? '—',
+        orderCount: Number(r.orderCount),
+        discountedOrders: Number(r.discountedOrders),
+        discountTotal,
+        revenue: Number(r.revenue),
+        discountRate: gross > 0 ? (discountTotal / gross) * 100 : 0,
+      };
+    });
+
+    const tDiscount = sellers.reduce((s, x) => s + x.discountTotal, 0);
+    const tGross = rows.reduce((s, r) => s + Number(r.gross), 0);
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      sellers,
+      totals: {
+        discountTotal: tDiscount,
+        discountedOrders: sellers.reduce((s, x) => s + x.discountedOrders, 0),
+        orderCount: sellers.reduce((s, x) => s + x.orderCount, 0),
+        revenue: sellers.reduce((s, x) => s + x.revenue, 0),
+        discountRate: tGross > 0 ? (tDiscount / tGross) * 100 : 0,
+      },
+    };
+  }
+
+  // ─── R14: Bekor qilingan cheklar ──────────────────────────────────────────
+  /**
+   * Cancelled orders in the range, listed with a per-cashier rollup. A cancelled
+   * receipt where the cash stayed in the drawer is a classic POS fraud — this
+   * gives the owner the who / when / how-much.
+   */
+  async getCancelled(businessId: string, range?: DateRange) {
+    const rows = await this.db
+      .select({
+        id: orders.id,
+        createdAt: orders.createdAt,
+        cashierId: orders.cashierId,
+        cashierName: orders.cashierName,
+        customerName: orders.customerName,
+        totalAmount: orders.totalAmount,
+        itemCount: orders.itemCount,
+        note: orders.note,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Cancelled'),
+          ...this.dateWhere(orders.createdAt, range),
+          ...this.branchWhere(orders.branchId, range),
+        ),
+      )
+      .orderBy(desc(orders.createdAt));
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      cashierName: r.cashierName ?? '—',
+      customerName: r.customerName ?? null,
+      totalAmount: Number(r.totalAmount ?? 0),
+      itemCount: Number(r.itemCount ?? 0),
+      note: r.note ?? null,
+    }));
+
+    const byMap = new Map<
+      string,
+      { cashierName: string; count: number; amount: number }
+    >();
+    rows.forEach((r) => {
+      const key = r.cashierId ?? r.cashierName ?? '—';
+      const agg =
+        byMap.get(key) ?? {
+          cashierName: r.cashierName ?? '—',
+          count: 0,
+          amount: 0,
+        };
+      agg.count += 1;
+      agg.amount += Number(r.totalAmount ?? 0);
+      byMap.set(key, agg);
+    });
+    const byCashier = [...byMap.values()].sort((a, b) => b.amount - a.amount);
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      items,
+      byCashier,
+      totals: {
+        count: items.length,
+        amount: items.reduce((s, x) => s + x.totalAmount, 0),
+      },
+    };
+  }
+
+  // ═══ Level-2 reports (HISOBOTLAR.md §6, 2-daraja) ═════════════════════════
+
+  // ─── R17: Nasiya (qarzlar) aging ──────────────────────────────────────────
+  /**
+   * Accounts-receivable aging snapshot (as of now). Each open debt's remaining
+   * balance (amount − payments) is bucketed by how overdue it is — by dueDate,
+   * or by createdAt when the debt is open-ended. Aggregated per customer (the
+   * debtor list) and globally (the aging buckets). Not branch-scoped: user_debts
+   * has no branch.
+   */
+  async getDebtAging(businessId: string) {
+    const rows = await this.db
+      .select({
+        debtId: userDebts.id,
+        userId: userDebts.userId,
+        name: sql<string | null>`MAX(${users.name})`,
+        phone: sql<string | null>`MAX(${users.phone})`,
+        amount: userDebts.amount,
+        dueDate: userDebts.dueDate,
+        createdAt: userDebts.createdAt,
+        paid: sql<string>`COALESCE(SUM(${debtPayments.amount}), 0)`,
+      })
+      .from(userDebts)
+      .leftJoin(debtPayments, eq(debtPayments.debtId, userDebts.id))
+      .leftJoin(users, eq(users.id, userDebts.userId))
+      .where(eq(userDebts.businessId, businessId))
+      // Group by the full column set (not just the PK): identical result — id is
+      // unique — but valid without relying on PK functional-dependency inference.
+      .groupBy(
+        userDebts.id,
+        userDebts.userId,
+        userDebts.amount,
+        userDebts.dueDate,
+        userDebts.createdAt,
+      );
+
+    const now = Date.now();
+    const DAY = 86_400_000;
+    type Bucket = 'current' | 'd30' | 'd60' | 'd90' | 'd90plus';
+    const bucketOf = (overdueDays: number): Bucket =>
+      overdueDays <= 0
+        ? 'current'
+        : overdueDays <= 30
+          ? 'd30'
+          : overdueDays <= 60
+            ? 'd60'
+            : overdueDays <= 90
+              ? 'd90'
+              : 'd90plus';
+
+    const bucketTotals: Record<Bucket, {amount: number; count: number}> = {
+      current: {amount: 0, count: 0},
+      d30: {amount: 0, count: 0},
+      d60: {amount: 0, count: 0},
+      d90: {amount: 0, count: 0},
+      d90plus: {amount: 0, count: 0},
+    };
+
+    const byUser = new Map<
+      string,
+      {
+        userId: string | null;
+        name: string;
+        phone: string | null;
+        remaining: number;
+        current: number;
+        d30: number;
+        d60: number;
+        d90: number;
+        d90plus: number;
+        oldestDays: number;
+      }
+    >();
+
+    for (const r of rows) {
+      const remaining = Number(r.amount) - Number(r.paid);
+      if (remaining <= 0.01) continue;
+      const ref = r.dueDate ? new Date(r.dueDate) : new Date(r.createdAt);
+      const overdueDays = Math.floor((now - ref.getTime()) / DAY);
+      const bkt = bucketOf(overdueDays);
+      bucketTotals[bkt].amount += remaining;
+      bucketTotals[bkt].count += 1;
+
+      const key = r.userId ?? r.debtId;
+      const agg =
+        byUser.get(key) ??
+        {
+          userId: r.userId,
+          name: r.name ?? '—',
+          phone: r.phone ?? null,
+          remaining: 0,
+          current: 0,
+          d30: 0,
+          d60: 0,
+          d90: 0,
+          d90plus: 0,
+          oldestDays: 0,
+        };
+      agg.remaining += remaining;
+      agg[bkt] += remaining;
+      agg.oldestDays = Math.max(agg.oldestDays, overdueDays);
+      byUser.set(key, agg);
+    }
+
+    const debtors = [...byUser.values()].sort((a, b) => b.remaining - a.remaining);
+    const totalOutstanding = debtors.reduce((s, d) => s + d.remaining, 0);
+
+    return {
+      asOf: new Date(now).toISOString(),
+      buckets: (['current', 'd30', 'd60', 'd90', 'd90plus'] as Bucket[]).map(
+        (key) => ({key, ...bucketTotals[key]}),
+      ),
+      totalOutstanding,
+      debtorCount: debtors.length,
+      debtors,
+    };
+  }
+
+  // ─── R15: O'lik va sekin zaxira ───────────────────────────────────────────
+  /**
+   * Products sitting in stock that have NOT sold in the last `days` days — the
+   * money frozen on the shelf (qty × weighted priceIn). On-hand is the branch's
+   * row when a branch is given, else the business-wide products.quantity.
+   */
+  async getDeadStock(businessId: string, branchId?: string, days = 30) {
+    const cutoff = new Date(Date.now() - days * 86_400_000);
+    const branchCond = branchId ? [eq(orders.branchId, branchId)] : [];
+
+    // Candidate products with stock on hand.
+    const candidates = branchId
+      ? await this.db
+          .select({
+            id: products.id,
+            name: products.name,
+            code: products.code,
+            priceIn: products.priceIn,
+            qty: branchStock.quantity,
+          })
+          .from(products)
+          .innerJoin(
+            branchStock,
+            and(
+              eq(branchStock.productId, products.id),
+              eq(branchStock.branchId, branchId),
+            ),
+          )
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.isActive, true),
+              gt(branchStock.quantity, 0),
+            ),
+          )
+      : await this.db
+          .select({
+            id: products.id,
+            name: products.name,
+            code: products.code,
+            priceIn: products.priceIn,
+            qty: products.quantity,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.isActive, true),
+              gt(products.quantity, 0),
+            ),
+          );
+
+    // Last-ever sale date per product.
+    const lastSaleRows = await this.db
+      .select({
+        productId: orderItems.productId,
+        last: sql<string>`MAX(${orders.createdAt})`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          ...branchCond,
+        ),
+      )
+      .groupBy(orderItems.productId);
+    const lastMap = new Map(
+      lastSaleRows.map((r) => [r.productId, new Date(r.last)]),
+    );
+
+    const items = candidates
+      .map((p) => {
+        const qty = Number(p.qty);
+        const priceIn = Number(p.priceIn);
+        const last = p.id ? lastMap.get(p.id) : undefined;
+        const daysSinceSale = last
+          ? Math.floor((Date.now() - last.getTime()) / 86_400_000)
+          : null;
+        return {
+          productId: p.id,
+          name: p.name,
+          code: p.code,
+          quantity: qty,
+          priceIn,
+          frozenValue: qty * priceIn,
+          lastSaleAt: last ? last.toISOString() : null,
+          daysSinceSale,
+        };
+      })
+      // Dead/slow = never sold, or last sale older than the window.
+      .filter((p) => p.daysSinceSale === null || p.daysSinceSale >= days)
+      .sort((a, b) => b.frozenValue - a.frozenValue);
+
+    return {
+      days,
+      items,
+      totals: {
+        products: items.length,
+        units: items.reduce((s, i) => s + i.quantity, 0),
+        frozenValue: items.reduce((s, i) => s + i.frozenValue, 0),
+      },
+    };
+  }
+
+  // ─── R16: Qayta buyurtma / tugash prognozi ────────────────────────────────
+  /**
+   * Reorder suggestions. Sales velocity = units sold in the last `days` days /
+   * `days`. Days-of-stock = on-hand / velocity. A product is flagged when it is
+   * at/below its low-stock threshold, or will run out within `coverDays`. The
+   * suggested order quantity tops it back up to a `coverDays` buffer.
+   */
+  async getReorder(
+    businessId: string,
+    branchId?: string,
+    days = 30,
+    coverDays = 14,
+  ) {
+    const since = new Date(Date.now() - days * 86_400_000);
+    const branchCond = branchId ? [eq(orders.branchId, branchId)] : [];
+
+    const candidates = branchId
+      ? await this.db
+          .select({
+            id: products.id,
+            name: products.name,
+            code: products.code,
+            threshold: products.lowStockThreshold,
+            qty: branchStock.quantity,
+          })
+          .from(products)
+          .innerJoin(
+            branchStock,
+            and(
+              eq(branchStock.productId, products.id),
+              eq(branchStock.branchId, branchId),
+            ),
+          )
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.isActive, true),
+            ),
+          )
+      : await this.db
+          .select({
+            id: products.id,
+            name: products.name,
+            code: products.code,
+            threshold: products.lowStockThreshold,
+            qty: products.quantity,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.isActive, true),
+            ),
+          );
+
+    const soldRows = await this.db
+      .select({
+        productId: orderItems.productId,
+        units: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          gte(orders.createdAt, since),
+          ...branchCond,
+        ),
+      )
+      .groupBy(orderItems.productId);
+    const soldMap = new Map(soldRows.map((r) => [r.productId, Number(r.units)]));
+
+    const items = candidates
+      .map((p) => {
+        const qty = Number(p.qty);
+        const threshold = p.threshold === null ? null : Number(p.threshold);
+        const soldWindow = p.id ? (soldMap.get(p.id) ?? 0) : 0;
+        const velocity = soldWindow / days; // units per day
+        const daysOfStock = velocity > 0 ? qty / velocity : null;
+        const belowThreshold = threshold !== null && qty <= threshold;
+        const runningOut = daysOfStock !== null && daysOfStock < coverDays;
+        const suggestedQty =
+          velocity > 0 ? Math.max(0, Math.ceil(velocity * coverDays - qty)) : 0;
+        return {
+          productId: p.id,
+          name: p.name,
+          code: p.code,
+          quantity: qty,
+          threshold,
+          soldWindow,
+          dailyVelocity: velocity,
+          daysOfStock,
+          suggestedQty,
+          flagged: belowThreshold || runningOut,
+        };
+      })
+      .filter((p) => p.flagged)
+      // Most urgent first: soonest to run out.
+      .sort(
+        (a, b) =>
+          (a.daysOfStock ?? Number.POSITIVE_INFINITY) -
+          (b.daysOfStock ?? Number.POSITIVE_INFINITY),
+      );
+
+    return {
+      days,
+      coverDays,
+      items,
+      totals: {
+        products: items.length,
+        suggestedUnits: items.reduce((s, i) => s + i.suggestedQty, 0),
+      },
+    };
+  }
+
+  // ─── R18: Ta'minotchilar hisoboti ─────────────────────────────────────────
+  /**
+   * Per-supplier purchasing over goods receipts in the range: purchased, paid,
+   * returned, and outstanding (what we still owe = purchased − paid − returned).
+   * Grouped by the receipt's supplier snapshot, so deleted suppliers still show.
+   */
+  async getSuppliers(businessId: string, range?: DateRange) {
+    const rows = await this.db
+      .select({
+        supplierId: goodsReceipts.supplierId,
+        supplierName: sql<string | null>`MAX(${goodsReceipts.supplierName})`,
+        receipts: sql<string>`COUNT(*)`,
+        purchased: sql<string>`COALESCE(SUM(${goodsReceipts.totalAmount}), 0)`,
+        paid: sql<string>`COALESCE(SUM(${goodsReceipts.paidAmount}), 0)`,
+        returned: sql<string>`COALESCE(SUM(${goodsReceipts.returnedAmount}), 0)`,
+      })
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.businessId, businessId),
+          ...this.dateWhere(goodsReceipts.createdAt, range),
+          ...this.branchWhere(goodsReceipts.branchId, range),
+        ),
+      )
+      .groupBy(goodsReceipts.supplierId)
+      .orderBy(
+        desc(
+          sql`SUM(${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount})`,
+        ),
+      );
+
+    const suppliers = rows.map((r) => {
+      const purchased = Number(r.purchased);
+      const paid = Number(r.paid);
+      const returned = Number(r.returned);
+      return {
+        supplierId: r.supplierId,
+        supplierName: r.supplierName ?? '—',
+        receipts: Number(r.receipts),
+        purchased,
+        paid,
+        returned,
+        outstanding: purchased - paid - returned,
+      };
+    });
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      suppliers,
+      totals: {
+        suppliers: suppliers.length,
+        purchased: suppliers.reduce((s, x) => s + x.purchased, 0),
+        paid: suppliers.reduce((s, x) => s + x.paid, 0),
+        returned: suppliers.reduce((s, x) => s + x.returned, 0),
+        outstanding: suppliers.reduce((s, x) => s + x.outstanding, 0),
+      },
+    };
+  }
+
+  // ─── R19: Kategoriya / brend kesimida sotuv va marja ──────────────────────
+  /**
+   * Sales and margin grouped by category or brand (dimension). Revenue is line
+   * totals; COGS is the per-line snapshot (falling back to current priceIn).
+   * Products deleted after sale group under "—" (their name snapshot is on the
+   * order line, but category/brand come from the live product row).
+   */
+  async getAssortment(
+    businessId: string,
+    range?: DateRange,
+    dimension: 'category' | 'brand' = 'category',
+  ) {
+    const cogsExpr = sql<string>`COALESCE(SUM(
+      CASE WHEN ${orderItems.costTotal} > 0
+        THEN ${orderItems.costTotal}
+        ELSE ${orderItems.quantity} * COALESCE(${products.priceIn}, 0)
+      END
+    ), 0)`;
+    const revenueExpr = sql<string>`COALESCE(SUM(${orderItems.lineTotal}), 0)`;
+    const unitsExpr = sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`;
+    const where = and(
+      eq(orders.businessId, businessId),
+      eq(orders.status, 'Completed'),
+      ...this.dateWhere(orders.createdAt, range),
+      ...this.branchWhere(orders.branchId, range),
+    );
+
+    const rows =
+      dimension === 'brand'
+        ? await this.db
+            .select({
+              key: products.brandId,
+              name: sql<string | null>`MAX(${brands.name})`,
+              revenue: revenueExpr,
+              cogs: cogsExpr,
+              units: unitsExpr,
+            })
+            .from(orderItems)
+            .innerJoin(orders, eq(orderItems.orderId, orders.id))
+            .leftJoin(products, eq(orderItems.productId, products.id))
+            .leftJoin(brands, eq(brands.id, products.brandId))
+            .where(where)
+            .groupBy(products.brandId)
+            .orderBy(desc(sql`SUM(${orderItems.lineTotal})`))
+        : await this.db
+            .select({
+              key: products.categoryId,
+              name: sql<string | null>`MAX(${categories.name})`,
+              revenue: revenueExpr,
+              cogs: cogsExpr,
+              units: unitsExpr,
+            })
+            .from(orderItems)
+            .innerJoin(orders, eq(orderItems.orderId, orders.id))
+            .leftJoin(products, eq(orderItems.productId, products.id))
+            .leftJoin(
+              categories,
+              and(
+                eq(categories.id, products.categoryId),
+                eq(categories.businessId, businessId),
+              ),
+            )
+            .where(where)
+            .groupBy(products.categoryId)
+            .orderBy(desc(sql`SUM(${orderItems.lineTotal})`));
+
+    const groups = rows.map((r) => {
+      const revenue = Number(r.revenue);
+      const cogs = Number(r.cogs);
+      const profit = revenue - cogs;
+      return {
+        key: r.key,
+        name: r.name ?? '—',
+        revenue,
+        cogs,
+        profit,
+        units: Number(r.units),
+        margin: revenue > 0 ? (profit / revenue) * 100 : 0,
+      };
+    });
+
+    const totalRevenue = groups.reduce((s, g) => s + g.revenue, 0);
+    const withShare = groups.map((g) => ({
+      ...g,
+      share: totalRevenue > 0 ? (g.revenue / totalRevenue) * 100 : 0,
+    }));
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      dimension,
+      groups: withShare,
+      totals: {
+        groups: groups.length,
+        revenue: totalRevenue,
+        cogs: groups.reduce((s, g) => s + g.cogs, 0),
+        profit: groups.reduce((s, g) => s + g.profit, 0),
+        units: groups.reduce((s, g) => s + g.units, 0),
+      },
+    };
+  }
+
+  // ─── R20: Filiallar taqqoslash ────────────────────────────────────────────
+  /**
+   * Side-by-side branch comparison for the range: revenue, orders, avg check,
+   * profit and margin (from sales), plus current stock value (a live snapshot,
+   * qty × weighted priceIn — not range-bound). Orders with no branch (legacy)
+   * fold into a synthetic "—" row.
+   */
+  async getBranchComparison(businessId: string, range?: DateRange) {
+    const salesWhere = and(
+      eq(orders.businessId, businessId),
+      eq(orders.status, 'Completed'),
+      ...this.dateWhere(orders.createdAt, range),
+    );
+
+    const salesRows = await this.db
+      .select({
+        branchId: orders.branchId,
+        revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        orderCount: sql<string>`COUNT(*)`,
+        units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
+      })
+      .from(orders)
+      .where(salesWhere)
+      .groupBy(orders.branchId);
+
+    const cogsRows = await this.db
+      .select({
+        branchId: orders.branchId,
+        cogs: sql<string>`COALESCE(SUM(
+          CASE WHEN ${orderItems.costTotal} > 0
+            THEN ${orderItems.costTotal}
+            ELSE ${orderItems.quantity} * COALESCE(${products.priceIn}, 0)
+          END
+        ), 0)`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.id))
+      .leftJoin(products, eq(orderItems.productId, products.id))
+      .where(salesWhere)
+      .groupBy(orders.branchId);
+    const cogsMap = new Map(cogsRows.map((r) => [r.branchId, Number(r.cogs)]));
+
+    // Current stock value per branch (snapshot).
+    const stockRows = await this.db
+      .select({
+        branchId: branchStock.branchId,
+        stockValue: sql<string>`COALESCE(SUM(${branchStock.quantity} * ${products.priceIn}), 0)`,
+      })
+      .from(branchStock)
+      .innerJoin(products, eq(products.id, branchStock.productId))
+      .where(eq(branchStock.businessId, businessId))
+      .groupBy(branchStock.branchId);
+    const stockMap = new Map(stockRows.map((r) => [r.branchId, Number(r.stockValue)]));
+
+    const branchRows = await this.db
+      .select({id: branches.id, name: branches.name})
+      .from(branches)
+      .where(eq(branches.businessId, businessId));
+    const nameMap = new Map(branchRows.map((b) => [b.id, b.name]));
+
+    // Union of every branch id that appears in any source.
+    const ids = new Set<string | null>([
+      ...salesRows.map((r) => r.branchId),
+      ...stockMap.keys(),
+      ...branchRows.map((b) => b.id),
+    ]);
+
+    const rows = [...ids].map((id) => {
+      const sales = salesRows.find((r) => r.branchId === id);
+      const revenue = sales ? Number(sales.revenue) : 0;
+      const orderCount = sales ? Number(sales.orderCount) : 0;
+      const cogs = cogsMap.get(id) ?? 0;
+      const profit = revenue - cogs;
+      return {
+        branchId: id,
+        branchName: (id && nameMap.get(id)) || '—',
+        revenue,
+        orderCount,
+        avgCheck: orderCount > 0 ? revenue / orderCount : 0,
+        profit,
+        margin: revenue > 0 ? (profit / revenue) * 100 : 0,
+        stockValue: (id != null ? stockMap.get(id) : undefined) ?? 0,
+      };
+    });
+    rows.sort((a, b) => b.revenue - a.revenue);
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      branches: rows,
+      totals: {
+        branches: rows.length,
+        revenue: rows.reduce((s, x) => s + x.revenue, 0),
+        orderCount: rows.reduce((s, x) => s + x.orderCount, 0),
+        profit: rows.reduce((s, x) => s + x.profit, 0),
+        stockValue: rows.reduce((s, x) => s + x.stockValue, 0),
+      },
+    };
+  }
+
+  // ─── R23: Transferlar (filiallararo ko'chirishlar) ────────────────────────
+  /**
+   * Inter-branch stock transfers in the range. Value is the COGS (weighted cost)
+   * of the moved goods (a snapshot on the document). The branch filter matches
+   * transfers where the branch is EITHER the source or the destination.
+   */
+  async getTransfers(businessId: string, range?: DateRange) {
+    const branchCond = range?.branchId
+      ? [
+          or(
+            eq(stockTransfers.fromBranchId, range.branchId),
+            eq(stockTransfers.toBranchId, range.branchId),
+          ),
+        ]
+      : [];
+
+    const rows = await this.db
+      .select({
+        id: stockTransfers.id,
+        fromBranchName: stockTransfers.fromBranchName,
+        toBranchName: stockTransfers.toBranchName,
+        itemCount: stockTransfers.itemCount,
+        totalQty: stockTransfers.totalQty,
+        totalValue: stockTransfers.totalValue,
+        cashierName: stockTransfers.createdByCashierName,
+        note: stockTransfers.note,
+        createdAt: stockTransfers.createdAt,
+      })
+      .from(stockTransfers)
+      .where(
+        and(
+          eq(stockTransfers.businessId, businessId),
+          ...this.dateWhere(stockTransfers.createdAt, range),
+          ...branchCond,
+        ),
+      )
+      .orderBy(desc(stockTransfers.createdAt));
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      fromBranchName: r.fromBranchName ?? '—',
+      toBranchName: r.toBranchName ?? '—',
+      itemCount: Number(r.itemCount ?? 0),
+      totalQty: Number(r.totalQty ?? 0),
+      totalValue: Number(r.totalValue ?? 0),
+      cashierName: r.cashierName ?? '—',
+      note: r.note ?? null,
+      createdAt: r.createdAt,
+    }));
+
+    return {
+      from: range?.from ?? null,
+      to: range?.to ?? null,
+      items,
+      totals: {
+        transfers: items.length,
+        qty: items.reduce((s, i) => s + i.totalQty, 0),
+        value: items.reduce((s, i) => s + i.totalValue, 0),
       },
     };
   }

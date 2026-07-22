@@ -922,6 +922,31 @@ export const financialTransactions = pgTable(
   }),
 );
 
+// Monthly sales target ("Oylik reja") per business — R31 Reja vs fakt. One row
+// per (business, month); `month` is 'YYYY-MM'. Actuals are computed live from
+// completed orders, so only the goal is stored here.
+export const monthlyTargets = pgTable(
+  'monthly_targets',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    month: varchar('month', {length: 7}).notNull(), // 'YYYY-MM'
+    revenueTarget: decimal('revenue_target', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessMonthUq: uniqueIndex('monthly_targets_business_month_uq').on(
+      table.businessId,
+      table.month,
+    ),
+  }),
+);
+
 export const businessesRelations = relations(businesses, ({one, many}) => ({
   subscription: one(businessSubscriptions, {
     fields: [businesses.id],
