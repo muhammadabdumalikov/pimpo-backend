@@ -42,6 +42,18 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       usersLimit: 10,
       branchesLimit: 6,
     },
+    {
+      id: generateId(),
+      tier: 'proplus',
+      name: 'Business+',
+      description: 'For large retail networks',
+      price: '499000',
+      isActive: true,
+      debtsLimit: null,
+      productsLimit: null,
+      usersLimit: null,
+      branchesLimit: null,
+    },
   ];
 
   for (const plan of plans) {
