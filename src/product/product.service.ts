@@ -378,6 +378,22 @@ export class ProductService {
     return {created: toInsert.length, skipped, errors, limitReached};
   }
 
+  // A product counts as "low" at or below its own reorder point
+  // (lowStockThreshold), falling back to 10 when none is set.
+  private static readonly DEFAULT_LOW_STOCK_THRESHOLD = 10;
+
+  // SQL predicate for a stock-status bucket over the given quantity column
+  // (products.quantity, or branch_stock.quantity in branch scope).
+  private stockCondition(
+    stock: 'in' | 'low' | 'out',
+    qtyCol: typeof products.quantity | typeof branchStock.quantity,
+  ) {
+    const threshold = sql`coalesce(${products.lowStockThreshold}, ${ProductService.DEFAULT_LOW_STOCK_THRESHOLD})`;
+    if (stock === 'out') return sql`${qtyCol} <= 0`;
+    if (stock === 'low') return sql`${qtyCol} > 0 and ${qtyCol} <= ${threshold}`;
+    return sql`${qtyCol} > ${threshold}`;
+  }
+
   async findAll(
     businessId: string,
     options?: {
@@ -387,6 +403,8 @@ export class ProductService {
       // Scope to one branch: filter to its products and report THAT branch's
       // stock as `quantity` (instead of the cross-branch sum).
       branchId?: string;
+      // Filter by stock status bucket (see stockCondition).
+      stock?: 'in' | 'low' | 'out';
     },
   ): Promise<{
     products: Product[];
@@ -399,6 +417,7 @@ export class ProductService {
     const offset = (page - 1) * limit;
     const search = options?.search;
     const branchId = options?.branchId;
+    const stock = options?.stock;
 
     // Build where conditions
     const whereConditions = [
@@ -413,6 +432,15 @@ export class ProductService {
           ilike(products.code, `%${search}%`),
           ilike(products.barcode, `%${search}%`),
         )!,
+      );
+    }
+
+    if (stock) {
+      whereConditions.push(
+        this.stockCondition(
+          stock,
+          branchId ? branchStock.quantity : products.quantity,
+        ),
       );
     }
 
@@ -468,6 +496,58 @@ export class ProductService {
       page,
       limit,
     };
+  }
+
+  // Whole-catalogue stock-status counts for the inventory stat cards. Respects
+  // the same search/branch scoping as findAll, so the numbers always match the
+  // (filtered) list — not just the visible page.
+  async getStats(
+    businessId: string,
+    options?: {search?: string; branchId?: string},
+  ): Promise<{total: number; inStock: number; lowStock: number; outOfStock: number}> {
+    const search = options?.search;
+    const branchId = options?.branchId;
+
+    const whereConditions = [
+      eq(products.businessId, businessId),
+      eq(products.isActive, true),
+    ];
+    if (search) {
+      whereConditions.push(
+        or(
+          ilike(products.name, `%${search}%`),
+          ilike(products.code, `%${search}%`),
+          ilike(products.barcode, `%${search}%`),
+        )!,
+      );
+    }
+
+    const qtyCol = branchId ? branchStock.quantity : products.quantity;
+    const selection = {
+      total: sql<number>`count(*)::int`,
+      inStock: sql<number>`count(*) filter (where ${this.stockCondition('in', qtyCol)})::int`,
+      lowStock: sql<number>`count(*) filter (where ${this.stockCondition('low', qtyCol)})::int`,
+      outOfStock: sql<number>`count(*) filter (where ${this.stockCondition('out', qtyCol)})::int`,
+    };
+
+    const [row] = branchId
+      ? await this.dbService.db
+          .select(selection)
+          .from(products)
+          .innerJoin(
+            branchStock,
+            and(
+              eq(branchStock.productId, products.id),
+              eq(branchStock.branchId, branchId),
+            ),
+          )
+          .where(and(...whereConditions))
+      : await this.dbService.db
+          .select(selection)
+          .from(products)
+          .where(and(...whereConditions));
+
+    return row ?? {total: 0, inStock: 0, lowStock: 0, outOfStock: 0};
   }
 
   async findOne(

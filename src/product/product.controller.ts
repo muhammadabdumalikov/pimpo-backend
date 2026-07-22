@@ -111,6 +111,12 @@ export class ProductController {
     type: String,
     description: "Scope stock to a branch (do'kon)",
   })
+  @ApiQuery({
+    name: 'stock',
+    required: false,
+    enum: ['in', 'low', 'out'],
+    description: 'Filter by stock status bucket',
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -121,14 +127,33 @@ export class ProductController {
     @Query('limit') limit?: string,
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
+    @Query('stock') stock?: string,
   ) {
+    const stockFilter =
+      stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
     const result = await this.productService.findAll(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
       branchId: branchId || undefined,
+      stock: stockFilter,
     });
     return result;
+  }
+
+  @Get('stats')
+  @ApiOperation({summary: 'Stock-status counts (total / in / low / out) for the catalogue'})
+  @ApiQuery({name: 'search', required: false, type: String})
+  @ApiQuery({name: 'branchId', required: false, type: String})
+  async getStats(
+    @CurrentBusiness() business: IBusiness,
+    @Query('search') search?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.productService.getStats(business.id, {
+      search,
+      branchId: branchId || undefined,
+    });
   }
 
   @Get('count')
