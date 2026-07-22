@@ -14,6 +14,7 @@ import {
 import {eq, and, desc, ilike, or, sql, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {SubscriptionService} from '../subscription/subscription.service';
+import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 
@@ -187,11 +188,10 @@ export class ProductService {
     errors: Array<{row: number; reason: string}>;
     limitReached: boolean;
   }> {
-    // Feature gate: bulk import is a paid-plan feature (not on free).
-    const subscription =
-      await this.subscriptionService.getBusinessSubscription(businessId);
-    const tier = subscription?.plan.tier ?? 'free';
-    if (tier === 'free') {
+    // Feature gate: bulk import ("Ommaviy mahsulot qo'shish") is a Business (pro)
+    // and up capability — not on Standart (basic) or the expired floor.
+    const tier = await this.subscriptionService.getEffectiveTier(businessId);
+    if (!tierAtLeast(tier, 'pro')) {
       throw new AppException(ErrorCode.PRODUCT_BULK_IMPORT_PRO_ONLY);
     }
 

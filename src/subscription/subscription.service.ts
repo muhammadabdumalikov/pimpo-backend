@@ -12,6 +12,16 @@ import {
 import { eq, and, desc } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
+import { TIER_RANK, type Tier } from './tier';
+
+// Limits applied to a business with no active plan (never subscribed, or trial
+// expired). Mirrors the deactivated internal `free` floor.
+const FLOOR_LIMITS = {
+  debtsLimit: 20,
+  productsLimit: 100,
+  usersLimit: 1,
+  branchesLimit: 1,
+} as const;
 
 @Injectable()
 export class SubscriptionService implements OnModuleInit {
@@ -27,16 +37,38 @@ export class SubscriptionService implements OnModuleInit {
 
   async getAllPlans(): Promise<SubscriptionPlan[]> {
     // Global plan catalogue — rarely changes; cached with a long TTL and
-    // invalidated on create/update/delete of a plan.
+    // invalidated on create/update/delete of a plan. Only active plans are
+    // exposed, so the deactivated internal `free` floor never shows up in the
+    // pricing/upgrade lists.
     return this.cache.wrap(
       CacheKeys.plansAll(),
       () =>
         this.dbService.db
           .select()
           .from(subscriptionPlans)
+          .where(eq(subscriptionPlans.isActive, true))
           .orderBy(subscriptionPlans.price),
       TTL.PLANS,
     );
+  }
+
+  /** True once a subscription's trial/paid window has ended. */
+  private isExpired(sub: { endDate: Date | null }): boolean {
+    return sub.endDate != null && sub.endDate.getTime() <= Date.now();
+  }
+
+  /**
+   * The tier gating should treat this business as: the plan's tier while the
+   * subscription is active and not expired, otherwise the `free` floor. This is
+   * the single source of truth the PlanTierGuard consults.
+   */
+  async getEffectiveTier(businessId: string): Promise<Tier> {
+    const subscription = await this.getBusinessSubscription(businessId);
+    if (!subscription || !subscription.isActive || this.isExpired(subscription)) {
+      return 'free';
+    }
+    const tier = subscription.plan.tier as Tier;
+    return TIER_RANK[tier] !== undefined ? tier : 'free';
   }
 
   async getPlanByTier(tier: string): Promise<SubscriptionPlan | null> {
@@ -149,14 +181,9 @@ export class SubscriptionService implements OnModuleInit {
   }> {
     const subscription = await this.getBusinessSubscription(businessId);
 
-    if (!subscription) {
-      // Default to free plan limits
-      return {
-        debtsLimit: 20,
-        productsLimit: 100,
-        usersLimit: 1,
-        branchesLimit: 1,
-      };
+    if (!subscription || !subscription.isActive || this.isExpired(subscription)) {
+      // No active plan or trial expired → internal floor limits.
+      return { ...FLOOR_LIMITS };
     }
 
     return {

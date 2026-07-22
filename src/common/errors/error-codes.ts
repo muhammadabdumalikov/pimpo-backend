@@ -34,6 +34,10 @@ export enum ErrorCode {
   // ── Branch ─────────────────────────────────────────────────────────────────
   BRANCH_MAIN_DELETE_FORBIDDEN = 'BRANCH_MAIN_DELETE_FORBIDDEN',
   BRANCH_NOT_FOUND = 'BRANCH_NOT_FOUND',
+  BRANCH_LIMIT_REACHED = 'BRANCH_LIMIT_REACHED',
+
+  // ── Plan / feature gating ──────────────────────────────────────────────────
+  PLAN_UPGRADE_REQUIRED = 'PLAN_UPGRADE_REQUIRED',
 
   // ── Brand ──────────────────────────────────────────────────────────────────
   BRAND_NOT_FOUND = 'BRAND_NOT_FOUND',
@@ -233,6 +237,16 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BRANCH_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Branch not found',
+  },
+  [ErrorCode.BRANCH_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Branch limit reached for your plan',
+  },
+
+  // Plan / feature gating
+  [ErrorCode.PLAN_UPGRADE_REQUIRED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'This feature requires a higher plan',
   },
 
   // Brand

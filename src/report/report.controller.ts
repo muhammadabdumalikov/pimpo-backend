@@ -4,15 +4,23 @@ import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {IBusiness} from '../business/types';
 import {ReportService} from './report.service';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 
+// Reports split by plan (see NARX-TAHLIL / pricing tiers):
+//   • basic  — operational reports (the class-level default below)
+//   • pro    — extended analytics (@MinTier('pro') on the method)
+//   • proplus— multi-branch analytics (@MinTier('proplus') on the method)
 @ApiTags('reports')
 @Controller('reports')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 
   @Get('pnl')
+  @MinTier('pro')
   @ApiOperation({summary: 'Foyda va zararlar (P&L) for a date range'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -65,6 +73,7 @@ export class ReportController {
   }
 
   @Get('customers')
+  @MinTier('pro')
   @ApiOperation({summary: 'Mijozlar hisoboti (new/returning, avg check, top)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -138,6 +147,7 @@ export class ReportController {
   }
 
   @Get('traffic')
+  @MinTier('pro')
   @ApiOperation({summary: 'Soat × hafta kuni yuklama (heatmap)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -208,12 +218,14 @@ export class ReportController {
   // ═══ Level-2 reports (HISOBOTLAR.md §6, 2-daraja) ═════════════════════════
 
   @Get('debt-aging')
+  @MinTier('pro')
   @ApiOperation({summary: 'Nasiya (qarzlar) aging — as-of-now snapshot'})
   async getDebtAging(@CurrentBusiness() business: IBusiness) {
     return this.reportService.getDebtAging(business.id);
   }
 
   @Get('dead-stock')
+  @MinTier('pro')
   @ApiOperation({summary: "O'lik va sekin zaxira (N kun sotilmagan)"})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
   @ApiQuery({name: 'days', required: false, description: 'Lookback window (default 30)'})
@@ -231,6 +243,7 @@ export class ReportController {
   }
 
   @Get('reorder')
+  @MinTier('pro')
   @ApiOperation({summary: 'Qayta buyurtma / tugash prognozi'})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
   @ApiQuery({name: 'days', required: false, description: 'Velocity window (default 30)'})
@@ -252,6 +265,7 @@ export class ReportController {
   }
 
   @Get('transfer-suggestions')
+  @MinTier('proplus')
   @ApiOperation({summary: 'Filiallararo transfer tavsiyasi (rebalans)'})
   @ApiQuery({name: 'days', required: false, description: 'Velocity window (default 30)'})
   @ApiQuery({name: 'coverDays', required: false, description: 'Cover target days (default 14)'})
@@ -284,6 +298,7 @@ export class ReportController {
   }
 
   @Get('assortment')
+  @MinTier('pro')
   @ApiOperation({summary: 'Kategoriya / brend kesimida sotuv va marja'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -301,6 +316,7 @@ export class ReportController {
   }
 
   @Get('branch-comparison')
+  @MinTier('proplus')
   @ApiOperation({summary: 'Filiallar taqqoslash'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -313,6 +329,7 @@ export class ReportController {
   }
 
   @Get('transfers')
+  @MinTier('pro')
   @ApiOperation({summary: "Transferlar (filiallararo ko'chirishlar)"})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})

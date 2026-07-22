@@ -5,12 +5,16 @@ import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { branches, type Branch } from '../database/schema';
-import { eq, and, asc, desc } from 'drizzle-orm';
+import { eq, and, asc, desc, count } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
+import { SubscriptionService } from '../subscription/subscription.service';
 
 @Injectable()
 export class BranchService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   /**
    * The business default branch ("Asosiy do'kon"), created on first use. Every
@@ -58,8 +62,25 @@ export class BranchService {
   ): Promise<Branch> {
     await this.ensureDefault(businessId);
 
-    // NOTE: the plan's branch cap (subscriptionPlans.branchesLimit) is not
-    // enforced yet — wire it through the subscription when billing needs it.
+    // Enforce the plan's branch cap (branchesLimit; null = unlimited). The
+    // default "Asosiy do'kon" counts toward the total, matching how the landing
+    // advertises limits (e.g. Standart = main + 3 = 4 total).
+    const { branchesLimit } =
+      await this.subscriptionService.getSubscriptionLimits(businessId);
+    if (branchesLimit !== null) {
+      const [{ value: activeCount }] = await this.dbService.db
+        .select({ value: count() })
+        .from(branches)
+        .where(
+          and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+        );
+      if (activeCount >= branchesLimit) {
+        throw new AppException(ErrorCode.BRANCH_LIMIT_REACHED, {
+          limit: branchesLimit,
+        });
+      }
+    }
+
     const [created] = await this.dbService.db
       .insert(branches)
       .values({

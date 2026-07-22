@@ -5,10 +5,14 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {IBusiness} from '../business/types';
 import {TargetService} from './target.service';
 import {SetTargetDto} from './dto/set-target.dto';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 
+// Monthly targets are an extended-analytics feature — Business (pro) and up.
 @ApiTags('targets')
 @Controller('targets')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('pro')
 @ApiBearerAuth('JWT-auth')
 export class TargetController {
   constructor(private readonly targetService: TargetService) {}

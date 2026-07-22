@@ -3,9 +3,10 @@ import {TargetController} from './target.controller';
 import {TargetService} from './target.service';
 import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from '../business/business.module';
+import {SubscriptionModule} from '../subscription/subscription.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule],
+  imports: [DatabaseModule, BusinessModule, SubscriptionModule],
   controllers: [TargetController],
   providers: [TargetService],
   exports: [TargetService],

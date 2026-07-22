@@ -32,8 +32,8 @@ import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
 export class UpdateSubscriptionDto {
   @IsString()
   @IsNotEmpty()
-  @IsEnum(['free', 'basic', 'pro'])
-  tier: 'free' | 'basic' | 'pro';
+  @IsEnum(['basic', 'pro', 'proplus'])
+  tier: 'basic' | 'pro' | 'proplus';
 }
 
 @ApiTags('subscriptions')
@@ -88,21 +88,32 @@ export class SubscriptionController {
     const subscription = await this.subscriptionService.getBusinessSubscription(
       business.id,
     );
-    
-    if (!subscription) {
-      // Return default free plan if no subscription
+    const effectiveTier = await this.subscriptionService.getEffectiveTier(
+      business.id,
+    );
+
+    // No subscription, or the trial/paid window has ended → report the internal
+    // free floor so the client gates the UI down accordingly.
+    if (!subscription || effectiveTier === 'free') {
       const freePlan = await this.subscriptionService.getPlanByTier('free');
       return {
         plan: freePlan,
-        tier: freePlan?.tier || 'free',
+        tier: 'free',
         isActive: true,
+        isExpired: !!subscription,
+        endDate: subscription?.endDate ?? null,
       };
     }
+
+    const now = Date.now();
+    const isTrial =
+      subscription.endDate != null && subscription.endDate.getTime() > now;
 
     return {
       plan: subscription.plan,
       tier: subscription.plan.tier,
       isActive: subscription.isActive,
+      isTrial,
       startDate: subscription.startDate,
       endDate: subscription.endDate,
     };
