@@ -17,7 +17,9 @@ export interface ReconRow {
 /** A sale belonging to the shift: its total and per-method paid breakdown. */
 export interface SaleForRecon {
   totalAmount: number | string;
-  // [{ method: 'cash' | 'card', amount }]; the debt remainder is total − Σpaid.
+  // [{ method: <payment-method code>, amount }]; 'cash' hits the cash row, any
+  // other code (card + custom methods like Click) the card (non-cash) row; the
+  // debt remainder is total − Σpaid.
   payments: {method: string; amount: number}[] | null;
 }
 
@@ -60,8 +62,11 @@ export function computeReconciliation(input: ReconInput): {
     let paidNow = 0;
     for (const p of pays) {
       paidNow += p.amount;
+      // 'cash' is the only method with change/reconciliation semantics; every
+      // other code (card, and custom methods like Click) falls into the card
+      // (non-cash) bucket so it still shows up in the grid.
       if (p.method === 'cash') cashSales += p.amount;
-      else if (p.method === 'card') cardSales += p.amount;
+      else cardSales += p.amount;
     }
     const total = Number(o.totalAmount);
     debtSales += Math.max(0, total - paidNow); // the "В долг" remainder

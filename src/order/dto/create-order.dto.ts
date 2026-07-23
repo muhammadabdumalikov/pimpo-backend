@@ -2,6 +2,7 @@ import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {Type} from 'class-transformer';
 import {
   IsString,
+  IsNotEmpty,
   IsOptional,
   IsArray,
   IsNumber,
@@ -41,9 +42,14 @@ export class OrderItemDto {
 }
 
 export class PaymentSplitDto {
-  @ApiProperty({description: 'Payment method', enum: ['cash', 'card']})
+  @ApiProperty({
+    description:
+      "Payment-method code (e.g. 'cash', 'card', 'click', or a custom-* code). " +
+      "'cash' carries special change/reconciliation semantics; every other code " +
+      'is treated as non-cash.',
+  })
   @IsString()
-  @IsIn(['cash', 'card'])
+  @IsNotEmpty()
   method: string;
 
   @ApiProperty({description: 'Amount applied via this method'})

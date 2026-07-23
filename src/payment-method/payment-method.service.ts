@@ -18,11 +18,6 @@ const SYSTEM_METHODS: Array<
 > = [
   { code: 'cash', name: 'Naqd', isVisible: true },
   { code: 'card', name: 'Karta', isVisible: true },
-  { code: 'uzcard', name: 'UzCard', isVisible: false },
-  { code: 'humo', name: 'HUMO', isVisible: false },
-  { code: 'visa', name: 'VISA', isVisible: false },
-  { code: 'mastercard', name: 'Mastercard', isVisible: false },
-  { code: 'unionpay', name: 'UnionPay', isVisible: false },
   { code: 'click', name: 'Click', isVisible: false },
 ];
 

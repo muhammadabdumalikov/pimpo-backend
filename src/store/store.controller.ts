@@ -26,16 +26,19 @@ export class StoreController {
   @Get('products')
   @ApiOperation({ summary: 'Get all store products (public)' })
   @ApiQuery({ name: 'category', required: false, type: String, description: 'Filter by category ID' })
+  @ApiQuery({ name: 'search', required: false, type: String, description: 'Search by product name' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
   @ApiResponse({ status: 200, description: 'List of products' })
   async getProducts(
     @Query('category') category?: string,
+    @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
     return this.storeService.findAll({
       category: category || undefined,
+      search: search || undefined,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
     });
@@ -56,6 +59,15 @@ export class StoreController {
   async getCategories() {
     const storeBusinessId = process.env.STORE_BUSINESS_ID;
     return this.categoryService.findAllForStore(storeBusinessId);
+  }
+
+  @Get('orders/:id')
+  @ApiOperation({ summary: 'Get a store order status by id (public)' })
+  @ApiParam({ name: 'id', description: 'Order ID (issued at checkout)' })
+  @ApiResponse({ status: 200, description: 'Order status + items' })
+  @ApiResponse({ status: 404, description: 'Order not found' })
+  async getOrder(@Param('id') id: string) {
+    return this.storeService.findOrder(id);
   }
 
   @Post('orders')

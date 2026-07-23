@@ -1,1 +1,1 @@
-ALTER TABLE "orders" ADD COLUMN "customer_phone" varchar(32);
+ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "customer_phone" varchar(32);
