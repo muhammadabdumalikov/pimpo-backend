@@ -309,6 +309,13 @@
       "when": 1784781114539,
       "tag": "0043_trim_card_payment_methods",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1784790000000,
+      "tag": "0044_store_slug",
+      "breakpoints": true
     }
   ]
 }

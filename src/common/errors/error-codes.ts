@@ -128,6 +128,9 @@ export enum ErrorCode {
   // ── Store (online storefront) ──────────────────────────────────────────────
   STORE_INSUFFICIENT_STOCK = 'STORE_INSUFFICIENT_STOCK',
   ORDER_CANCELLED_IMMUTABLE = 'ORDER_CANCELLED_IMMUTABLE',
+  STORE_NOT_FOUND = 'STORE_NOT_FOUND',
+  STORE_SLUG_TAKEN = 'STORE_SLUG_TAKEN',
+  STORE_SLUG_INVALID = 'STORE_SLUG_INVALID',
 
   // ── Stock-take ─────────────────────────────────────────────────────────────
   STOCK_TAKE_IN_PROGRESS = 'STOCK_TAKE_IN_PROGRESS',
@@ -538,6 +541,19 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.ORDER_CANCELLED_IMMUTABLE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'A cancelled order cannot change status',
+  },
+  [ErrorCode.STORE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Store not found',
+  },
+  [ErrorCode.STORE_SLUG_TAKEN]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This store address is already taken',
+  },
+  [ErrorCode.STORE_SLUG_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'The store address may use only lowercase letters, digits and hyphens (3-63 chars)',
   },
 
   // Stock-take

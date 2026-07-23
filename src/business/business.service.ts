@@ -178,4 +178,74 @@ export class BusinessService {
 
     await this.dbService.db.delete(businesses).where(eq(businesses.id, id));
   }
+
+  // Reserved subdomains that must never be handed to a tenant (they belong to
+  // the admin app / infra or would shadow it).
+  private static readonly RESERVED_SLUGS = new Set([
+    'www',
+    'api',
+    'admin',
+    'app',
+    'kpos',
+    'mail',
+    'static',
+    'cdn',
+    'assets',
+  ]);
+
+  /**
+   * Set the online-store subdomain slug and/or on-off flag for a business.
+   * The slug is normalised to a DNS label; uniqueness and a reserved-word list
+   * are enforced so subdomains stay unambiguous.
+   */
+  async updateStoreSettings(
+    id: string,
+    dto: { storeSlug?: string | null; storeEnabled?: boolean },
+  ): Promise<Business> {
+    const business = await this.findById(id);
+    if (!business) {
+      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
+    }
+
+    const patch: Partial<Omit<NewBusiness, 'id' | 'createdAt'>> = {
+      updatedAt: new Date(),
+    };
+
+    if (dto.storeSlug !== undefined) {
+      if (dto.storeSlug === null || dto.storeSlug.trim() === '') {
+        patch.storeSlug = null;
+      } else {
+        const slug = dto.storeSlug.trim().toLowerCase();
+        // DNS label: a-z/0-9/hyphen, 3-63 chars, no leading/trailing hyphen.
+        if (
+          !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/.test(slug) ||
+          BusinessService.RESERVED_SLUGS.has(slug)
+        ) {
+          throw new AppException(ErrorCode.STORE_SLUG_INVALID);
+        }
+        // Uniqueness across all other businesses.
+        const [clash] = await this.dbService.db
+          .select({ id: businesses.id })
+          .from(businesses)
+          .where(eq(businesses.storeSlug, slug))
+          .limit(1);
+        if (clash && clash.id !== id) {
+          throw new AppException(ErrorCode.STORE_SLUG_TAKEN);
+        }
+        patch.storeSlug = slug;
+      }
+    }
+
+    if (dto.storeEnabled !== undefined) {
+      patch.storeEnabled = dto.storeEnabled;
+    }
+
+    const [updated] = await this.dbService.db
+      .update(businesses)
+      .set(patch)
+      .where(eq(businesses.id, id))
+      .returning();
+
+    return updated;
+  }
 }

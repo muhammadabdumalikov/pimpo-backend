@@ -21,6 +21,12 @@ export const businesses = pgTable('businesses', {
   password: varchar('password', {length: 255}).notNull(),
   // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
   avatarUrl: varchar('avatar_url', {length: 500}),
+  // Online storefront (pimpo-ecommerce, served at <storeSlug>.<root-domain>).
+  // storeSlug is the subdomain label (unique, lowercase DNS label); the store
+  // is only reachable when storeEnabled is true. Both null/false until the
+  // owner opts in from Settings. See ECOMMERCE.md F3/T13.
+  storeSlug: varchar('store_slug', {length: 63}).unique(),
+  storeEnabled: boolean('store_enabled').default(false).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

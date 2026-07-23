@@ -32,6 +32,21 @@ export class BusinessResponseDto {
   isActive: boolean;
 
   @ApiProperty({
+    description: 'Online-store subdomain slug (null until set)',
+    example: 'salom-market',
+    nullable: true,
+    required: false,
+  })
+  storeSlug?: string | null;
+
+  @ApiProperty({
+    description: 'Whether the online storefront is publicly reachable',
+    example: false,
+    required: false,
+  })
+  storeEnabled?: boolean;
+
+  @ApiProperty({
     description: 'Account creation timestamp',
     example: '2024-01-01T00:00:00.000Z',
   })

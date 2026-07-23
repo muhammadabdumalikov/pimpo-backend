@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '../common/errors/app.exception';
 import { ErrorCode } from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
-import { products, orders, orderItems } from '../database/schema';
+import { products, orders, orderItems, businesses } from '../database/schema';
 import { eq, and, desc, count, inArray, ilike, sql } from 'drizzle-orm';
 
 // Public product shape for the storefront. Never expose the full products row:
@@ -31,27 +31,68 @@ export type StorePublicProduct = {
 export class StoreService {
   constructor(private readonly dbService: DatabaseService) {}
 
-  // The business whose catalog the storefront serves. Single-tenant for now
-  // (ECOMMERCE.md F3/T13 will replace this with per-business slugs).
-  private get storeBusinessId(): string | null {
+  /**
+   * Resolve the storefront's business from the request's subdomain slug.
+   * - A slug (e.g. "salom" from salom.kpos.uz) must map to an enabled, active
+   *   store, else STORE_NOT_FOUND.
+   * - No slug (apex domain / local dev) falls back to the STORE_BUSINESS_ID env,
+   *   or null (unscoped) when that is unset too.
+   * The resolved businessId is threaded into every query below so one tenant's
+   * storefront can never read or order another's catalog.
+   */
+  async resolveBusinessId(slug?: string | null): Promise<string | null> {
+    const trimmed = slug?.trim().toLowerCase();
+    if (trimmed) {
+      const [biz] = await this.dbService.db
+        .select({ id: businesses.id })
+        .from(businesses)
+        .where(
+          and(
+            eq(businesses.storeSlug, trimmed),
+            eq(businesses.storeEnabled, true),
+            eq(businesses.isActive, true),
+          ),
+        )
+        .limit(1);
+      if (!biz) {
+        throw new AppException(ErrorCode.STORE_NOT_FOUND);
+      }
+      return biz.id;
+    }
     return process.env.STORE_BUSINESS_ID || null;
   }
 
-  private scopeConditions() {
+  /** Public storefront branding for the resolved business (name shown in the
+   *  header/footer). Null businessId (apex, unscoped) returns a neutral name. */
+  async getInfo(
+    businessId: string | null,
+  ): Promise<{ name: string | null; slug: string | null }> {
+    if (!businessId) return { name: null, slug: null };
+    const [biz] = await this.dbService.db
+      .select({ name: businesses.name, slug: businesses.storeSlug })
+      .from(businesses)
+      .where(eq(businesses.id, businessId))
+      .limit(1);
+    return { name: biz?.name ?? null, slug: biz?.slug ?? null };
+  }
+
+  private scopeConditions(businessId: string | null) {
     const conditions = [eq(products.isActive, true)];
-    const businessId = this.storeBusinessId;
     if (businessId) {
       conditions.push(eq(products.businessId, businessId));
     }
     return conditions;
   }
 
-  async findAll(options?: {
-    category?: string;
-    search?: string;
-    page?: number;
-    limit?: number;
-  }): Promise<{
+  async findAll(
+    businessId: string | null,
+    options?: {
+      category?: string;
+      search?: string;
+      page?: number;
+      limit?: number;
+    },
+  ): Promise<{
     products: StorePublicProduct[];
     total: number;
     page: number;
@@ -63,7 +104,7 @@ export class StoreService {
     const category = options?.category;
     const search = options?.search?.trim();
 
-    const conditions = this.scopeConditions();
+    const conditions = this.scopeConditions(businessId);
     if (category) {
       conditions.push(eq(products.categoryId, category));
     }
@@ -95,11 +136,14 @@ export class StoreService {
     };
   }
 
-  async findOne(id: string): Promise<StorePublicProduct> {
+  async findOne(
+    businessId: string | null,
+    id: string,
+  ): Promise<StorePublicProduct> {
     const [product] = await this.dbService.db
       .select(publicProductColumns)
       .from(products)
-      .where(and(eq(products.id, id), ...this.scopeConditions()))
+      .where(and(eq(products.id, id), ...this.scopeConditions(businessId)))
       .limit(1);
 
     if (!product) {
@@ -113,7 +157,10 @@ export class StoreService {
    * unguessable UUID handed out at checkout) is the access token; only
    * storefront orders are visible, and only safe fields are returned.
    */
-  async findOrder(id: string): Promise<{
+  async findOrder(
+    businessId: string | null,
+    id: string,
+  ): Promise<{
     id: string;
     status: string;
     totalAmount: string;
@@ -121,7 +168,6 @@ export class StoreService {
     createdAt: Date;
     items: { productName: string; quantity: number; lineTotal: string }[];
   }> {
-    const businessId = this.storeBusinessId;
     const [order] = await this.dbService.db
       .select({
         id: orders.id,
@@ -162,6 +208,7 @@ export class StoreService {
    * this check just turns a silent oversell into a clear customer-facing error.
    */
   async assertOrderable(
+    businessId: string | null,
     items: { productId: string; quantity: number }[],
   ): Promise<void> {
     const ids = items.map((i) => i.productId);
@@ -172,7 +219,7 @@ export class StoreService {
         quantity: products.quantity,
       })
       .from(products)
-      .where(and(inArray(products.id, ids), ...this.scopeConditions()));
+      .where(and(inArray(products.id, ids), ...this.scopeConditions(businessId)));
     const byId = new Map(rows.map((r) => [r.id, r]));
 
     for (const item of items) {

@@ -29,6 +29,7 @@ import { CreateBusinessDto } from './dto/create-business.dto';
 import { LoginDto } from './dto/login.dto';
 import { UpdateBusinessDto } from './dto/update-business.dto';
 import { UpdateMyProfileDto, ChangeMyPasswordDto } from './dto/profile.dto';
+import { UpdateStoreSettingsDto } from './dto/store-settings.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
 import { CurrentUserResponseDto } from './dto/current-user-response.dto';
@@ -137,6 +138,28 @@ export class BusinessController {
     @Body() dto: UpdateMyProfileDto,
   ) {
     return this.authService.updateMyProfile(account, dto);
+  }
+
+  @Put('me/store')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Set the business's online-store subdomain slug and on/off flag",
+  })
+  @ApiResponse({ status: 200, description: 'Updated business', type: BusinessResponseDto })
+  @ApiResponse({ status: 409, description: 'Slug already taken' })
+  async updateStoreSettings(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: UpdateStoreSettingsDto,
+  ) {
+    const updated = await this.businessService.updateStoreSettings(
+      business.id,
+      dto,
+    );
+    // Never leak the password hash.
+    const { password: _pw, ...safe } = updated;
+    return safe;
   }
 
   @Put('me/password')
