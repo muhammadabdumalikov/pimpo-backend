@@ -411,8 +411,8 @@ export class ReceiptService {
           quantity: sql`ROUND((${products.quantity} + ${agg.qty})::numeric, 3)`,
           priceIn: sql`CASE WHEN ${products.quantity} + ${agg.qty} > 0
               THEN ROUND(
-                (${products.quantity} * ${products.priceIn} + ${money(agg.value)})
-                / (${products.quantity} + ${agg.qty}),
+                ((${products.quantity} * ${products.priceIn} + ${money(agg.value)})
+                / (${products.quantity} + ${agg.qty}))::numeric,
                 2
               )
               ELSE ${products.priceIn} END`,
