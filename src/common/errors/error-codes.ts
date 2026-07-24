@@ -152,6 +152,12 @@ export enum ErrorCode {
   NO_FILE_PROVIDED = 'NO_FILE_PROVIDED',
   INVALID_FILE_TYPE = 'INVALID_FILE_TYPE',
 
+  // ── Telegram bot (report delivery) ─────────────────────────────────────────
+  TELEGRAM_NOT_CONFIGURED = 'TELEGRAM_NOT_CONFIGURED',
+  TELEGRAM_LINK_NOT_FOUND = 'TELEGRAM_LINK_NOT_FOUND',
+  TELEGRAM_NO_TARGETS = 'TELEGRAM_NO_TARGETS',
+  TELEGRAM_SEND_FAILED = 'TELEGRAM_SEND_FAILED',
+
   // ── Subscription ───────────────────────────────────────────────────────────
   SUBSCRIPTION_PLAN_NOT_FOUND = 'SUBSCRIPTION_PLAN_NOT_FOUND',
   SUBSCRIPTION_PLAN_TIER_NOT_FOUND = 'SUBSCRIPTION_PLAN_TIER_NOT_FOUND',
@@ -620,6 +626,24 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     message: 'Invalid file type. Allowed: {allowed}',
   },
 
+  // Telegram bot
+  [ErrorCode.TELEGRAM_NOT_CONFIGURED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Telegram bot is not configured.',
+  },
+  [ErrorCode.TELEGRAM_LINK_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Telegram link not found',
+  },
+  [ErrorCode.TELEGRAM_NO_TARGETS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No active Telegram chats to send to.',
+  },
+  [ErrorCode.TELEGRAM_SEND_FAILED]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'Failed to send the document to Telegram.',
+  },
+
   // Subscription
   [ErrorCode.SUBSCRIPTION_PLAN_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
@@ -655,7 +679,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
 // for any HttpException that wasn't thrown as an AppException (guards, pipes,
 // or not-yet-migrated throws).
 export function genericCodeForStatus(status: number): ErrorCode {
-  switch (status) {
+  // Cast is type-only: the case labels are HttpStatus members, so sharing the
+  // enum type with the discriminant satisfies no-unsafe-enum-comparison. The
+  // `default` branch below still treats `status` as a plain number.
+  switch (status as HttpStatus) {
     case HttpStatus.BAD_REQUEST:
       return ErrorCode.BAD_REQUEST;
     case HttpStatus.UNAUTHORIZED:

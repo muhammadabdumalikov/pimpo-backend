@@ -1,9 +1,16 @@
 import {Injectable, Logger} from '@nestjs/common';
 import {Cron} from '@nestjs/schedule';
 import {DatabaseService} from '../database/database.service';
-import {businesses, orders, orderItems, cashShifts} from '../database/schema';
+import {
+  businesses,
+  orders,
+  orderItems,
+  cashShifts,
+  telegramLinks,
+} from '../database/schema';
 import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
+import {TelegramSenderService} from '../telegram/telegram-sender.service';
 
 export interface DailyDigest {
   date: string; // YYYY-MM-DD (business zone)
@@ -24,7 +31,10 @@ export interface DailyDigest {
 export class DigestService {
   private readonly logger = new Logger(DigestService.name);
 
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly telegramSender: TelegramSenderService,
+  ) {}
 
   private get db() {
     return this.dbService.db;
@@ -105,7 +115,8 @@ export class DigestService {
 
   /** Telegram-ready Uzbek message for a digest. */
   formatMessage(digest: DailyDigest, businessName?: string): string {
-    const uz = (n: number) => new Intl.NumberFormat('uz-UZ').format(Math.round(n));
+    const uz = (n: number) =>
+      new Intl.NumberFormat('uz-UZ').format(Math.round(n));
     const lines: string[] = [];
     lines.push(`📊 Kunlik hisobot — ${digest.date}`);
     if (businessName) lines.push(`🏪 ${businessName}`);
@@ -114,7 +125,9 @@ export class DigestService {
     lines.push(`🧾 Cheklar: ${uz(digest.orderCount)} ta`);
     lines.push(`🎯 O'rtacha chek: ${uz(digest.avgCheck)} so'm`);
     if (digest.cashDifference < 0) {
-      lines.push(`⚠️ Kassa kamomad: ${uz(Math.abs(digest.cashDifference))} so'm`);
+      lines.push(
+        `⚠️ Kassa kamomad: ${uz(Math.abs(digest.cashDifference))} so'm`,
+      );
     } else if (digest.cashDifference > 0) {
       lines.push(`✅ Kassa ortiqcha: ${uz(digest.cashDifference)} so'm`);
     }
@@ -122,19 +135,43 @@ export class DigestService {
       lines.push('');
       lines.push('🔝 TOP-5 tovar:');
       digest.topProducts.forEach((p, i) => {
-        lines.push(`${i + 1}. ${p.name} — ${uz(p.qty)} × / ${uz(p.revenue)} so'm`);
+        lines.push(
+          `${i + 1}. ${p.name} — ${uz(p.qty)} × / ${uz(p.revenue)} so'm`,
+        );
       });
     }
     return lines.join('\n');
   }
 
   /**
-   * Delivery stub — the Telegram bot integration lands in a later phase (the
-   * user chose "backend-only for now"). When wired, this reads the business's
-   * bot token + chat id and POSTs to the Telegram Bot API.
+   * Best-effort delivery: forward the digest text to every ACTIVE Telegram chat
+   * linked to the business (via the login-gated bot). No-op when the bot token
+   * is absent or the business has no linked chats. A failed send to one chat is
+   * logged and never aborts the run.
    */
-  private async sendToTelegram(_businessId: string, _message: string): Promise<void> {
-    // TODO(R30 phase 2): send `message` to the business's Telegram chat.
+  private async sendToTelegram(
+    businessId: string,
+    message: string,
+  ): Promise<void> {
+    if (!this.telegramSender.isConfigured()) return;
+    const links = await this.db
+      .select({chatId: telegramLinks.chatId})
+      .from(telegramLinks)
+      .where(
+        and(
+          eq(telegramLinks.businessId, businessId),
+          eq(telegramLinks.isActive, true),
+        ),
+      );
+    for (const link of links) {
+      try {
+        await this.telegramSender.sendMessage(link.chatId, message);
+      } catch (e) {
+        this.logger.warn(
+          `Digest telegram send failed for business ${businessId}: ${(e as Error).message}`,
+        );
+      }
+    }
   }
 
   /** 21:00 Asia/Tashkent daily: build + (for now) log a digest per business. */
@@ -156,9 +193,13 @@ export class DigestService {
         await this.sendToTelegram(b.id, message);
         sent += 1;
       } catch (e) {
-        this.logger.error(`Digest failed for business ${b.id}: ${(e as Error).message}`);
+        this.logger.error(
+          `Digest failed for business ${b.id}: ${(e as Error).message}`,
+        );
       }
     }
-    this.logger.log(`Daily digest run complete: ${sent}/${bizList.length} businesses.`);
+    this.logger.log(
+      `Daily digest run complete: ${sent}/${bizList.length} businesses.`,
+    );
   }
 }

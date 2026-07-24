@@ -29,6 +29,7 @@ import {FinanceModule} from './finance/finance.module';
 import {ReportModule} from './report/report.module';
 import {TargetModule} from './target/target.module';
 import {DigestModule} from './digest/digest.module';
+import {TelegramModule} from './telegram/telegram.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
@@ -94,6 +95,7 @@ class JwtGlobalModule {}
     ReportModule,
     TargetModule,
     DigestModule,
+    TelegramModule,
   ],
   controllers: [AppController],
   providers: [AppService],

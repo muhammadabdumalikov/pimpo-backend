@@ -4,9 +4,10 @@ import {DigestService} from './digest.service';
 import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from '../business/business.module';
 import {SubscriptionModule} from '../subscription/subscription.module';
+import {TelegramModule} from '../telegram/telegram.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule, SubscriptionModule],
+  imports: [DatabaseModule, BusinessModule, SubscriptionModule, TelegramModule],
   controllers: [DigestController],
   providers: [DigestService],
   exports: [DigestService],

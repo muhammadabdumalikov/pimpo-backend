@@ -323,6 +323,20 @@
       "when": 1784874062929,
       "tag": "0045_stock_take_item_checked",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1784874200000,
+      "tag": "0046_telegram_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1784874300000,
+      "tag": "0047_telegram_links_last_sent_by",
+      "breakpoints": true
     }
   ]
 }

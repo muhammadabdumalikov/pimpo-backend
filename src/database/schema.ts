@@ -1678,3 +1678,52 @@ export const paymentMethodsRelations = relations(paymentMethods, ({one}) => ({
 
 export type PaymentMethod = typeof paymentMethods.$inferSelect;
 export type NewPaymentMethod = typeof paymentMethods.$inferInsert;
+
+// ─── Telegram bot report delivery ───────────────────────────────────────────
+// Links a Telegram chat to a dashboard account after a login-gated /start flow
+// in the bot: the user sends their dashboard login + password to the bot, and
+// on success this row is created. The frontend later generates an Excel report
+// and POSTs it to /telegram/send-document, which forwards the file to the
+// linked chat(s) via the Bot API sendDocument. One ACTIVE link per chat: the
+// unique index on chat_id means logging in again from the same chat replaces
+// the previous link (deactivating/removing any prior row for that chat).
+export const telegramLinks = pgTable(
+  'telegram_links',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // Which dashboard account the chat authenticated as (owner or staff).
+    accountType: varchar('account_type', {length: 12}).notNull(), // 'business' | 'staff'
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    accountLogin: varchar('account_login', {length: 100}).notNull(),
+    accountName: varchar('account_name', {length: 255}).notNull(),
+    // Telegram private-chat id the account is bound to (kept as a string).
+    chatId: varchar('chat_id', {length: 32}).notNull(),
+    tgUsername: varchar('tg_username', {length: 255}),
+    tgFirstName: varchar('tg_first_name', {length: 255}),
+    isActive: boolean('is_active').default(true).notNull(),
+    lastSentAt: timestamp('last_sent_at'),
+    // Display name of the dashboard account that triggered the last send — shown
+    // in the settings list and echoed in the Telegram caption ("Yubordi: …").
+    lastSentBy: varchar('last_sent_by', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    // One link per chat — upsert (replace) on conflict.
+    chatIdUq: uniqueIndex('telegram_links_chat_id_uq').on(table.chatId),
+    businessIdx: index('telegram_links_business_idx').on(table.businessId),
+  }),
+);
+
+export const telegramLinksRelations = relations(telegramLinks, ({one}) => ({
+  business: one(businesses, {
+    fields: [telegramLinks.businessId],
+    references: [businesses.id],
+  }),
+}));
+
+export type TelegramLink = typeof telegramLinks.$inferSelect;
+export type NewTelegramLink = typeof telegramLinks.$inferInsert;
