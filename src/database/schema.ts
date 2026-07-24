@@ -1819,10 +1819,16 @@ export const billzImportJobs = pgTable(
         >
       >()
       .notNull(),
-    // Fetch-phase resume cursor: {[entity]: {page}} — the NEXT page to fetch.
-    // Reset to null when the job flips to the load phase (staging.status is the
-    // load-phase cursor, so no page checkpoint is needed there).
-    checkpoint: jsonb('checkpoint').$type<Record<string, {page: number}>>(),
+    // Fetch-phase resume checkpoint, per entity. products/images re-scan the
+    // catalog by CATEGORY CHUNKING (POST /v2/product-search-with-filters per
+    // category) → {categoryId, page (page within that category)}; customers stay
+    // page-number based → {page}. Reset to null when the job flips to the load
+    // phase (staging.status is the load-phase cursor there). jsonb column —
+    // widening this shape needs no migration.
+    checkpoint:
+      jsonb('checkpoint').$type<
+        Record<string, {page?: number; categoryId?: string}>
+      >(),
     error: text('error'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     startedAt: timestamp('started_at'),

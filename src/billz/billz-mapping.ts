@@ -110,9 +110,11 @@ export function extractList(body: unknown): ExtractedList {
     b.results,
     b.list,
     b.clients,
+    b.categories,
     b.data,
     data?.products,
     data?.clients,
+    data?.categories,
     data?.items,
     data?.results,
     data?.list,
@@ -157,6 +159,12 @@ export interface ProductMapping {
   stock: number;
   /** Candidate: `brand_name`. */
   brandName: string | null;
+  /**
+   * BiLLZ category id from `categories[0].id`. Used DIRECTLY as the KPOS category
+   * id (KPOS `categories.id` is a free business-scoped varchar), so the product
+   * links to its real BiLLZ category without a name match.
+   */
+  categoryId: string | null;
   /** Candidate: `categories[0].name`. */
   categoryName: string | null;
   /** Candidate: `measurement_unit.name`. */
@@ -212,10 +220,14 @@ function summariseShopPrices(raw: unknown): {
 }
 
 /**
- * Stock (qoldiq) lives in a SEPARATE array from prices — MG2-confirmed:
- * `shop_measurement_values[].active_measurement_value`, summed across shops.
- * Falls back to the older `shop_prices[]` stock keys if that array is absent,
- * for resilience against per-tenant shape differences.
+ * Stock (qoldiq) lives in the `shop_measurement_values[]` array (per shop),
+ * summed across shops — MG2-confirmed against real staged JSON. The FIELD NAME
+ * differs by endpoint:
+ *  - POST /v2/product-search-with-filters (the import path): `total_active_
+ *    measurement_value` (sellable on-hand), then `total_measurement_value`.
+ *  - GET /v2/products (the MG2 probe path): `active_measurement_value`.
+ * We try all, in that order, then fall back to the older `shop_prices[]` stock
+ * keys if the array is absent entirely.
  */
 function sumStock(rec: Record<string, unknown>): number {
   const smv = Array.isArray(rec.shop_measurement_values)
@@ -226,7 +238,12 @@ function sumStock(rec: Record<string, unknown>): number {
   for (const item of smv) {
     const s = asRecord(item);
     if (!s) continue;
-    const v = firstNumber(s.active_measurement_value, s.measurement_value);
+    const v = firstNumber(
+      s.total_active_measurement_value,
+      s.total_measurement_value,
+      s.active_measurement_value,
+      s.measurement_value,
+    );
     if (v != null) {
       stock += v;
       found = true;
@@ -256,9 +273,10 @@ export function mapProduct(raw: unknown): ProductMapping {
   const barcode = (str(rec.barcode) ?? '').trim() || null;
   const brandName = (str(rec.brand_name) ?? '').trim() || null;
 
-  // KPOS categories are FLAT — map categories[0].name only.
+  // KPOS categories are FLAT — take categories[0] (id + name).
   const cats = Array.isArray(rec.categories) ? rec.categories : [];
   const cat0 = asRecord(cats[0]);
+  const categoryId = cat0 ? (str(cat0.id) ?? '').trim() || null : null;
   const categoryName = cat0 ? (str(cat0.name) ?? '').trim() || null : null;
 
   const mu = asRecord(rec.measurement_unit);
@@ -294,6 +312,7 @@ export function mapProduct(raw: unknown): ProductMapping {
     priceOut,
     stock,
     brandName,
+    categoryId,
     categoryName,
     unitName,
     unitShortName,

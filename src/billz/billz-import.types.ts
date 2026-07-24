@@ -45,7 +45,16 @@ export interface EntityCounter {
 }
 
 export type JobCounters = Record<string, EntityCounter>;
-export type JobCheckpoint = Record<string, {page: number}>;
+// Fetch-phase resume checkpoint, per entity. 'products' and 'images' re-scan the
+// catalog by CATEGORY CHUNKING (POST /v2/product-search-with-filters per
+// category) → {categoryId, page}, where `categoryId` is the category currently
+// being paged and `page` is the page WITHIN that category; 'customers' pages
+// /v1/client page-by-page → {page}. All fields optional so one type covers both
+// pagination styles.
+export type JobCheckpoint = Record<
+  string,
+  {page?: number; categoryId?: string}
+>;
 
 /** Build the initial (all-zero) counters for the chosen entities. */
 export function initialCounters(entities: ImportEntity[]): JobCounters {

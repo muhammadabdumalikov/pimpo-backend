@@ -132,48 +132,81 @@ export class BillzClientService {
       } catch (e) {
         // Network failure or timeout (AbortError) — retry with backoff.
         errorRetries += 1;
+        const msg = (e as Error).message;
         if (errorRetries > MAX_ERROR_RETRIES) {
-          this.logger.warn(
-            `BiLLZ request failed after ${MAX_ERROR_RETRIES} retries: ${
-              (e as Error).message
-            }`,
+          this.logger.error(
+            `BiLLZ ${init.method ?? 'GET'} ${url} network-failed after ${MAX_ERROR_RETRIES} retries: ${msg}`,
           );
           throw new AppException(ErrorCode.BILLZ_UNAVAILABLE);
         }
-        await delay(this.backoff(errorRetries));
+        const wait = this.backoff(errorRetries);
+        this.logger.warn(
+          `BiLLZ ${url} network error (attempt ${errorRetries}/${MAX_ERROR_RETRIES}): ${msg} — retrying in ${wait}ms`,
+        );
+        await delay(wait);
         continue;
       }
 
       if (res.status === 429) {
         rateLimitRetries += 1;
+        const snippet = await this.bodySnippet(res);
         if (rateLimitRetries > MAX_RATE_LIMIT_RETRIES) {
-          this.logger.warn(
-            `BiLLZ rate limit not clearing after ${MAX_RATE_LIMIT_RETRIES} retries`,
+          this.logger.error(
+            `BiLLZ 429 for ${url} not clearing after ${MAX_RATE_LIMIT_RETRIES} retries. Body: ${snippet}`,
           );
           throw new AppException(ErrorCode.BILLZ_UNAVAILABLE);
         }
         const retryAfter = this.parseRetryAfter(res.headers.get('retry-after'));
-        await delay(retryAfter ?? this.backoff(rateLimitRetries));
+        const wait = retryAfter ?? this.backoff(rateLimitRetries);
+        this.logger.warn(
+          `BiLLZ 429 for ${url} (attempt ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES}) — retrying in ${wait}ms. Body: ${snippet}`,
+        );
+        await delay(wait);
         continue;
       }
 
       if (res.status >= 500) {
         errorRetries += 1;
+        // Read the error body so the logs show what BiLLZ actually said
+        // (some deployments 500 on out-of-range pages, timeouts, etc.).
+        const snippet = await this.bodySnippet(res);
         if (errorRetries > MAX_ERROR_RETRIES) {
-          this.logger.warn(
-            `BiLLZ returned ${res.status} after ${MAX_ERROR_RETRIES} retries`,
+          this.logger.error(
+            `BiLLZ ${res.status} for ${url} — giving up after ${MAX_ERROR_RETRIES} retries. Body: ${snippet}`,
           );
           throw new AppException(ErrorCode.BILLZ_UNAVAILABLE);
         }
         // Some gateways send Retry-After on 5xx too — honor it like on 429.
         const retryAfter = this.parseRetryAfter(res.headers.get('retry-after'));
-        await delay(retryAfter ?? this.backoff(errorRetries));
+        const wait = retryAfter ?? this.backoff(errorRetries);
+        this.logger.warn(
+          `BiLLZ ${res.status} for ${url} (attempt ${errorRetries}/${MAX_ERROR_RETRIES}) — retrying in ${wait}ms. Body: ${snippet}`,
+        );
+        await delay(wait);
         continue;
       }
 
       // 2xx or 4xx — a definitive answer the caller interprets.
       const bodyText = await res.text();
+      if (res.status >= 400) {
+        this.logger.warn(
+          `BiLLZ ${res.status} for ${url}. Body: ${
+            bodyText.length > 500 ? bodyText.slice(0, 500) + '…' : bodyText
+          }`,
+        );
+      }
       return {status: res.status, body: this.parseJson<T>(bodyText)};
+    }
+  }
+
+  /** Read a truncated response body for logging; never throws. */
+  private async bodySnippet(res: Response): Promise<string> {
+    try {
+      const text = await res.text();
+      if (!text) return '(empty)';
+      return text.length > 500 ? text.slice(0, 500) + '…' : text;
+    } catch {
+      return '(unreadable)';
     }
   }
 
