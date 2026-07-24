@@ -27,6 +27,7 @@ import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 import {IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
+import {CheckItemsDto} from './dto/check-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
 import {CreateWriteOffDto} from './dto/create-write-off.dto';
 
@@ -92,7 +93,10 @@ export class StockTakeService {
   async list(
     businessId: string,
     opts: {page?: number; limit?: number} = {},
-  ): Promise<{items: StockTake[]; total: number}> {
+  ): Promise<{
+    items: (StockTake & {itemCount: number; checkedCount: number})[];
+    total: number;
+  }> {
     const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
     const page = Math.max(opts.page ?? 1, 1);
     const offset = (page - 1) * limit;
@@ -110,7 +114,38 @@ export class StockTakeService {
       .from(stockTakes)
       .where(eq(stockTakes.businessId, businessId));
 
-    return {items: rows, total};
+    // Per-take review progress (reviewed rows / total rows) for the list badge.
+    // One grouped query over just the page's takes, not a query per row.
+    const ids = rows.map((r) => r.id);
+    const statsByTake = new Map<
+      string,
+      {itemCount: number; checkedCount: number}
+    >();
+    if (ids.length > 0) {
+      const stats = await this.dbService.db
+        .select({
+          stockTakeId: stockTakeItems.stockTakeId,
+          itemCount: sql<number>`count(*)::int`,
+          checkedCount: sql<number>`count(*) filter (where ${stockTakeItems.checked})::int`,
+        })
+        .from(stockTakeItems)
+        .where(inArray(stockTakeItems.stockTakeId, ids))
+        .groupBy(stockTakeItems.stockTakeId);
+      for (const s of stats) {
+        statsByTake.set(s.stockTakeId, {
+          itemCount: s.itemCount,
+          checkedCount: s.checkedCount,
+        });
+      }
+    }
+
+    const items = rows.map((r) => ({
+      ...r,
+      itemCount: statsByTake.get(r.id)?.itemCount ?? 0,
+      checkedCount: statsByTake.get(r.id)?.checkedCount ?? 0,
+    }));
+
+    return {items, total};
   }
 
   // ─── Detail (with counted rows) ─────────────────────────────────────────────
@@ -400,6 +435,51 @@ export class StockTakeService {
     });
 
     return {updated};
+  }
+
+  // ─── Check (mark rows reviewed/"tekshirildi") ──────────────────────────────
+  // Flips the per-row `checked` flag so a counter can track which products have
+  // been verified and filter the list. Independent of the counted quantity.
+  async setChecked(
+    businessId: string,
+    id: string,
+    dto: CheckItemsDto,
+  ): Promise<{updated: number}> {
+    const stockTake = await this.requireStockTake(businessId, id);
+    if (stockTake.status !== 'in_progress') {
+      throw new AppException(ErrorCode.STOCK_TAKE_ALREADY_COMPLETED);
+    }
+
+    // Dedupe by product (last value wins) so a noisy client can't fight itself.
+    const checkedByProduct = new Map<string, boolean>();
+    for (const line of dto.items) {
+      if (line.productId) checkedByProduct.set(line.productId, line.checked);
+    }
+    const productIds = [...checkedByProduct.keys()];
+    if (productIds.length === 0) return {updated: 0};
+
+    // Group the ids by target value → at most two UPDATEs (set true / set false).
+    const toTrue = productIds.filter((p) => checkedByProduct.get(p));
+    const toFalse = productIds.filter((p) => !checkedByProduct.get(p));
+
+    await this.dbService.db.transaction(async (tx) => {
+      const apply = async (ids: string[], value: boolean) => {
+        if (ids.length === 0) return;
+        await tx
+          .update(stockTakeItems)
+          .set({checked: value})
+          .where(
+            and(
+              eq(stockTakeItems.stockTakeId, id),
+              inArray(stockTakeItems.productId, ids),
+            ),
+          );
+      };
+      await apply(toTrue, true);
+      await apply(toFalse, false);
+    });
+
+    return {updated: productIds.length};
   }
 
   // ─── Complete (adjust stock + batches + finance) ────────────────────────────

@@ -24,6 +24,7 @@ import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
+import {CheckItemsDto} from './dto/check-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
 import {CreateWriteOffDto} from './dto/create-write-off.dto';
 
@@ -86,6 +87,19 @@ export class StockTakeController {
     return this.stockTakeService.count(business.id, id, dto);
   }
 
+  @Patch(':id/check')
+  @ApiOperation({
+    summary: 'Toggle the reviewed ("tekshirildi") flag on counted rows',
+  })
+  @ApiParam({name: 'id', description: 'Stock-take ID'})
+  async check(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Body() dto: CheckItemsDto,
+  ) {
+    return this.stockTakeService.setChecked(business.id, id, dto);
+  }
+
   @Post(':id/complete')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
@@ -134,7 +148,9 @@ export class WriteOffController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({summary: 'Write off stock immediately (FIFO reduce + expense)'})
+  @ApiOperation({
+    summary: 'Write off stock immediately (FIFO reduce + expense)',
+  })
   async create(
     @CurrentBusiness() business: IBusiness,
     @CurrentAccount() account: IAccount,

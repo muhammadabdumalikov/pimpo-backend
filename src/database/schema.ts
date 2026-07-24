@@ -1410,6 +1410,10 @@ export const stockTakeItems = pgTable(
     diffValue: decimal('diff_value', {precision: 12, scale: 2}),
     // Kamomad/hisobdan chiqarish sababi (o'g'irlik/buzilish/muddat...). Ixtiyoriy.
     reason: varchar('reason', {length: 255}),
+    // Sanoqchi bu mahsulotni ko'zdan kechirdimi ("tekshirildi/tekshirilmadi").
+    // Sanoq davomida qaysi tovarlar hali qolganini kuzatish + filtrlash uchun.
+    // Sanalgan miqdordan mustaqil — 0 ham "tekshirilgan" bo'lishi mumkin.
+    checked: boolean('checked').default(false).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
