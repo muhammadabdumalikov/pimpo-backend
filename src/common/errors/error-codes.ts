@@ -158,6 +158,19 @@ export enum ErrorCode {
   TELEGRAM_NO_TARGETS = 'TELEGRAM_NO_TARGETS',
   TELEGRAM_SEND_FAILED = 'TELEGRAM_SEND_FAILED',
 
+  // ── BiLLZ migration (data import) ──────────────────────────────────────────
+  // The secret_token was rejected by BiLLZ — a normal outcome for a wrong key.
+  // MUST stay BAD_REQUEST, never 401: the frontend force-logs-out on any 401.
+  BILLZ_TOKEN_INVALID = 'BILLZ_TOKEN_INVALID',
+  // BiLLZ is unreachable / rate-limiting after all retries were exhausted.
+  BILLZ_UNAVAILABLE = 'BILLZ_UNAVAILABLE',
+  // No verified BiLLZ connection on record — verify a secret key first.
+  BILLZ_NOT_CONNECTED = 'BILLZ_NOT_CONNECTED',
+  // The business already has a queued/running/paused import.
+  BILLZ_IMPORT_ALREADY_ACTIVE = 'BILLZ_IMPORT_ALREADY_ACTIVE',
+  // No active import (queued/running/paused) to pause/resume/cancel.
+  BILLZ_IMPORT_NOT_ACTIVE = 'BILLZ_IMPORT_NOT_ACTIVE',
+
   // ── Subscription ───────────────────────────────────────────────────────────
   SUBSCRIPTION_PLAN_NOT_FOUND = 'SUBSCRIPTION_PLAN_NOT_FOUND',
   SUBSCRIPTION_PLAN_TIER_NOT_FOUND = 'SUBSCRIPTION_PLAN_TIER_NOT_FOUND',
@@ -642,6 +655,30 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.TELEGRAM_SEND_FAILED]: {
     status: HttpStatus.BAD_GATEWAY,
     message: 'Failed to send the document to Telegram.',
+  },
+
+  // BiLLZ migration
+  [ErrorCode.BILLZ_TOKEN_INVALID]: {
+    // Deliberately BAD_REQUEST, not UNAUTHORIZED: a rejected BiLLZ secret_token
+    // is a normal user outcome, and any 401 force-logs-out the KPOS session.
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The BiLLZ secret key is invalid.',
+  },
+  [ErrorCode.BILLZ_UNAVAILABLE]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'BiLLZ is temporarily unavailable. Please try again later.',
+  },
+  [ErrorCode.BILLZ_NOT_CONNECTED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'BiLLZ is not connected. Verify a secret key first.',
+  },
+  [ErrorCode.BILLZ_IMPORT_ALREADY_ACTIVE]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A BiLLZ import is already queued or running for this business.',
+  },
+  [ErrorCode.BILLZ_IMPORT_NOT_ACTIVE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'There is no active BiLLZ import to control.',
   },
 
   // Subscription

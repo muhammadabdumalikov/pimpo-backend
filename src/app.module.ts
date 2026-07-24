@@ -30,6 +30,7 @@ import {ReportModule} from './report/report.module';
 import {TargetModule} from './target/target.module';
 import {DigestModule} from './digest/digest.module';
 import {TelegramModule} from './telegram/telegram.module';
+import {BillzModule} from './billz/billz.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
@@ -96,6 +97,7 @@ class JwtGlobalModule {}
     TargetModule,
     DigestModule,
     TelegramModule,
+    BillzModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,6 +1,7 @@
 import {
   pgTable,
   varchar,
+  text,
   timestamp,
   boolean,
   integer,
@@ -1728,3 +1729,224 @@ export const telegramLinksRelations = relations(telegramLinks, ({one}) => ({
 
 export type TelegramLink = typeof telegramLinks.$inferSelect;
 export type NewTelegramLink = typeof telegramLinks.$inferInsert;
+
+// ─── BiLLZ migration (data import from BiLLZ 2.0) ────────────────────────────
+// One row per business that has connected a BiLLZ account for a one-off data
+// migration (see MIGRATSIYA.md, task MG1). The row holds the integration
+// `secret_token` (the only long-lived credential BiLLZ issues) plus the most
+// recent access/refresh token pair obtained from POST /v1/auth/login. Tokens
+// are short-lived JWTs; when the access token nears expiry we re-login with the
+// stored secret_token (BiLLZ's refresh endpoint is undocumented — see
+// billz.service.ts). `checkpoint` is reserved for MG3 (product import
+// resume/pagination) and unused in MG1. One row per business (unique
+// business_id) — verifying again just updates the same row.
+export const billzMigrationState = pgTable(
+  'billz_migration_state',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // BiLLZ integration secret key (Settings → Company → Integration keys).
+    secretToken: text('secret_token').notNull(),
+    // Latest token pair from /v1/auth/login (JWTs — can be long, hence text).
+    accessToken: text('access_token'),
+    refreshToken: text('refresh_token'),
+    // When the current access token expires (from `expires_in`); null until set.
+    tokenExpiresAt: timestamp('token_expires_at'),
+    // Set the first time a secret_token successfully authenticates.
+    verifiedAt: timestamp('verified_at'),
+    // Reserved for MG3 product-import resume (last page/cursor). Unused in MG1.
+    checkpoint: jsonb('checkpoint'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    // One BiLLZ connection per business — verify upserts on conflict.
+    businessIdUq: uniqueIndex('billz_migration_state_business_id_uq').on(
+      table.businessId,
+    ),
+  }),
+);
+
+export const billzMigrationStateRelations = relations(
+  billzMigrationState,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [billzMigrationState.businessId],
+      references: [businesses.id],
+    }),
+  }),
+);
+
+export type BillzMigrationState = typeof billzMigrationState.$inferSelect;
+export type NewBillzMigrationState = typeof billzMigrationState.$inferInsert;
+
+// ── BiLLZ import jobs (MG3/MG4/MG5 import queue) ─────────────────────────────
+// One row per import run a business starts. A single global FIFO worker
+// processes exactly ONE job at a time: all businesses share the KPOS server's
+// one source IP, hence one BiLLZ rate-limit budget, so everyone else waits in
+// the queue. Counters/checkpoint let a job pause/resume and survive a crash
+// (MIGRATSIYA.md §3 checkpoint/resume requirement).
+export const billzImportJobs = pgTable(
+  'billz_import_jobs',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'.
+    status: varchar('status', {length: 16}).notNull().default('queued'),
+    // Two-phase lane the job is currently in: 'fetch' (rate-limited BiLLZ pull
+    // into billz_staging) → 'load' (staging → real KPOS tables). A job starts in
+    // 'fetch'; the fetch lane flips it to 'load' once every entity is staged.
+    phase: varchar('phase', {length: 8}).notNull().default('fetch'),
+    // Chosen entities — a non-empty subset of ['products','customers','images'].
+    entities: jsonb('entities').$type<string[]>().notNull(),
+    // Entity being processed right now; null when queued/finished.
+    currentEntity: varchar('current_entity', {length: 16}),
+    // Per-entity, two-dimension progress:
+    //   {[entity]: {fetch: {total, done, failed}, load: {total, done, failed}}}.
+    // fetch.* tracks the BiLLZ → staging pull; load.* tracks staging → real tables.
+    counters: jsonb('counters')
+      .$type<
+        Record<
+          string,
+          {
+            fetch: {total: number | null; done: number; failed: number};
+            load: {total: number | null; done: number; failed: number};
+          }
+        >
+      >()
+      .notNull(),
+    // Fetch-phase resume cursor: {[entity]: {page}} — the NEXT page to fetch.
+    // Reset to null when the job flips to the load phase (staging.status is the
+    // load-phase cursor, so no page checkpoint is needed there).
+    checkpoint: jsonb('checkpoint').$type<Record<string, {page: number}>>(),
+    error: text('error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    startedAt: timestamp('started_at'),
+    finishedAt: timestamp('finished_at'),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('billz_import_jobs_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    statusIdx: index('billz_import_jobs_status_idx').on(table.status),
+  }),
+);
+
+// Per-record migration log the wizard UI browses. One row per fetched BiLLZ
+// record (success or failed, with a reason). Written in one batched insert per
+// page, never row-by-row. Cumulative across a business's jobs.
+export const billzImportItems = pgTable(
+  'billz_import_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    jobId: varchar('job_id', {length: 36})
+      .notNull()
+      .references(() => billzImportJobs.id, {onDelete: 'cascade'}),
+    entity: varchar('entity', {length: 16}).notNull(),
+    billzId: varchar('billz_id', {length: 64}),
+    // Display label: product name / customer "name phone" / image = product name.
+    // Nullable so an unmappable record without any usable label still logs.
+    name: text('name'),
+    status: varchar('status', {length: 8}).notNull(), // 'success' | 'failed'
+    error: text('error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessEntityCreatedIdx: index(
+      'billz_import_items_business_entity_created_idx',
+    ).on(table.businessId, table.entity, table.createdAt),
+    jobIdx: index('billz_import_items_job_idx').on(table.jobId),
+  }),
+);
+
+// Two-phase staging buffer. The FETCH lane writes ONE row per raw BiLLZ record
+// here (products/customers = the raw record; images = {productKey, imageUrl}),
+// then the LOAD lane maps + upserts each row into the real KPOS tables and flips
+// its status. status is the load-phase resume cursor: only 'pending' rows are
+// (re)processed, so a resume never re-loads a row already applied.
+export const billzStaging = pgTable(
+  'billz_staging',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    jobId: varchar('job_id', {length: 36})
+      .notNull()
+      .references(() => billzImportJobs.id, {onDelete: 'cascade'}),
+    entity: varchar('entity', {length: 16}).notNull(),
+    // BiLLZ record id (product/client id). Null when the source record had none.
+    billzId: varchar('billz_id', {length: 64}),
+    // Raw BiLLZ record (products/customers) or {productKey, imageUrl} (images).
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    // 'pending' | 'loaded' | 'failed'.
+    status: varchar('status', {length: 8}).notNull().default('pending'),
+    error: text('error'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    loadedAt: timestamp('loaded_at'),
+  },
+  (table) => ({
+    jobEntityStatusIdx: index('billz_staging_job_entity_status_idx').on(
+      table.jobId,
+      table.entity,
+      table.status,
+    ),
+    businessEntityIdx: index('billz_staging_business_entity_idx').on(
+      table.businessId,
+      table.entity,
+    ),
+  }),
+);
+
+export const billzImportJobsRelations = relations(
+  billzImportJobs,
+  ({one, many}) => ({
+    business: one(businesses, {
+      fields: [billzImportJobs.businessId],
+      references: [businesses.id],
+    }),
+    items: many(billzImportItems),
+    staging: many(billzStaging),
+  }),
+);
+
+export const billzStagingRelations = relations(billzStaging, ({one}) => ({
+  business: one(businesses, {
+    fields: [billzStaging.businessId],
+    references: [businesses.id],
+  }),
+  job: one(billzImportJobs, {
+    fields: [billzStaging.jobId],
+    references: [billzImportJobs.id],
+  }),
+}));
+
+export const billzImportItemsRelations = relations(
+  billzImportItems,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [billzImportItems.businessId],
+      references: [businesses.id],
+    }),
+    job: one(billzImportJobs, {
+      fields: [billzImportItems.jobId],
+      references: [billzImportJobs.id],
+    }),
+  }),
+);
+
+export type BillzImportJob = typeof billzImportJobs.$inferSelect;
+export type NewBillzImportJob = typeof billzImportJobs.$inferInsert;
+export type BillzImportItem = typeof billzImportItems.$inferSelect;
+export type NewBillzImportItem = typeof billzImportItems.$inferInsert;
+export type BillzStaging = typeof billzStaging.$inferSelect;
+export type NewBillzStaging = typeof billzStaging.$inferInsert;
