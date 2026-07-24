@@ -21,6 +21,8 @@ import {
 } from '@nestjs/swagger';
 import { ReceiptService } from './receipt.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { PlanTierGuard } from '../subscription/plan-tier.guard';
+import { MinTier } from '../subscription/required-tier.decorator';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { CurrentAccount } from '../business/decorators/current-account.decorator';
 import { IBusiness, IAccount } from '../business/types';
@@ -30,7 +32,8 @@ import { CreateReturnDto } from './dto/create-return.dto';
 
 @ApiTags('receipts')
 @Controller('receipts')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class ReceiptController {
   constructor(private readonly receiptService: ReceiptService) {}

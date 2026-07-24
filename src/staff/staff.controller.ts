@@ -21,6 +21,8 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
 import { OwnerGuard } from '../business/owner.guard';
+import { PlanTierGuard } from '../subscription/plan-tier.guard';
+import { MinTier } from '../subscription/required-tier.decorator';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { IBusiness } from '../business/types';
 import { CreateStaffDto } from './dto/create-staff.dto';
@@ -29,7 +31,8 @@ import { StaffService } from './staff.service';
 
 @ApiTags('staff')
 @Controller('staff')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class StaffController {
   constructor(private readonly staffService: StaffService) {}

@@ -5,9 +5,10 @@ import { DatabaseModule } from '../database/database.module';
 import { BusinessModule } from 'src/business/business.module';
 import { FinanceModule } from '../finance/finance.module';
 import { BranchModule } from '../branch/branch.module';
+import { SubscriptionModule } from '../subscription/subscription.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule, FinanceModule, BranchModule],
+  imports: [DatabaseModule, BusinessModule, FinanceModule, BranchModule, SubscriptionModule],
   controllers: [ReceiptController],
   providers: [ReceiptService],
   exports: [ReceiptService],

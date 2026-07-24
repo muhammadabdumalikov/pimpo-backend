@@ -19,6 +19,8 @@ import {
 } from '@nestjs/swagger';
 import {StockTakeService} from './stock-take.service';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
@@ -30,7 +32,8 @@ import {CreateWriteOffDto} from './dto/create-write-off.dto';
 
 @ApiTags('stock-takes')
 @Controller('stock-takes')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class StockTakeController {
   constructor(private readonly stockTakeService: StockTakeService) {}
@@ -141,7 +144,8 @@ export class StockTakeController {
 // which records it as a completed stock_take of type 'writeoff'.
 @ApiTags('write-offs')
 @Controller('write-offs')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class WriteOffController {
   constructor(private readonly stockTakeService: StockTakeService) {}

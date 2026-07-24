@@ -19,6 +19,8 @@ import {
 } from '@nestjs/swagger';
 import {FinanceService} from './finance.service';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
@@ -32,7 +34,8 @@ import {QueryTransactionsDto} from './dto/query-transactions.dto';
 
 @ApiTags('finance')
 @Controller()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class FinanceController {
   constructor(private readonly financeService: FinanceService) {}

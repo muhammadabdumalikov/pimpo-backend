@@ -18,6 +18,8 @@ import {
 } from '@nestjs/swagger';
 import {StockTransferService} from './stock-transfer.service';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
@@ -25,7 +27,8 @@ import {CreateStockTransferDto} from './dto/create-stock-transfer.dto';
 
 @ApiTags('stock-transfers')
 @Controller('stock-transfers')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class StockTransferController {
   constructor(private readonly transferService: StockTransferService) {}

@@ -23,6 +23,8 @@ import {
 } from '@nestjs/swagger';
 import { SupplierService } from './supplier.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { PlanTierGuard } from '../subscription/plan-tier.guard';
+import { MinTier } from '../subscription/required-tier.decorator';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { IBusiness } from '../business/types';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
@@ -30,7 +32,8 @@ import { UpdateSupplierDto } from './dto/update-supplier.dto';
 
 @ApiTags('suppliers')
 @Controller('suppliers')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class SupplierController {
   constructor(private readonly supplierService: SupplierService) {}
