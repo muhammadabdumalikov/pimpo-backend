@@ -105,6 +105,15 @@ export class CreateProductDto {
   priceBundle?: string;
 
   @ApiProperty({
+    description: 'Wholesale selling price ("ulgurji narxi"). Optional.',
+    example: '5500.00',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  priceWholesale?: string;
+
+  @ApiProperty({
     description: 'Reorder point — flag "low stock" when quantity <= this.',
     example: 5,
     required: false,

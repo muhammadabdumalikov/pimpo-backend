@@ -70,6 +70,7 @@ export class ProductService {
       image?: string;
       categoryId?: string;
       priceBundle?: string;
+      priceWholesale?: string;
       lowStockThreshold?: number;
       brandId?: string;
       supplierId?: string;
@@ -134,6 +135,7 @@ export class ProductService {
       image: data.image || null,
       categoryId: data.categoryId || null,
       priceBundle: data.priceBundle || null,
+      priceWholesale: data.priceWholesale || null,
       lowStockThreshold: data.lowStockThreshold ?? null,
       brandId: data.brandId || null,
       supplierId: data.supplierId || null,
