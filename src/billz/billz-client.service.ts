@@ -11,11 +11,13 @@ const MIN_GAP_MS = 800;
 const JITTER_MIN_MS = 100;
 const JITTER_MAX_MS = 300;
 
-// Retry budgets. A 429 is retried more aggressively than a transient
-// network/5xx failure because it is an explicit "slow down" rather than an
-// outage. Exhausting either budget surfaces as BILLZ_UNAVAILABLE.
+// Retry budgets. Exhausting either surfaces as BILLZ_UNAVAILABLE. Error
+// retries are generous on purpose: a multi-page fetch runs for ~20 minutes and
+// a single transient 500 near the end must not kill the whole job (resume
+// exists, but riding out a brief outage is cheaper). 6 retries with 1s→32s
+// backoff ≈ one minute of patience.
 const MAX_RATE_LIMIT_RETRIES = 5;
-const MAX_ERROR_RETRIES = 3;
+const MAX_ERROR_RETRIES = 6;
 
 // Exponential backoff 1s → 2s → 4s → 8s → … capped at 60s.
 const BACKOFF_BASE_MS = 1000;
@@ -43,7 +45,7 @@ function delay(ms: number): Promise<void> {
  *    never overlap (no burst that looks like a bot/DDoS).
  *  - throttle: ~800ms + jitter between request starts (≤ ~1.1 req/s).
  *  - 429 → honor Retry-After, else exponential backoff, retry up to 5×.
- *  - network error / 5xx → exponential backoff, retry up to 3×.
+ *  - network error / 5xx → Retry-After/exponential backoff, retry up to 6×.
  *  - per-request 15s timeout.
  *
  * 2xx and 4xx responses are returned to the caller untouched (a 4xx such as a
@@ -163,7 +165,9 @@ export class BillzClientService {
           );
           throw new AppException(ErrorCode.BILLZ_UNAVAILABLE);
         }
-        await delay(this.backoff(errorRetries));
+        // Some gateways send Retry-After on 5xx too — honor it like on 429.
+        const retryAfter = this.parseRetryAfter(res.headers.get('retry-after'));
+        await delay(retryAfter ?? this.backoff(errorRetries));
         continue;
       }
 

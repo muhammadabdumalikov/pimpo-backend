@@ -160,14 +160,25 @@ export class BillzImportService {
     return {job: toJobDto(updated)};
   }
 
+  /**
+   * Re-enqueue a paused OR failed job. A failed job resumes from its checkpoint
+   * (fetch: the page that failed; load: remaining 'pending' staging rows) — the
+   * pages already staged / rows already loaded are never re-done, so a transient
+   * BiLLZ outage near the end doesn't force re-pulling the whole catalog.
+   */
   async resume(businessId: string): Promise<{job: JobDto}> {
     const job = await this.latestJob(businessId);
-    if (!job || job.status !== 'paused') {
+    if (!job || (job.status !== 'paused' && job.status !== 'failed')) {
       throw new AppException(ErrorCode.BILLZ_IMPORT_NOT_ACTIVE);
     }
     const [updated] = await this.db
       .update(billzImportJobs)
-      .set({status: 'queued', updatedAt: new Date()})
+      .set({
+        status: 'queued',
+        error: null,
+        finishedAt: null,
+        updatedAt: new Date(),
+      })
       .where(eq(billzImportJobs.id, job.id))
       .returning();
     this.worker.wake();
