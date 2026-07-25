@@ -1,4 +1,5 @@
-import {Injectable} from '@nestjs/common';
+import {Injectable, Inject} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
@@ -19,6 +20,7 @@ import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
+import {CacheKeys, TTL} from '../cache/cache.util';
 
 @Injectable()
 export class ProductService {
@@ -26,6 +28,7 @@ export class ProductService {
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
     private readonly branchService: BranchService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   /**
@@ -448,6 +451,8 @@ export class ProductService {
       branchId?: string;
       // Filter by stock status bucket (see stockCondition).
       stock?: 'in' | 'low' | 'out';
+      // Filter to one category.
+      categoryId?: string;
     },
   ): Promise<{
     products: Product[];
@@ -461,6 +466,7 @@ export class ProductService {
     const search = options?.search;
     const branchId = options?.branchId;
     const stock = options?.stock;
+    const categoryId = options?.categoryId;
 
     // Build where conditions
     const whereConditions = [
@@ -476,6 +482,10 @@ export class ProductService {
           ilike(products.barcode, `%${search}%`),
         )!,
       );
+    }
+
+    if (categoryId) {
+      whereConditions.push(eq(products.categoryId, categoryId));
     }
 
     if (stock) {
@@ -541,56 +551,94 @@ export class ProductService {
     };
   }
 
-  // Whole-catalogue stock-status counts for the inventory stat cards. Respects
-  // the same search/branch scoping as findAll, so the numbers always match the
-  // (filtered) list — not just the visible page.
+  // Whole-catalogue stats for the products-page pulse panel: stock-status
+  // counts plus total units on hand and the catalogue's value at supply
+  // (priceIn) and retail (priceOut) prices. Respects the same search/branch/
+  // category scoping as findAll, so the numbers always match the (filtered)
+  // list — not just the visible page.
   async getStats(
     businessId: string,
-    options?: {search?: string; branchId?: string},
-  ): Promise<{total: number; inStock: number; lowStock: number; outOfStock: number}> {
-    const search = options?.search;
-    const branchId = options?.branchId;
+    options?: {search?: string; branchId?: string; categoryId?: string},
+  ): Promise<{
+    total: number;
+    inStock: number;
+    lowStock: number;
+    outOfStock: number;
+    units: number;
+    supplyValue: number;
+    retailValue: number;
+  }> {
+    return this.cache.wrap(
+      CacheKeys.productStats(businessId, options),
+      async () => {
+        const search = options?.search;
+        const branchId = options?.branchId;
+        const categoryId = options?.categoryId;
 
-    const whereConditions = [
-      eq(products.businessId, businessId),
-      eq(products.isActive, true),
-    ];
-    if (search) {
-      whereConditions.push(
-        or(
-          ilike(products.name, `%${search}%`),
-          ilike(products.code, `%${search}%`),
-          ilike(products.barcode, `%${search}%`),
-        )!,
-      );
-    }
+        const whereConditions = [
+          eq(products.businessId, businessId),
+          eq(products.isActive, true),
+        ];
+        if (search) {
+          whereConditions.push(
+            or(
+              ilike(products.name, `%${search}%`),
+              ilike(products.code, `%${search}%`),
+              ilike(products.barcode, `%${search}%`),
+            )!,
+          );
+        }
+        if (categoryId) {
+          whereConditions.push(eq(products.categoryId, categoryId));
+        }
 
-    const qtyCol = branchId ? branchStock.quantity : products.quantity;
-    const selection = {
-      total: sql<number>`count(*)::int`,
-      inStock: sql<number>`count(*) filter (where ${this.stockCondition('in', qtyCol)})::int`,
-      lowStock: sql<number>`count(*) filter (where ${this.stockCondition('low', qtyCol)})::int`,
-      outOfStock: sql<number>`count(*) filter (where ${this.stockCondition('out', qtyCol)})::int`,
-    };
+        const qtyCol = branchId ? branchStock.quantity : products.quantity;
+        // Value sums ignore negative (oversold) rows so they can't shrink the
+        // totals. quantity is doublePrecision — cast to ::numeric before
+        // multiplying by the decimal prices to keep exact money math, then
+        // ::float8 so the driver returns a JS number, not a string.
+        const posQty = sql`greatest(${qtyCol}, 0)::numeric`;
+        const selection = {
+          total: sql<number>`count(*)::int`,
+          inStock: sql<number>`count(*) filter (where ${this.stockCondition('in', qtyCol)})::int`,
+          lowStock: sql<number>`count(*) filter (where ${this.stockCondition('low', qtyCol)})::int`,
+          outOfStock: sql<number>`count(*) filter (where ${this.stockCondition('out', qtyCol)})::int`,
+          units: sql<number>`coalesce(sum(${posQty}), 0)::float8`,
+          supplyValue: sql<number>`coalesce(sum(${posQty} * ${products.priceIn}), 0)::float8`,
+          retailValue: sql<number>`coalesce(sum(${posQty} * ${products.priceOut}), 0)::float8`,
+        };
 
-    const [row] = branchId
-      ? await this.dbService.db
-          .select(selection)
-          .from(products)
-          .innerJoin(
-            branchStock,
-            and(
-              eq(branchStock.productId, products.id),
-              eq(branchStock.branchId, branchId),
-            ),
-          )
-          .where(and(...whereConditions))
-      : await this.dbService.db
-          .select(selection)
-          .from(products)
-          .where(and(...whereConditions));
+        const [row] = branchId
+          ? await this.dbService.db
+              .select(selection)
+              .from(products)
+              .innerJoin(
+                branchStock,
+                and(
+                  eq(branchStock.productId, products.id),
+                  eq(branchStock.branchId, branchId),
+                ),
+              )
+              .where(and(...whereConditions))
+          : await this.dbService.db
+              .select(selection)
+              .from(products)
+              .where(and(...whereConditions));
 
-    return row ?? {total: 0, inStock: 0, lowStock: 0, outOfStock: 0};
+        return (
+          row ?? {
+            total: 0,
+            inStock: 0,
+            lowStock: 0,
+            outOfStock: 0,
+            units: 0,
+            supplyValue: 0,
+            retailValue: 0,
+          }
+        );
+      },
+      TTL.PRODUCT_STATS,
+    );
   }
 
   async findOne(

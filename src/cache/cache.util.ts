@@ -38,6 +38,10 @@ export const TTL = {
   ORDERS_MONTHLY: 3 * 60 * 1000, // 3m
   ORDERS_PERFORMANCE: 3 * 60 * 1000, // 3m
   ORDERS_BY_EMPLOYEE: 3 * 60 * 1000, // 3m
+  // Products-page stats panel: a heavy aggregate refetched on every (debounced)
+  // search keystroke and filter change. Quantity moves on every sale, so
+  // write-invalidation would be noisy — short TTL, same reasoning as ORDERS_SUMMARY.
+  PRODUCT_STATS: 5 * 60 * 1000, // 5m
 } as const;
 
 /** Stable, compact suffix for endpoints whose result depends on query params. */
@@ -80,4 +84,6 @@ export const CacheKeys = {
     `orders:perf:${businessId}:${paramsKey(p)}`,
   ordersByEmployee: (businessId: string, p?: Record<string, unknown>) =>
     `orders:byemp:${businessId}:${paramsKey(p)}`,
+  productStats: (businessId: string, p?: Record<string, unknown>) =>
+    `products:stats:${businessId}:${paramsKey(p)}`,
 } as const;

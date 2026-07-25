@@ -128,6 +128,7 @@ export class ProductController {
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
     @Query('stock') stock?: string,
+    @Query('categoryId') categoryId?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -137,22 +138,29 @@ export class ProductController {
       search,
       branchId: branchId || undefined,
       stock: stockFilter,
+      categoryId: categoryId || undefined,
     });
     return result;
   }
 
   @Get('stats')
-  @ApiOperation({summary: 'Stock-status counts (total / in / low / out) for the catalogue'})
+  @ApiOperation({
+    summary:
+      'Catalogue stats: stock-status counts, units on hand and supply/retail value',
+  })
   @ApiQuery({name: 'search', required: false, type: String})
   @ApiQuery({name: 'branchId', required: false, type: String})
+  @ApiQuery({name: 'categoryId', required: false, type: String})
   async getStats(
     @CurrentBusiness() business: IBusiness,
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
+    @Query('categoryId') categoryId?: string,
   ) {
     return this.productService.getStats(business.id, {
       search,
       branchId: branchId || undefined,
+      categoryId: categoryId || undefined,
     });
   }
 
