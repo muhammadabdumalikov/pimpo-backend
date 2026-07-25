@@ -163,6 +163,16 @@ export class CreateOrderDto {
   @IsOptional()
   discountValue?: number;
 
+  @ApiPropertyOptional({
+    description:
+      "Loyalty bonus balance (soʼm) to spend on this sale. Clamped server-side " +
+      "to the customer's balance and the program's redeem cap; requires a customer.",
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  redeemPoints?: number;
+
   @ApiProperty({description: 'Note', required: false})
   @IsString()
   @IsOptional()

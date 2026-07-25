@@ -18,6 +18,10 @@ export const TTL = {
   ROLES: 5 * 60 * 1000, // 5m
   SUPPLIERS: 5 * 60 * 1000, // 5m
   SETTINGS: 15 * 60 * 1000, // 15m — receipt settings
+  LOYALTY: 15 * 60 * 1000, // 15m — loyalty program settings (write-invalidated)
+  // Telegram notification toggles — read on every notifiable event (checkout,
+  // shift open/close, cash movement), write-invalidated on the settings PUT.
+  TELEGRAM_SETTINGS: 15 * 60 * 1000, // 15m
   // Receipt template resolve depends on registerId; short TTL (edits are rare
   // and reflecting within a minute is fine) instead of per-register invalidation.
   RECEIPT_RESOLVE: 60 * 1000, // 60s
@@ -66,6 +70,8 @@ export const CacheKeys = {
   roles: (businessId: string) => `roles:${businessId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
+  loyaltySettings: (businessId: string) => `loyalty:settings:${businessId}`,
+  telegramSettings: (businessId: string) => `tg:settings:${businessId}`,
   units: (businessId: string) => `units:${businessId}`,
   paymentMethods: (businessId: string) => `paymethods:${businessId}`,
   stockTakeActive: (businessId: string) => `stocktake:active:${businessId}`,

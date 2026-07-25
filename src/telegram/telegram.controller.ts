@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Delete,
   Param,
   Body,
@@ -36,6 +37,8 @@ import {
   staff,
 } from '../database/schema';
 import {TelegramSenderService} from './telegram-sender.service';
+import {TelegramNotifyService} from './telegram-notify.service';
+import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const XLSX_MIME =
@@ -52,10 +55,40 @@ export class TelegramController {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly sender: TelegramSenderService,
+    private readonly notify: TelegramNotifyService,
   ) {}
 
   private get db() {
     return this.dbService.db;
+  }
+
+  @Get('notification-settings')
+  @ApiOperation({
+    summary: 'Which bot notifications the business has enabled',
+  })
+  async getNotificationSettings(@CurrentBusiness() business: IBusiness) {
+    const s = await this.notify.getSettings(business.id);
+    return {
+      checkout: s.checkout,
+      cashShifts: s.cashShifts,
+      cashOperations: s.cashOperations,
+      dailySales: s.dailySales,
+    };
+  }
+
+  @Put('notification-settings')
+  @ApiOperation({summary: 'Toggle which bot notifications get sent'})
+  async updateNotificationSettings(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: UpdateTelegramNotificationSettingsDto,
+  ) {
+    const s = await this.notify.updateSettings(business.id, dto);
+    return {
+      checkout: s.checkout,
+      cashShifts: s.cashShifts,
+      cashOperations: s.cashOperations,
+      dailySales: s.dailySales,
+    };
   }
 
   @Get('links')

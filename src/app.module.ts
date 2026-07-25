@@ -32,9 +32,11 @@ import {DigestModule} from './digest/digest.module';
 import {TelegramModule} from './telegram/telegram.module';
 import {BillzModule} from './billz/billz.module';
 import {PlatformModule} from './platform/platform.module';
+import {LoyaltyModule} from './loyalty/loyalty.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
+import {buildCacheOptions} from './cache/cache.store';
 
 // Global module for JWT - makes JwtService available everywhere.
 // Uses registerAsync so the secret is read from ConfigService AFTER
@@ -63,10 +65,16 @@ class JwtGlobalModule {}
 @Module({
   imports: [
     ConfigModule.forRoot({isGlobal: true}),
-    // In-memory cache, available app-wide (isGlobal → CACHE_MANAGER injectable
-    // everywhere without importing CacheModule per feature module). Per-call
-    // TTLs are passed explicitly via cache.wrap(); this default is a fallback.
-    CacheModule.register({isGlobal: true, ttl: 60_000}),
+    // Shared cache, available app-wide (isGlobal → CACHE_MANAGER injectable
+    // everywhere without importing CacheModule per feature module). Backed by
+    // Redis when configured (shared across instances, survives deploys), else an
+    // in-memory fallback for local dev — see buildCacheOptions. Per-call TTLs are
+    // passed explicitly via cache.wrap(); the returned ttl is only a fallback.
+    CacheModule.registerAsync({
+      isGlobal: true,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => buildCacheOptions(config),
+    }),
     // In-process cron scheduler (R30 daily digest at 21:00 Asia/Tashkent).
     ScheduleModule.forRoot(),
     JwtGlobalModule,
@@ -100,6 +108,7 @@ class JwtGlobalModule {}
     TelegramModule,
     BillzModule,
     PlatformModule,
+    LoyaltyModule,
   ],
   controllers: [AppController],
   providers: [AppService],

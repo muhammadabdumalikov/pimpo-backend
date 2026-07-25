@@ -247,6 +247,15 @@ export const users = pgTable(
     email: varchar('email', {length: 255}),
     address: varchar('address', {length: 500}),
     isActive: boolean('is_active').default(true).notNull(),
+    // Loyalty (see loyalty_settings): spendable cashback balance in soʼm, and
+    // lifetime spend that drives the cashback tier. Both accrue from sales once
+    // the program is enabled (nothing backfills past orders).
+    bonusBalance: decimal('bonus_balance', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    totalSpent: decimal('total_spent', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -334,6 +343,11 @@ export const orders = pgTable(
     discountType: varchar('discount_type', {length: 10}),
     discountValue: decimal('discount_value', {precision: 12, scale: 2}),
     discountAmount: decimal('discount_amount', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // Loyalty bonus balance spent on this sale (soʼm). totalAmount is the full
+    // sale value; the tenders in `payments` cover totalAmount - loyaltyRedeemed.
+    loyaltyRedeemed: decimal('loyalty_redeemed', {precision: 12, scale: 2})
       .notNull()
       .default('0'),
     itemCount: integer('item_count').notNull().default(0),
@@ -1733,6 +1747,46 @@ export const telegramLinksRelations = relations(telegramLinks, ({one}) => ({
 export type TelegramLink = typeof telegramLinks.$inferSelect;
 export type NewTelegramLink = typeof telegramLinks.$inferInsert;
 
+// ─── Telegram notification settings ──────────────────────────────────────────
+// One row per business: which bot notifications the shop wants pushed to its
+// linked chats. Each event is opt-in EXCEPT the daily-sales digest, which was
+// already delivered to every active chat before this toggle existed — it
+// defaults ON so enabling toggles never silently stops a report shops rely on.
+// New event flags are added as more columns (no data reshape).
+export const telegramNotificationSettings = pgTable(
+  'telegram_notification_settings',
+  {
+    businessId: varchar('business_id', {length: 36})
+      .primaryKey()
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // Every completed sale (POS/admin checkout). Can be chatty → default off.
+    checkout: boolean('checkout').notNull().default(false),
+    // Cash shift opened / closed (with the close-out reconciliation summary).
+    cashShifts: boolean('cash_shifts').notNull().default(false),
+    // Manual cash in / out movements recorded against an open shift.
+    cashOperations: boolean('cash_operations').notNull().default(false),
+    // The 21:00 daily sales digest. Default ON to preserve prior behaviour.
+    dailySales: boolean('daily_sales').notNull().default(true),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+);
+
+export const telegramNotificationSettingsRelations = relations(
+  telegramNotificationSettings,
+  ({one}) => ({
+    business: one(businesses, {
+      fields: [telegramNotificationSettings.businessId],
+      references: [businesses.id],
+    }),
+  }),
+);
+
+export type TelegramNotificationSettings =
+  typeof telegramNotificationSettings.$inferSelect;
+export type NewTelegramNotificationSettings =
+  typeof telegramNotificationSettings.$inferInsert;
+
 // ─── BiLLZ migration (data import from BiLLZ 2.0) ────────────────────────────
 // One row per business that has connected a BiLLZ account for a one-off data
 // migration (see MIGRATSIYA.md, task MG1). The row holds the integration
@@ -1963,3 +2017,86 @@ export type BillzImportItem = typeof billzImportItems.$inferSelect;
 export type NewBillzImportItem = typeof billzImportItems.$inferInsert;
 export type BillzStaging = typeof billzStaging.$inferSelect;
 export type NewBillzStaging = typeof billzStaging.$inferInsert;
+
+// ─── Loyalty program (cashback → bonus balance) ─────────────────────────────
+// One row per business holding the shop's loyalty configuration (MARKETING.md
+// M3 — the KPOS "keshbek/bonus" differentiator). Model: each qualifying sale
+// credits `cashbackPercent` of the total into the customer's bonus balance
+// (so'm), which is then spent on future purchases (capped per check by
+// `redeemMaxPercent`). Optional `tiers` raise the cashback rate by lifetime
+// spend. This table is config only; earning/spending balances lands with the
+// checkout integration (a later task).
+export type LoyaltyTier = {
+  // Display name, e.g. "Kumush".
+  name: string;
+  // Lifetime spend (so'm) at/above which this tier's rate applies.
+  minTotal: number;
+  // Cashback rate (%) for customers in this tier.
+  cashbackPercent: number;
+};
+
+export const loyaltySettings = pgTable('loyalty_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Master switch for the whole program.
+  enabled: boolean('enabled').notNull().default(false),
+  // Base cashback rate (%) credited to bonus balance on each qualifying sale.
+  cashbackPercent: decimal('cashback_percent', {precision: 5, scale: 2})
+    .notNull()
+    .default('0'),
+  // Minimum sale total (so'm) required to earn cashback. 0 = always earn.
+  minPurchase: decimal('min_purchase', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
+  // Cap on how much of one check can be paid from bonus balance, as a % of the
+  // check total (100 = no cap).
+  redeemMaxPercent: decimal('redeem_max_percent', {precision: 5, scale: 2})
+    .notNull()
+    .default('50'),
+  // Bonus balance lifetime in months from when it was earned; null = never.
+  expiryMonths: integer('expiry_months'),
+  // Optional lifetime-spend tiers; [] = flat cashbackPercent for everyone.
+  tiers: jsonb('tiers').$type<LoyaltyTier[]>().notNull().default([]),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type LoyaltySettings = typeof loyaltySettings.$inferSelect;
+export type NewLoyaltySettings = typeof loyaltySettings.$inferInsert;
+
+// Loyalty ledger: one row per bonus-balance movement, so a customer's balance
+// is auditable rather than just a running number. `amount` is signed (+earned
+// on a sale, −redeemed / −expired); `balanceAfter` snapshots the resulting
+// balance. `orderId` links the sale that earned/spent it (null for manual
+// adjustments).
+export const loyaltyTransactions = pgTable(
+  'loyalty_transactions',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    userId: varchar('user_id', {length: 36})
+      .notNull()
+      .references(() => users.id, {onDelete: 'cascade'}),
+    // Sale that produced this movement; null for manual/expiry adjustments.
+    orderId: varchar('order_id', {length: 36}).references(() => orders.id, {
+      onDelete: 'set null',
+    }),
+    // 'earn' | 'redeem' | 'adjust' | 'expire'.
+    type: varchar('type', {length: 16}).notNull(),
+    // Signed soʼm: positive credits the balance, negative debits it.
+    amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
+    // Balance immediately after applying this movement.
+    balanceAfter: decimal('balance_after', {precision: 14, scale: 2}).notNull(),
+    note: varchar('note', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    byUser: index('loyalty_tx_user_idx').on(table.userId, table.createdAt),
+  }),
+);
+
+export type LoyaltyTransaction = typeof loyaltyTransactions.$inferSelect;
+export type NewLoyaltyTransaction = typeof loyaltyTransactions.$inferInsert;

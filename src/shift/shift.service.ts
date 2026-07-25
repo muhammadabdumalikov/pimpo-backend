@@ -6,6 +6,7 @@ import {isStockTakeActive} from '../common/stock-take-lock';
 import {BranchService} from '../branch/branch.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {DatabaseService} from '../database/database.service';
+import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {
   cashRegisters,
   cashShifts,
@@ -57,6 +58,7 @@ export class ShiftService {
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
     private readonly branchService: BranchService,
+    private readonly telegramNotify: TelegramNotifyService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -376,6 +378,7 @@ export class ShiftService {
       })
       .returning();
     await this.invalidateOpenShifts(businessId);
+    this.telegramNotify.notifyShiftOpened(businessId, shift);
     return shift;
   }
 
@@ -472,7 +475,7 @@ export class ShiftService {
 
     // Insert the movement and mirror it into the finance ledger + balance in one
     // atomic transaction, so the two never drift apart.
-    return this.dbService.db.transaction(async (tx) => {
+    const movement = await this.dbService.db.transaction(async (tx) => {
       const [movement] = await tx
         .insert(cashMovements)
         .values({
@@ -513,6 +516,9 @@ export class ShiftService {
 
       return movement;
     });
+    // Post-commit, fire-and-forget: notify the linked chats of the cash in/out.
+    this.telegramNotify.notifyCashOperation(businessId, movement);
+    return movement;
   }
 
   async getShiftMovements(
@@ -673,6 +679,11 @@ export class ShiftService {
       return closed;
     });
     await this.invalidateOpenShifts(businessId);
+    // Fire-and-forget: notify with the Z-report summary (sales + reconciliation).
+    this.telegramNotify.notifyShiftClosed(businessId, closedShift, {
+      cashSales: saleTotals.cashSales,
+      cardSales: saleTotals.cardSales,
+    });
     return closedShift;
   }
 }

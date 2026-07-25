@@ -84,8 +84,12 @@ export class SubscriptionService implements OnModuleInit {
   }
 
   /** True once a subscription's trial/paid window has ended. */
-  private isExpired(sub: { endDate: Date | null }): boolean {
-    return sub.endDate != null && sub.endDate.getTime() <= Date.now();
+  private isExpired(sub: { endDate: Date | string | null }): boolean {
+    // endDate may arrive as an ISO string when the value came from the Redis
+    // cache (JSON round-trip) rather than a live Drizzle row — normalise before
+    // comparing so this hot tier-gating path never throws on a string.
+    if (sub.endDate == null) return false;
+    return new Date(sub.endDate).getTime() <= Date.now();
   }
 
   /**

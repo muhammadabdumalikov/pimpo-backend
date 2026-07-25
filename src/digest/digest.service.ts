@@ -1,16 +1,10 @@
 import {Injectable, Logger} from '@nestjs/common';
 import {Cron} from '@nestjs/schedule';
 import {DatabaseService} from '../database/database.service';
-import {
-  businesses,
-  orders,
-  orderItems,
-  cashShifts,
-  telegramLinks,
-} from '../database/schema';
+import {businesses, orders, orderItems, cashShifts} from '../database/schema';
 import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
-import {TelegramSenderService} from '../telegram/telegram-sender.service';
+import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 
 export interface DailyDigest {
   date: string; // YYYY-MM-DD (business zone)
@@ -33,7 +27,7 @@ export class DigestService {
 
   constructor(
     private readonly dbService: DatabaseService,
-    private readonly telegramSender: TelegramSenderService,
+    private readonly telegramNotify: TelegramNotifyService,
   ) {}
 
   private get db() {
@@ -143,37 +137,6 @@ export class DigestService {
     return lines.join('\n');
   }
 
-  /**
-   * Best-effort delivery: forward the digest text to every ACTIVE Telegram chat
-   * linked to the business (via the login-gated bot). No-op when the bot token
-   * is absent or the business has no linked chats. A failed send to one chat is
-   * logged and never aborts the run.
-   */
-  private async sendToTelegram(
-    businessId: string,
-    message: string,
-  ): Promise<void> {
-    if (!this.telegramSender.isConfigured()) return;
-    const links = await this.db
-      .select({chatId: telegramLinks.chatId})
-      .from(telegramLinks)
-      .where(
-        and(
-          eq(telegramLinks.businessId, businessId),
-          eq(telegramLinks.isActive, true),
-        ),
-      );
-    for (const link of links) {
-      try {
-        await this.telegramSender.sendMessage(link.chatId, message);
-      } catch (e) {
-        this.logger.warn(
-          `Digest telegram send failed for business ${businessId}: ${(e as Error).message}`,
-        );
-      }
-    }
-  }
-
   /** 21:00 Asia/Tashkent daily: build + (for now) log a digest per business. */
   @Cron('0 21 * * *', {name: 'daily-digest', timeZone: 'Asia/Tashkent'})
   async runDailyDigests(): Promise<void> {
@@ -190,7 +153,8 @@ export class DigestService {
         if (digest.orderCount === 0) continue; // no sales → no digest
         const message = this.formatMessage(digest, b.name);
         this.logger.log(`Daily digest for ${b.name} (${b.id}):\n${message}`);
-        await this.sendToTelegram(b.id, message);
+        // Delivered only if the business kept the daily-sales toggle on (default).
+        await this.telegramNotify.broadcastIfEnabled(b.id, 'dailySales', message);
         sent += 1;
       } catch (e) {
         this.logger.error(

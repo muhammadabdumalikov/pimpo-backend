@@ -18,6 +18,7 @@ import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {isStockTakeActive} from '../common/stock-take-lock';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
+import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {
   orders,
   orderItems,
@@ -28,6 +29,8 @@ import {
   users,
   userDebts,
   receiptSettings,
+  loyaltySettings,
+  loyaltyTransactions,
   staff,
   businesses,
   cashShifts,
@@ -77,6 +80,7 @@ export class OrderService {
     private readonly userService: UserService,
     private readonly subscriptionService: SubscriptionService,
     private readonly branchService: BranchService,
+    private readonly telegramNotify: TelegramNotifyService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -370,6 +374,14 @@ export class OrderService {
     const method: CostingMethod =
       settings?.costingMethod === 'FIFO' ? 'FIFO' : 'AVERAGE';
 
+    // Loyalty: when a sale is tied to a customer and the program is on, cashback
+    // is credited to their bonus balance inside the sale transaction below.
+    const [loyalty] = await this.dbService.db
+      .select()
+      .from(loyaltySettings)
+      .where(eq(loyaltySettings.businessId, businessId))
+      .limit(1);
+
     const orderId = generateId();
     const branchId = await this.resolveSaleBranch(
       businessId,
@@ -439,7 +451,45 @@ export class OrderService {
         }
         total = subtotal - discountAmount;
 
-        // Resolve the payment breakdown against the batch-priced total.
+        // Loyalty: lock the customer row (if any) and resolve how much bonus
+        // balance this sale spends. Done BEFORE the tenders so the payable can be
+        // reduced by redeemed points; the balance itself is mutated at the end of
+        // the tx (earn + redeem) using this same locked read. Redeem is clamped
+        // to the balance and the program's per-check cap.
+        let loyaltyRedeem = 0;
+        let custBalanceBefore = 0;
+        let custSpentBefore = 0;
+        let custLocked = false;
+        if (loyalty?.enabled && customerId) {
+          const [cust] = await tx
+            .select({
+              bonusBalance: users.bonusBalance,
+              totalSpent: users.totalSpent,
+            })
+            .from(users)
+            .where(eq(users.id, customerId))
+            .for('update');
+          if (cust) {
+            custLocked = true;
+            custBalanceBefore = Number(cust.bonusBalance);
+            custSpentBefore = Number(cust.totalSpent);
+            if (dto.redeemPoints && dto.redeemPoints > 0) {
+              const cap = Math.floor(
+                (total * Number(loyalty.redeemMaxPercent)) / 100,
+              );
+              loyaltyRedeem = Math.round(
+                Math.max(
+                  0,
+                  Math.min(dto.redeemPoints, custBalanceBefore, cap, total),
+                ),
+              );
+            }
+          }
+        }
+        // What the customer must cover with real tenders after spending points.
+        const payable = total - loyaltyRedeem;
+
+        // Resolve the payment breakdown against the payable (total less points).
         let payments: {method: string; amount: number}[];
         let paymentMethod: string | null;
         let amountPaid: number;
@@ -455,7 +505,7 @@ export class OrderService {
             amount: p.amount,
           }));
           const paidNow = payments.reduce((sum, p) => sum + p.amount, 0);
-          debtAmount = Math.max(0, total - paidNow);
+          debtAmount = Math.max(0, payable - paidNow);
           paymentMethod = 'debt';
           const cashApplied = payments
             .filter((p) => p.method === 'cash')
@@ -467,7 +517,7 @@ export class OrderService {
           payments =
             dto.payments && dto.payments.length > 0
               ? dto.payments.map((p) => ({method: p.method, amount: p.amount}))
-              : [{method: dto.paymentMethod ?? 'cash', amount: total}];
+              : [{method: dto.paymentMethod ?? 'cash', amount: payable}];
           const methods = Array.from(new Set(payments.map((p) => p.method)));
           paymentMethod =
             methods.length > 1
@@ -496,6 +546,7 @@ export class OrderService {
           discountType,
           discountValue: discountValue !== null ? money(discountValue) : null,
           discountAmount: money(discountAmount),
+          loyaltyRedeemed: money(loyaltyRedeem),
           itemCount,
           paymentMethod,
           payments,
@@ -596,6 +647,60 @@ export class OrderService {
             description: itemSummary.slice(0, 500),
           });
         }
+
+        // Loyalty balance movements for this sale, applied to the row locked
+        // above. Redeem first (debit the spent points), then earn (credit the
+        // cashback), each written to the ledger with the resulting balance. The
+        // tier is picked from lifetime spend BEFORE this sale; spend is always
+        // tracked (even below the earn threshold) so tiers keep progressing.
+        if (custLocked && customerId) {
+          let balance = custBalanceBefore;
+
+          if (loyaltyRedeem > 0) {
+            balance -= loyaltyRedeem;
+            await tx.insert(loyaltyTransactions).values({
+              id: generateId(),
+              businessId,
+              userId: customerId,
+              orderId,
+              type: 'redeem',
+              amount: money(-loyaltyRedeem),
+              balanceAfter: money(balance),
+            });
+          }
+
+          let rate = Number(loyalty!.cashbackPercent);
+          for (const tier of loyalty!.tiers ?? []) {
+            if (custSpentBefore >= tier.minTotal) {
+              rate = Math.max(rate, tier.cashbackPercent);
+            }
+          }
+          const earn =
+            total >= Number(loyalty!.minPurchase) && rate > 0
+              ? Math.round((total * rate) / 100)
+              : 0;
+          if (earn > 0) {
+            balance += earn;
+            await tx.insert(loyaltyTransactions).values({
+              id: generateId(),
+              businessId,
+              userId: customerId,
+              orderId,
+              type: 'earn',
+              amount: money(earn),
+              balanceAfter: money(balance),
+            });
+          }
+
+          await tx
+            .update(users)
+            .set({
+              bonusBalance: money(balance),
+              totalSpent: money(custSpentBefore + total),
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, customerId));
+        }
       });
     } catch (err) {
       // A concurrent retry of the same offline sale lost the race on the unique
@@ -607,7 +712,19 @@ export class OrderService {
       throw err;
     }
 
-    return this.findOne(businessId, orderId) as Promise<OrderWithItems>;
+    const created = (await this.findOne(businessId, orderId)) as OrderWithItems;
+    // Push a Telegram checkout notice for genuine completions only — skip the
+    // storefront's 'Pending' orders. Fire-and-forget: never delays the sale.
+    if (created?.status === 'Completed') {
+      this.telegramNotify.notifyCheckout(businessId, {
+        totalAmount: created.totalAmount,
+        itemCount: created.itemCount,
+        paymentMethod: created.paymentMethod,
+        cashierName: created.cashierName,
+        createdAt: created.createdAt,
+      });
+    }
+    return created;
   }
 
   /**
