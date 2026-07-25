@@ -68,11 +68,18 @@ export function initialCounters(entities: ImportEntity[]): JobCounters {
   return counters;
 }
 
+// Import options. withCategories=false imports products WITHOUT creating or
+// linking categories. Defaults to true (categories included).
+export interface JobOptions {
+  withCategories: boolean;
+}
+
 export interface JobDto {
   id: string;
   status: string;
   phase: string;
   entities: string[];
+  options: JobOptions;
   currentEntity: string | null;
   counters: JobCounters;
   error: string | null;
@@ -98,6 +105,7 @@ export function toJobDto(job: BillzImportJob): JobDto {
     status: job.status,
     phase: job.phase ?? 'fetch',
     entities: job.entities ?? [],
+    options: {withCategories: job.options?.withCategories ?? true},
     currentEntity: job.currentEntity ?? null,
     counters: (job.counters ?? {}) as JobCounters,
     error: job.error ?? null,

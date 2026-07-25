@@ -4,12 +4,13 @@ import {ErrorCode} from '../common/errors/error-codes';
 
 const DEFAULT_BASE_URL = 'https://api-admin.billz.ai';
 
-// Throttle: minimum gap between the *start* of consecutive requests. 800ms base
-// plus 100-300ms random jitter → 900-1100ms apart ≈ 0.9-1.1 req/s, comfortably
-// under BiLLZ's documented 2 req/s hard limit (MIGRATSIYA.md §3/§3.1).
-const MIN_GAP_MS = 800;
-const JITTER_MIN_MS = 100;
-const JITTER_MAX_MS = 300;
+// Throttle: minimum gap between the *start* of consecutive requests. 1600ms base
+// plus 200-600ms random jitter → 1800-2200ms apart ≈ 0.45-0.55 req/s — extra
+// conservative (well under BiLLZ's 2 req/s hard limit) to minimize block risk on
+// long catalog imports (MIGRATSIYA.md §3/§3.1).
+const MIN_GAP_MS = 1600;
+const JITTER_MIN_MS = 200;
+const JITTER_MAX_MS = 600;
 
 // Retry budgets. Exhausting either surfaces as BILLZ_UNAVAILABLE. Error
 // retries are generous on purpose: a multi-page fetch runs for ~20 minutes and

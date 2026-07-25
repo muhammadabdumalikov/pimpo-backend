@@ -68,6 +68,13 @@ const CATEGORY_LIMIT = 100; // GET /v2/category page size (MIGRATSIYA §4A.6).
 // category ever needs more than this many pages we abort loudly rather than 500.
 const MAX_CATEGORY_PAGES = 100;
 
+// A catalog at/under the deep-offset wall (page 101 = offset 10 000) can use the
+// SIMPLE page-number import (GET /v2/products?page=N) instead of category
+// chunking: fewer requests, and it captures UNCATEGORIZED products too (which
+// chunking misses). Larger catalogs must chunk. Chosen automatically per import
+// from the catalog total; a null/undetectable total falls back to chunking.
+const DIRECT_PAGE_MAX_TOTAL = 10_000;
+
 // Rows per LOAD-lane batch: one tx applies this many staging rows → real tables.
 const LOAD_BATCH = 100;
 
@@ -305,38 +312,65 @@ export class BillzImportWorker implements OnApplicationBootstrap {
   }
 
   /**
-   * Fetch one entity from its checkpoint into staging. 'products' and 'images'
-   * both re-scan the whole catalog, so BOTH use CATEGORY CHUNKING to dodge the
-   * deep-offset 500 (fetchChunkedEntity — enumerate categories, then page each
-   * category's products separately); 'customers' pages /v1/client, which has no
-   * chunking key, so it stays page-number based (fetchCustomersEntity).
-   * Returns 'done' when fully staged, or 'paused'/'cancelled' on a control action
-   * (checkpoint/counters left intact for resume).
+   * Fetch one entity from its checkpoint into staging. 'customers' pages
+   * /v1/client. For 'products'/'images' the strategy is chosen automatically by
+   * catalog size: a catalog at/under the deep-offset wall uses the SIMPLE
+   * page-number import (GET /v2/products — fewer requests, and it also captures
+   * uncategorized products); a larger one must CHUNK BY CATEGORY (POST
+   * /v2/product-search-with-filters) to dodge the 500. A null/undetectable total
+   * falls back to chunking (works at any size). Returns 'done' when fully staged,
+   * or 'paused'/'cancelled' on a control action (state left intact for resume).
    */
-  private fetchEntity(
+  private async fetchEntity(
     jobId: string,
     businessId: string,
     entity: ImportEntity,
   ): Promise<'done' | 'paused' | 'cancelled'> {
-    if (entity === 'products') {
-      return this.fetchChunkedEntity(
+    if (entity === 'customers') {
+      return this.fetchCustomersEntity(jobId, businessId);
+    }
+    const stagePage =
+      entity === 'products'
+        ? (records: unknown[], seen: Set<string>) =>
+            this.stageProductRecords(businessId, jobId, records, seen)
+        : (records: unknown[], seen: Set<string>) =>
+            this.stageImageRecords(businessId, jobId, records, seen);
+
+    const total = await this.getCatalogTotal(jobId, businessId, entity);
+    if (total != null && total <= DIRECT_PAGE_MAX_TOTAL) {
+      this.logger.log(
+        `BiLLZ fetch ${entity}: catalog ${total} ≤ ${DIRECT_PAGE_MAX_TOTAL} — direct page-number import.`,
+      );
+      return this.fetchDirectEntity(
         jobId,
         businessId,
-        'products',
-        (records, seen) =>
-          this.stageProductRecords(businessId, jobId, records, seen),
+        entity,
+        stagePage,
+        total,
       );
     }
-    if (entity === 'images') {
-      return this.fetchChunkedEntity(
-        jobId,
-        businessId,
-        'images',
-        (records, seen) =>
-          this.stageImageRecords(businessId, jobId, records, seen),
-      );
-    }
-    return this.fetchCustomersEntity(jobId, businessId);
+    this.logger.log(
+      `BiLLZ fetch ${entity}: catalog ${total ?? 'unknown'} — category chunking.`,
+    );
+    return this.fetchChunkedEntity(jobId, businessId, entity, stagePage, total);
+  }
+
+  /**
+   * Catalog total for the fetch-strategy decision + progress %. Prefer the value
+   * already in the job's counters (set on a prior run / resume — no API call);
+   * otherwise read it from a shallow GET /v2/products?page=1&limit=1 (never the
+   * deep offset that 500s). The chosen walk persists it into fetch.total.
+   */
+  private async getCatalogTotal(
+    jobId: string,
+    businessId: string,
+    entity: ImportEntity,
+  ): Promise<number | null> {
+    const job = await this.getJob(jobId);
+    const existing = job?.counters?.[entity]?.fetch?.total;
+    if (existing != null) return existing;
+    const token = await this.billz.getAccessToken(businessId);
+    return this.fetchCatalogTotal(token);
   }
 
   /**
@@ -470,6 +504,7 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     businessId: string,
     entity: 'products' | 'images',
     stagePage: (records: unknown[], seen: Set<string>) => StagedRecords,
+    catalogTotal: number | null,
   ): Promise<'done' | 'paused' | 'cancelled'> {
     const job = await this.getJob(jobId);
     if (!job) return 'cancelled';
@@ -490,18 +525,13 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     // as we go, which also dedups a product that appears in several categories.
     const seen = await this.loadStagedBillzIds(jobId, entity);
 
-    // Catalog total (progress %). Read ONCE per entity from a shallow page-1 read
-    // (never the deep offset that 500s). If not detectable, progress stays open.
-    if (fc.total == null) {
-      const token = await this.billz.getAccessToken(businessId);
-      const total = await this.fetchCatalogTotal(token);
-      if (total != null) {
-        fc.total = total;
-        await this.db
-          .update(billzImportJobs)
-          .set({counters, updatedAt: new Date()})
-          .where(eq(billzImportJobs.id, jobId));
-      }
+    // Catalog total (progress %) — supplied by fetchEntity (read once there).
+    if (catalogTotal != null && fc.total == null) {
+      fc.total = catalogTotal;
+      await this.db
+        .update(billzImportJobs)
+        .set({counters, updatedAt: new Date()})
+        .where(eq(billzImportJobs.id, jobId));
     }
 
     // Enumerate categories → a STABLE list of ids sorted ascending, so resume is
@@ -596,6 +626,109 @@ export class BillzImportWorker implements OnApplicationBootstrap {
       );
     }
     return 'done';
+  }
+
+  /**
+   * DIRECT (page-number) fetch for a catalog at/under the deep-offset wall — the
+   * simple path used when the catalog total ≤ DIRECT_PAGE_MAX_TOTAL. Pages GET
+   * /v2/products?page=N straight through, so it also captures UNCATEGORIZED
+   * products (which category chunking misses). Stops on a short page OR once the
+   * last page (ceil(total/limit)) is processed, so it never requests the page
+   * past the end that would 500. Same staging/dedup/checkpoint/tx as the chunked
+   * walk; checkpoint uses {page}.
+   */
+  private async fetchDirectEntity(
+    jobId: string,
+    businessId: string,
+    entity: 'products' | 'images',
+    stagePage: (records: unknown[], seen: Set<string>) => StagedRecords,
+    catalogTotal: number | null,
+  ): Promise<'done' | 'paused' | 'cancelled'> {
+    const job = await this.getJob(jobId);
+    if (!job) return 'cancelled';
+
+    const counters: JobCounters = {...(job.counters ?? {})};
+    if (!counters[entity]) counters[entity] = emptyEntityCounter();
+    const checkpoint: JobCheckpoint = {...(job.checkpoint ?? {})};
+    const fc = counters[entity].fetch;
+
+    await this.db
+      .update(billzImportJobs)
+      .set({currentEntity: entity, updatedAt: new Date()})
+      .where(eq(billzImportJobs.id, jobId));
+
+    if (catalogTotal != null && fc.total == null) {
+      fc.total = catalogTotal;
+      await this.db
+        .update(billzImportJobs)
+        .set({counters, updatedAt: new Date()})
+        .where(eq(billzImportJobs.id, jobId));
+    }
+
+    const seen = await this.loadStagedBillzIds(jobId, entity);
+    // Last page to fetch (never go past it → never hit the offset-10 000 wall).
+    const lastPage =
+      catalogTotal != null ? Math.ceil(catalogTotal / PRODUCTS_LIMIT) : null;
+    let page = checkpoint[entity]?.page ?? 1;
+
+    for (;;) {
+      const token = await this.billz.getAccessToken(businessId);
+      const startedAt = Date.now();
+
+      const records = await this.fetchProductsPageDirect(token, page);
+      const {rows, staged, failed} = stagePage(records, seen);
+      fc.done += staged;
+      fc.failed += failed;
+      checkpoint[entity] = {page};
+
+      await this.db.transaction(async (tx) => {
+        if (rows.length > 0) await tx.insert(billzStaging).values(rows);
+        await tx
+          .update(billzImportJobs)
+          .set({counters, checkpoint, updatedAt: new Date()})
+          .where(eq(billzImportJobs.id, jobId));
+      });
+
+      const cumulative = fc.done + fc.failed;
+      this.logger.log(
+        `BiLLZ fetch ${entity}: direct page ${page} → ${records.length} ` +
+          `records (${staged} staged${failed ? `, ${failed} skipped` : ''}), ` +
+          `cumulative ${cumulative}${fc.total != null ? `/${fc.total}` : ''} in ` +
+          `${Date.now() - startedAt}ms`,
+      );
+
+      const status = await this.readStatus(jobId);
+      if (status === 'paused') return 'paused';
+      if (status === 'cancelled') return 'cancelled';
+
+      if (records.length < PRODUCTS_LIMIT) return 'done'; // short page = last
+      if (lastPage != null && page >= lastPage) return 'done'; // all pages done
+      page += 1;
+    }
+  }
+
+  /** One page of GET /v2/products?page=N&limit=100 → records (direct import). */
+  private async fetchProductsPageDirect(
+    token: string,
+    page: number,
+  ): Promise<unknown[]> {
+    const {status, body} = await this.client.request(
+      `/v2/products?page=${page}&limit=${PRODUCTS_LIMIT}`,
+      {
+        method: 'GET',
+        headers: {accept: 'application/json', Authorization: `Bearer ${token}`},
+      },
+    );
+    if (status !== 200) {
+      throw new Error(`BiLLZ /v2/products returned HTTP ${status}`);
+    }
+    const {records, arrayFound} = extractList(body);
+    if (!arrayFound) {
+      throw new Error(
+        'Unexpected /v2/products response shape (no record array found)',
+      );
+    }
+    return records;
   }
 
   /**
@@ -973,6 +1106,8 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     if (!job) return 'cancelled';
     const counters: JobCounters = {...(job.counters ?? {})};
     if (!counters[entity]) counters[entity] = emptyEntityCounter();
+    // withCategories=false → products land WITHOUT creating/linking categories.
+    const withCategories = job.options?.withCategories ?? true;
 
     await this.db
       .update(billzImportJobs)
@@ -1030,6 +1165,7 @@ export class BillzImportWorker implements OnApplicationBootstrap {
             businessId,
             mainBranchId,
             row.payload,
+            withCategories,
           );
         } else if (entity === 'customers') {
           outcome = await this.loadCustomerRow(businessId, row.payload);
@@ -1089,11 +1225,17 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     businessId: string,
     mainBranchId: string,
     payload: unknown,
+    withCategories: boolean,
   ): Promise<RowLoad> {
     const rec = asRecord(payload) ?? {};
     const fallback = str(rec.name) ?? null;
     try {
-      const label = await this.upsertProduct(businessId, mainBranchId, rec);
+      const label = await this.upsertProduct(
+        businessId,
+        mainBranchId,
+        rec,
+        withCategories,
+      );
       return {label, ok: true, error: null};
     } catch (e) {
       return {label: fallback, ok: false, error: errMsg(e)};
@@ -1181,6 +1323,7 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     businessId: string,
     mainBranchId: string,
     rec: Record<string, unknown>,
+    withCategories = true,
   ): Promise<string> {
     const m = mapProduct(rec);
     const name = m.name ?? '';
@@ -1199,8 +1342,11 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     // record (id + name) once per distinct id — so products link to their real
     // BiLLZ category by id, not a fragile name match. Falls back to the old
     // find-or-create-by-name only when a product has a category name but no id.
+    // withCategories=false (job option) skips ALL of this: no categories are
+    // created and categoryId stays null — the update branch then keeps whatever
+    // category the product already has (categoryId ?? existing.categoryId).
     let categoryId: string | null = null;
-    if (m.categoryId) {
+    if (withCategories && m.categoryId) {
       categoryId = m.categoryId;
       if (!this.categoryIdCache.has(m.categoryId)) {
         await this.upsertCategoryById(
@@ -1210,7 +1356,7 @@ export class BillzImportWorker implements OnApplicationBootstrap {
         );
         this.categoryIdCache.add(m.categoryId);
       }
-    } else if (m.categoryName) {
+    } else if (withCategories && m.categoryName) {
       categoryId = await this.findOrCreateCategory(businessId, m.categoryName);
     }
 

@@ -82,7 +82,11 @@ export class BillzController {
   ): Promise<{job: JobDto}> {
     // BILLZ_NOT_CONNECTED (400) if no verified connection; ALREADY_ACTIVE (409)
     // if a job is already queued/running/paused — both propagate as coded errors.
-    return this.billzImport.start(business.id, dto.entities);
+    return this.billzImport.start(
+      business.id,
+      dto.entities,
+      dto.withCategories ?? true,
+    );
   }
 
   @Get('import/status')

@@ -1803,6 +1803,10 @@ export const billzImportJobs = pgTable(
     phase: varchar('phase', {length: 8}).notNull().default('fetch'),
     // Chosen entities — a non-empty subset of ['products','customers','images'].
     entities: jsonb('entities').$type<string[]>().notNull(),
+    // Import options. withCategories=false → products are imported WITHOUT
+    // creating/linking categories (categoryId left null / existing kept).
+    // Null (older jobs) means the default: with categories.
+    options: jsonb('options').$type<{withCategories?: boolean}>(),
     // Entity being processed right now; null when queued/finished.
     currentEntity: varchar('current_entity', {length: 16}),
     // Per-entity, two-dimension progress:

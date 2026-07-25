@@ -53,6 +53,7 @@ export class BillzImportService {
   async start(
     businessId: string,
     entities: ImportEntity[],
+    withCategories = true,
   ): Promise<{job: JobDto}> {
     const [conn] = await this.db
       .select({verifiedAt: billzMigrationState.verifiedAt})
@@ -85,6 +86,7 @@ export class BillzImportService {
         status: 'queued',
         phase: 'fetch',
         entities,
+        options: {withCategories},
         currentEntity: null,
         counters: initialCounters(entities),
         checkpoint: null,
