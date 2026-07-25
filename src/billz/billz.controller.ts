@@ -128,6 +128,18 @@ export class BillzController {
     return this.billzImport.cancel(business.id);
   }
 
+  @Post('import/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Clear the import state (jobs + staging + log) so a new import is allowed',
+  })
+  async resetImport(
+    @CurrentBusiness() business: IBusiness,
+  ): Promise<{ok: true}> {
+    return this.billzImport.reset(business.id);
+  }
+
   @Get('import/items')
   @ApiOperation({
     summary: 'Browse the per-record import log (cumulative across jobs)',

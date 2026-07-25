@@ -159,13 +159,8 @@ export interface ProductMapping {
   stock: number;
   /** Candidate: `brand_name`. */
   brandName: string | null;
-  /**
-   * BiLLZ category id from `categories[0].id`. Used DIRECTLY as the KPOS category
-   * id (KPOS `categories.id` is a free business-scoped varchar), so the product
-   * links to its real BiLLZ category without a name match.
-   */
-  categoryId: string | null;
-  /** Candidate: `categories[0].name`. */
+  /** Candidate: `categories[0].name` (KPOS category is found-or-created by name
+   * with OUR OWN generated id — BiLLZ's category id is never used as a KPOS key). */
   categoryName: string | null;
   /** Candidate: `measurement_unit.name`. */
   unitName: string | null;
@@ -273,10 +268,10 @@ export function mapProduct(raw: unknown): ProductMapping {
   const barcode = (str(rec.barcode) ?? '').trim() || null;
   const brandName = (str(rec.brand_name) ?? '').trim() || null;
 
-  // KPOS categories are FLAT — take categories[0] (id + name).
+  // KPOS categories are FLAT — take categories[0].name (found-or-created with
+  // our own id; BiLLZ's category id is intentionally not carried through).
   const cats = Array.isArray(rec.categories) ? rec.categories : [];
   const cat0 = asRecord(cats[0]);
-  const categoryId = cat0 ? (str(cat0.id) ?? '').trim() || null : null;
   const categoryName = cat0 ? (str(cat0.name) ?? '').trim() || null : null;
 
   const mu = asRecord(rec.measurement_unit);
@@ -312,7 +307,6 @@ export function mapProduct(raw: unknown): ProductMapping {
     priceOut,
     stock,
     brandName,
-    categoryId,
     categoryName,
     unitName,
     unitShortName,

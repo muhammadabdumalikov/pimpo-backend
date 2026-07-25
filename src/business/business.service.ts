@@ -23,20 +23,20 @@ export class BusinessService {
 
   async create(data: {
     name: string;
-    email: string;
+    email?: string | null;
     login: string;
     password: string;
   }): Promise<Business> {
-    // Check if email or login already exists
+    // Check if login (or email, when provided) already exists. Email is
+    // optional, so only include it in the collision check when supplied.
+    const clashConditions = [eq(businesses.login, data.login)];
+    if (data.email) {
+      clashConditions.push(eq(businesses.email, data.email));
+    }
     const existing = await this.dbService.db
       .select()
       .from(businesses)
-      .where(
-        or(
-          eq(businesses.email, data.email),
-          eq(businesses.login, data.login)
-        )
-      )
+      .where(or(...clashConditions))
       .limit(1);
 
     if (existing.length > 0) {
@@ -49,7 +49,7 @@ export class BusinessService {
     const newBusiness: NewBusiness = {
       id: generateId(),
       name: data.name,
-      email: data.email,
+      email: data.email ?? null,
       login: data.login,
       password: hashedPassword,
       isActive: true,

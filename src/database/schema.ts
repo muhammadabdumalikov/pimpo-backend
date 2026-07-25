@@ -17,7 +17,10 @@ import {relations} from 'drizzle-orm';
 export const businesses = pgTable('businesses', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   name: varchar('name', {length: 255}).notNull(),
-  email: varchar('email', {length: 255}).notNull().unique(),
+  // Optional: a business can be created (e.g. by a platform admin) without an
+  // email. Still unique when set — Postgres treats NULLs as distinct, so many
+  // businesses may have no email.
+  email: varchar('email', {length: 255}).unique(),
   login: varchar('login', {length: 100}).notNull().unique(),
   password: varchar('password', {length: 255}).notNull(),
   // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).

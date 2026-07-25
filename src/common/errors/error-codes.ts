@@ -170,6 +170,9 @@ export enum ErrorCode {
   BILLZ_IMPORT_ALREADY_ACTIVE = 'BILLZ_IMPORT_ALREADY_ACTIVE',
   // No active import (queued/running/paused) to pause/resume/cancel.
   BILLZ_IMPORT_NOT_ACTIVE = 'BILLZ_IMPORT_NOT_ACTIVE',
+  // The business already has a finished import — it must be reset before a new
+  // one can start (prevents accidental repeated full re-imports).
+  BILLZ_IMPORT_ALREADY_DONE = 'BILLZ_IMPORT_ALREADY_DONE',
 
   // ── Subscription ───────────────────────────────────────────────────────────
   SUBSCRIPTION_PLAN_NOT_FOUND = 'SUBSCRIPTION_PLAN_NOT_FOUND',
@@ -679,6 +682,11 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BILLZ_IMPORT_NOT_ACTIVE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'There is no active BiLLZ import to control.',
+  },
+  [ErrorCode.BILLZ_IMPORT_ALREADY_DONE]: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'A BiLLZ import already exists for this business. Reset it to re-import.',
   },
 
   // Subscription

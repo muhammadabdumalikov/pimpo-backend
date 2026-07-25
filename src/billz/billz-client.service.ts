@@ -24,8 +24,9 @@ const MAX_ERROR_RETRIES = 6;
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_MAX_MS = 60_000;
 
-// Per-request timeout (AbortController).
-const REQUEST_TIMEOUT_MS = 15_000;
+// Per-request timeout (AbortController). Generous — some BiLLZ list endpoints
+// (e.g. /v2/category) can take >15s; a too-tight timeout just burns retries.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 /** Parsed response handed back to callers: HTTP status + best-effort JSON body. */
 export interface BillzResponse<T = unknown> {

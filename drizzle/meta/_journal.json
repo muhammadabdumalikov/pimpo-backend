@@ -365,6 +365,13 @@
       "when": 1784874700000,
       "tag": "0051_billz_import_options",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1784874800000,
+      "tag": "0052_business_email_optional",
+      "breakpoints": true
     }
   ]
 }

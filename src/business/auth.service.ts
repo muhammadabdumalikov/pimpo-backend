@@ -157,7 +157,7 @@ export class AuthService {
   private buildOwnerSession(business: {
     id: string;
     name: string;
-    email: string;
+    email: string | null;
     login: string;
     avatarUrl?: string | null;
     isActive: boolean;

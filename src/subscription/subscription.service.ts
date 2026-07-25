@@ -159,6 +159,10 @@ export class SubscriptionService implements OnModuleInit {
   async updateBusinessSubscription(
     businessId: string,
     planTier: string,
+    // Platform-admin override: when provided, sets the subscription window's end
+    // (expiry). `null` makes it open-ended (permanent paid). Omitted (undefined)
+    // preserves the self-serve default of an open-ended subscription.
+    endDate?: Date | null,
   ): Promise<BusinessSubscription & { plan: SubscriptionPlan }> {
     // Get the plan
     const plan = await this.getPlanByTier(planTier);
@@ -184,6 +188,7 @@ export class SubscriptionService implements OnModuleInit {
       businessId,
       planId: plan.id,
       isActive: true,
+      ...(endDate !== undefined && { endDate }),
     };
 
     const [subscription] = await this.dbService.db
@@ -191,9 +196,12 @@ export class SubscriptionService implements OnModuleInit {
       .values(newSubscription)
       .returning();
 
-    // Drop the stale cache before re-reading so the fresh subscription is
-    // returned (and re-cached) instead of the previous plan.
+    // Drop the stale caches before re-reading so the fresh subscription is
+    // returned (and re-cached) instead of the previous plan. Billing is derived
+    // from the plan (monthly price/breakdown), so it must be invalidated too —
+    // otherwise the status/admin pages keep showing the old plan's price.
     await this.cache.del(CacheKeys.subscriptionCurrent(businessId));
+    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
 
     // Get subscription with plan
     const result = await this.getBusinessSubscription(businessId);

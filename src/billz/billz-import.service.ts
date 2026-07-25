@@ -1,11 +1,12 @@
 import {Injectable} from '@nestjs/common';
-import {and, count, desc, eq, inArray, lt} from 'drizzle-orm';
+import {and, count, desc, eq, lt} from 'drizzle-orm';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
 import {
   billzImportItems,
   billzImportJobs,
+  billzStaging,
   billzMigrationState,
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
@@ -47,8 +48,12 @@ export class BillzImportService {
   }
 
   /**
-   * Enqueue an import. Requires a verified BiLLZ connection and no already-active
-   * job for the business. Wakes the FIFO worker.
+   * Enqueue an import. Requires a verified BiLLZ connection and NO existing job
+   * for the business — one import per business. An active job → ALREADY_ACTIVE;
+   * a finished (completed/failed/cancelled) job → ALREADY_DONE, so a store can't
+   * accidentally re-import over and over. To deliberately re-import, `reset()`
+   * clears the import state first. (A failed job is resumed via `resume()`, not
+   * re-started.) Wakes the FIFO worker.
    */
   async start(
     businessId: string,
@@ -64,18 +69,15 @@ export class BillzImportService {
       throw new AppException(ErrorCode.BILLZ_NOT_CONNECTED);
     }
 
-    const [active] = await this.db
-      .select({id: billzImportJobs.id})
-      .from(billzImportJobs)
-      .where(
-        and(
-          eq(billzImportJobs.businessId, businessId),
-          inArray(billzImportJobs.status, [...ACTIVE_STATUSES]),
-        ),
-      )
-      .limit(1);
-    if (active) {
-      throw new AppException(ErrorCode.BILLZ_IMPORT_ALREADY_ACTIVE);
+    const existing = await this.latestJob(businessId);
+    if (existing) {
+      throw new AppException(
+        ACTIVE_STATUSES.includes(
+          existing.status as (typeof ACTIVE_STATUSES)[number],
+        )
+          ? ErrorCode.BILLZ_IMPORT_ALREADY_ACTIVE
+          : ErrorCode.BILLZ_IMPORT_ALREADY_DONE,
+      );
     }
 
     const [job] = await this.db
@@ -204,6 +206,39 @@ export class BillzImportService {
       .where(eq(billzImportJobs.id, job.id))
       .returning();
     return {job: toJobDto(updated)};
+  }
+
+  /**
+   * Clear ALL of the business's BiLLZ import state — every job, its staged raw
+   * records, and the per-record audit log — so a fresh import is allowed again.
+   * The deliberate escape hatch behind the "one import per business" guard; the
+   * frontend guards it behind a confirm. Refuses while an import is active (cancel
+   * it first). Does NOT touch the verified connection (billz_migration_state) nor
+   * the already-imported products/categories (a re-import re-syncs those
+   * idempotently — there's no source marker to safely delete only BiLLZ rows).
+   */
+  async reset(businessId: string): Promise<{ok: true}> {
+    const active = await this.latestJob(businessId);
+    if (
+      active &&
+      ACTIVE_STATUSES.includes(
+        active.status as (typeof ACTIVE_STATUSES)[number],
+      )
+    ) {
+      throw new AppException(ErrorCode.BILLZ_IMPORT_ALREADY_ACTIVE);
+    }
+    await this.db.transaction(async (tx) => {
+      await tx
+        .delete(billzImportItems)
+        .where(eq(billzImportItems.businessId, businessId));
+      await tx
+        .delete(billzStaging)
+        .where(eq(billzStaging.businessId, businessId));
+      await tx
+        .delete(billzImportJobs)
+        .where(eq(billzImportJobs.businessId, businessId));
+    });
+    return {ok: true};
   }
 
   /**

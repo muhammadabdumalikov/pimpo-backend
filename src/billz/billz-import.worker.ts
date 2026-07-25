@@ -180,9 +180,6 @@ export class BillzImportWorker implements OnApplicationBootstrap {
   private brandCache = new Map<string, string>();
   private categoryCache = new Map<string, string>();
   private unitCache = new Map<string, Unit | null>();
-  // BiLLZ category ids already upserted this load (dedup the by-id category
-  // upsert so each category is written once, not per product).
-  private categoryIdCache = new Set<string>();
 
   constructor(
     private readonly dbService: DatabaseService,
@@ -401,6 +398,10 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     const limit = CUSTOMERS_LIMIT;
 
     for (;;) {
+      // Bail before staging if the job was paused / cancelled / reset-deleted.
+      const stop = await this.checkStop(jobId);
+      if (stop) return stop;
+
       // Token via the existing service (proactively re-logs in near expiry).
       const token = await this.billz.getAccessToken(businessId);
 
@@ -558,6 +559,11 @@ export class BillzImportWorker implements OnApplicationBootstrap {
       let page = catId === resumeCatId ? resumePage : 1;
 
       for (;;) {
+        // Bail before staging if the job was paused / cancelled / reset-deleted
+        // (e.g. during the long category enumeration or a page retry).
+        const stop = await this.checkStop(jobId);
+        if (stop) return stop;
+
         // Token via the existing service (proactively re-logs in near expiry).
         const token = await this.billz.getAccessToken(businessId);
         const startedAt = Date.now();
@@ -672,6 +678,10 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     let page = checkpoint[entity]?.page ?? 1;
 
     for (;;) {
+      // Bail before staging if the job was paused / cancelled / reset-deleted.
+      const stop = await this.checkStop(jobId);
+      if (stop) return stop;
+
       const token = await this.billz.getAccessToken(businessId);
       const startedAt = Date.now();
 
@@ -1120,7 +1130,6 @@ export class BillzImportWorker implements OnApplicationBootstrap {
       this.brandCache.clear();
       this.categoryCache.clear();
       this.unitCache.clear();
-      this.categoryIdCache.clear();
     }
 
     // load.total = number of staging rows for this entity (set once, at start).
@@ -1139,6 +1148,11 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     }
 
     for (;;) {
+      // Bail before writing audit rows if the job was paused / cancelled /
+      // reset-deleted (a deleted job would FK-violate the audit insert).
+      const stop = await this.checkStop(jobId);
+      if (stop) return stop;
+
       const batch = await this.db
         .select()
         .from(billzStaging)
@@ -1337,26 +1351,14 @@ export class BillzImportWorker implements OnApplicationBootstrap {
     if (m.brandName)
       brandId = await this.findOrCreateBrand(businessId, m.brandName);
 
-    // Category: use the BiLLZ category id DIRECTLY as the KPOS category id (KPOS
-    // categories.id is a free business-scoped varchar), upserting the category
-    // record (id + name) once per distinct id — so products link to their real
-    // BiLLZ category by id, not a fragile name match. Falls back to the old
-    // find-or-create-by-name only when a product has a category name but no id.
-    // withCategories=false (job option) skips ALL of this: no categories are
-    // created and categoryId stays null — the update branch then keeps whatever
+    // Category: find-or-create by NAME with OUR OWN generated id — we never use
+    // BiLLZ's id as a KPOS primary key (external ids are unsafe to key on:
+    // collisions, coupling, FK surprises). Re-imports dedupe by name, so the same
+    // category is reused rather than duplicated. withCategories=false skips this
+    // entirely — categoryId stays null and the update branch keeps whatever
     // category the product already has (categoryId ?? existing.categoryId).
     let categoryId: string | null = null;
-    if (withCategories && m.categoryId) {
-      categoryId = m.categoryId;
-      if (!this.categoryIdCache.has(m.categoryId)) {
-        await this.upsertCategoryById(
-          businessId,
-          m.categoryId,
-          m.categoryName ?? m.categoryId,
-        );
-        this.categoryIdCache.add(m.categoryId);
-      }
-    } else if (withCategories && m.categoryName) {
+    if (withCategories && m.categoryName) {
       categoryId = await this.findOrCreateCategory(businessId, m.categoryName);
     }
 
@@ -1608,35 +1610,6 @@ export class BillzImportWorker implements OnApplicationBootstrap {
   }
 
   /**
-   * Upsert a KPOS category whose id IS the BiLLZ category id (categories.id is a
-   * free varchar, PK (business_id, id)). Idempotent: on a re-import the name is
-   * refreshed and is_deleted cleared. This is how BiLLZ categories are imported —
-   * products then reference the same id directly (no name match, no id map).
-   */
-  private async upsertCategoryById(
-    businessId: string,
-    id: string,
-    name: string,
-  ): Promise<void> {
-    await this.db
-      .insert(categories)
-      .values({
-        id,
-        businessId,
-        name: name.slice(0, 255),
-        isDeleted: false,
-      })
-      .onConflictDoUpdate({
-        target: [categories.businessId, categories.id],
-        set: {
-          name: name.slice(0, 255),
-          isDeleted: false,
-          updatedAt: new Date(),
-        },
-      });
-  }
-
-  /**
    * Match a unit by short_name OR name (case-insensitive) among the business's
    * own rows + global system rows; create a business unit otherwise. BiLLZ gives
    * no precision, so new units default to precision 0 (piece). MG2 to confirm.
@@ -1705,6 +1678,23 @@ export class BillzImportWorker implements OnApplicationBootstrap {
       .where(eq(billzImportJobs.id, jobId))
       .limit(1);
     return j?.status ?? 'cancelled';
+  }
+
+  /**
+   * Stop-signal check for the top of a fetch page loop, BEFORE staging. Returns
+   * 'paused'/'cancelled' when the job is no longer running — 'cancelled' also
+   * covers a job whose row was DELETED (readStatus → 'cancelled'), e.g. when the
+   * store cancels + resets mid-fetch. Guarding here stops the worker from
+   * inserting a staging row for a vanished job (which would FK-violate and crash
+   * the fetch). null = keep going.
+   */
+  private async checkStop(
+    jobId: string,
+  ): Promise<'paused' | 'cancelled' | null> {
+    const s = await this.readStatus(jobId);
+    if (s === 'paused') return 'paused';
+    if (s !== 'running') return 'cancelled';
+    return null;
   }
 
   /** Mark a running job failed (either lane). No-op if it's no longer running. */
