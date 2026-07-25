@@ -19,13 +19,31 @@ export type TelegramEvent =
   | 'cashOperations'
   | 'dailySales';
 
-/** Only the sale fields a checkout notification needs (a subset of the order). */
+/** One line of a checkout notice (a sold product). */
+export interface CheckoutNoticeItem {
+  name: string;
+  quantity: number;
+  priceOut: string | number;
+  lineTotal: string | number;
+}
+
+/** The sale fields a (detailed) checkout notification needs. */
 export interface CheckoutNotice {
   totalAmount: string | number;
+  subtotalAmount?: string | number | null;
+  discountAmount?: string | number | null;
+  loyaltyRedeemed?: string | number | null;
+  taxAmount?: string | number | null;
   itemCount?: number | null;
   paymentMethod?: string | null;
+  // Per-method breakdown when the customer split the payment (or single-method).
+  payments?: {method: string; amount: number}[] | null;
+  amountPaid?: string | number | null;
+  changeAmount?: string | number | null;
+  customerName?: string | null;
   cashierName?: string | null;
   createdAt?: Date | null;
+  items?: CheckoutNoticeItem[];
 }
 
 /** Defaults for a business that has never saved settings: daily digest ON
@@ -41,14 +59,32 @@ function defaultSettings(businessId: string): TelegramNotificationSettings {
   };
 }
 
-const uz = (n: number | string) =>
+// Money — rounded so'm (no tiyin in practice). Nullable input coerces to 0.
+const uz = (n: number | string | null | undefined) =>
   new Intl.NumberFormat('uz-UZ').format(Math.round(Number(n) || 0));
+
+// Quantity — keep decimals for weighted goods (e.g. 1.5 kg).
+const qty = (n: number | string | null | undefined) =>
+  new Intl.NumberFormat('uz-UZ', {maximumFractionDigits: 3}).format(
+    Number(n) || 0,
+  );
 
 /** HH:MM in the business zone (+05:00 Asia/Tashkent), matching digest.service. */
 function hhmm(date?: Date | null): string {
   const ms = (date ? date.getTime() : Date.now()) + 5 * 3_600_000;
   return new Date(ms).toISOString().slice(11, 16);
 }
+
+/** DD.MM.YYYY HH:MM in the business zone (+05:00). */
+function dateTime(date?: Date | null): string {
+  const ms = (date ? date.getTime() : Date.now()) + 5 * 3_600_000;
+  const iso = new Date(ms).toISOString(); // YYYY-MM-DDTHH:MM:...
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  return `${d}.${m}.${y} ${iso.slice(11, 16)}`;
+}
+
+// Cap the product list so a huge cart can't blow past Telegram's 4096-char limit.
+const MAX_ITEM_LINES = 40;
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: 'Naqd',
@@ -176,14 +212,58 @@ export class TelegramNotifyService {
   // ── Typed event helpers (called from the hot paths) ─────────────────────────
 
   notifyCheckout(businessId: string, o: CheckoutNotice): void {
-    const lines = [
-      '🧾 Yangi sotuv',
-      `💰 Summa: ${uz(o.totalAmount)} so'm`,
-      `💳 To'lov: ${paymentLabel(o.paymentMethod)}`,
-    ];
-    if (o.itemCount != null) lines.push(`📦 Mahsulot: ${uz(o.itemCount)} ta`);
+    const lines: string[] = [`🧾 Yangi sotuv — ${dateTime(o.createdAt)}`];
+
+    // Product lines: "1. Name — 2 × 8 000 = 16 000 so'm" (capped for long carts).
+    const items = o.items ?? [];
+    if (items.length > 0) {
+      lines.push('', '🛒 Mahsulotlar:');
+      items.slice(0, MAX_ITEM_LINES).forEach((it, i) => {
+        lines.push(
+          `${i + 1}. ${it.name} — ${qty(it.quantity)} × ${uz(it.priceOut)} = ${uz(
+            it.lineTotal,
+          )} so'm`,
+        );
+      });
+      if (items.length > MAX_ITEM_LINES) {
+        lines.push(`… va yana ${items.length - MAX_ITEM_LINES} ta mahsulot`);
+      }
+    }
+
+    // Totals block. Show the intermediate rows only when they carry a value, so
+    // a plain no-discount sale stays compact.
+    lines.push('');
+    if (o.itemCount != null) lines.push(`📦 Jami: ${qty(o.itemCount)} dona`);
+    const num = (v: unknown) => Number(v) || 0;
+    if (o.subtotalAmount != null && num(o.subtotalAmount) !== num(o.totalAmount))
+      lines.push(`🧾 Oraliq: ${uz(o.subtotalAmount)} so'm`);
+    if (num(o.discountAmount) > 0)
+      lines.push(`🏷 Chegirma: −${uz(o.discountAmount)} so'm`);
+    if (num(o.loyaltyRedeemed) > 0)
+      lines.push(`🎁 Bonus: −${uz(o.loyaltyRedeemed)} so'm`);
+    if (num(o.taxAmount) > 0) lines.push(`＋ QQS: ${uz(o.taxAmount)} so'm`);
+    lines.push(`💰 Jami: ${uz(o.totalAmount)} so'm`);
+
+    // Payment details: per-method breakdown if present, else the single method.
+    const payments = (o.payments ?? []).filter((p) => p && p.method);
+    lines.push('');
+    if (payments.length > 1) {
+      lines.push("💳 To'lov:");
+      payments.forEach((p) =>
+        lines.push(`  • ${paymentLabel(p.method)}: ${uz(p.amount)} so'm`),
+      );
+    } else {
+      const method = payments[0]?.method ?? o.paymentMethod;
+      lines.push(`💳 To'lov: ${paymentLabel(method)}`);
+    }
+    if (num(o.amountPaid) > 0)
+      lines.push(`💵 Berildi: ${uz(o.amountPaid)} so'm`);
+    if (num(o.changeAmount) > 0)
+      lines.push(`🔁 Qaytim: ${uz(o.changeAmount)} so'm`);
+
+    if (o.customerName) lines.push('', `🙍 Mijoz: ${o.customerName}`);
     if (o.cashierName) lines.push(`👤 Kassir: ${o.cashierName}`);
-    lines.push(`🕒 ${hhmm(o.createdAt)}`);
+
     this.fire(businessId, 'checkout', lines.join('\n'));
   }
 

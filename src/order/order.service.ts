@@ -718,10 +718,26 @@ export class OrderService {
     if (created?.status === 'Completed') {
       this.telegramNotify.notifyCheckout(businessId, {
         totalAmount: created.totalAmount,
+        subtotalAmount: created.subtotalAmount,
+        discountAmount: created.discountAmount,
+        loyaltyRedeemed: created.loyaltyRedeemed,
+        taxAmount: created.taxAmount,
         itemCount: created.itemCount,
         paymentMethod: created.paymentMethod,
+        payments: created.payments as
+          | {method: string; amount: number}[]
+          | null,
+        amountPaid: created.amountPaid,
+        changeAmount: created.changeAmount,
+        customerName: created.customerName,
         cashierName: created.cashierName,
         createdAt: created.createdAt,
+        items: created.items.map((it) => ({
+          name: it.productName,
+          quantity: it.quantity,
+          priceOut: it.priceOut,
+          lineTotal: it.lineTotal,
+        })),
       });
     }
     return created;
