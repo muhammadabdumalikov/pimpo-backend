@@ -21,13 +21,15 @@ export const INFO_FIELD_KEYS = [
   'receiptSums',
 ] as const;
 
-// Bottom-block keys (socials + barcode), in canonical order.
+// Bottom-block keys (socials + barcode + online-store QR), in canonical order.
 export const FOOTER_LINK_KEYS = [
   'facebook',
   'instagram',
   'telegram',
   'website',
   'barcode',
+  // QR of the online-store URL; its value is derived, so it carries no handle.
+  'storeQr',
 ] as const;
 
 export type InfoFieldKey = (typeof INFO_FIELD_KEYS)[number];
@@ -69,6 +71,7 @@ export const DEFAULT_FOOTER_LINKS: FieldConfig[] = [
   {key: 'telegram', enabled: false, value: ''},
   {key: 'website', enabled: false, value: ''},
   {key: 'barcode', enabled: true, value: ''},
+  {key: 'storeQr', enabled: false, value: ''},
 ];
 
 export const DEFAULT_FOOTER_TEXT = 'Спасибо за вашу покупку!';
