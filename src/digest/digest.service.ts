@@ -153,8 +153,9 @@ export class DigestService {
         if (digest.orderCount === 0) continue; // no sales → no digest
         const message = this.formatMessage(digest, b.name);
         this.logger.log(`Daily digest for ${b.name} (${b.id}):\n${message}`);
-        // Delivered only if the business kept the daily-sales toggle on (default).
-        await this.telegramNotify.broadcastIfEnabled(b.id, 'dailySales', message);
+        // Enqueue (or direct-send with no Redis); gated on the daily-sales toggle.
+        // Routing through the queue rate-limits the 21:00 multi-business burst.
+        await this.telegramNotify.dispatch(b.id, 'dailySales', message);
         sent += 1;
       } catch (e) {
         this.logger.error(

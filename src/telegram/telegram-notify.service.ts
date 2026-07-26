@@ -1,5 +1,7 @@
-import {Inject, Injectable, Logger} from '@nestjs/common';
+import {Inject, Injectable, Logger, Optional} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
+import {InjectQueue} from '@nestjs/bullmq';
+import {Queue} from 'bullmq';
 import {and, eq} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {
@@ -11,6 +13,7 @@ import {
 } from '../database/schema';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {TelegramSenderService} from './telegram-sender.service';
+import {TELEGRAM_QUEUE, TelegramJobData} from './telegram.constants';
 
 /** The togglable notification events. Matches the boolean columns of the table. */
 export type TelegramEvent =
@@ -106,9 +109,10 @@ const paymentLabel = (m?: string | null) =>
  * write-invalidated on the settings PUT).
  *
  * The `notify*` helpers are FIRE-AND-FORGET: they never throw and never block
- * the caller (checkout / shift close must not wait on Telegram HTTP). Delivery
- * failures are swallowed + logged. The digest cron instead awaits
- * `broadcastIfEnabled` directly since it isn't latency-sensitive.
+ * the caller (checkout / shift close must not wait on Telegram HTTP). When Redis
+ * is configured, `dispatch` ENQUEUES the pre-rendered message onto the BullMQ
+ * `telegram-notifications` queue (retries + rate limiting handled by the
+ * processor); otherwise it falls back to a best-effort direct `broadcast`.
  */
 @Injectable()
 export class TelegramNotifyService {
@@ -118,6 +122,10 @@ export class TelegramNotifyService {
     private readonly dbService: DatabaseService,
     private readonly sender: TelegramSenderService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    // Absent when Redis isn't configured (queue not registered) → direct send.
+    @Optional()
+    @InjectQueue(TELEGRAM_QUEUE)
+    private readonly queue?: Queue<TelegramJobData>,
   ) {}
 
   private get db() {
@@ -172,16 +180,8 @@ export class TelegramNotifyService {
 
   // ── Delivery ───────────────────────────────────────────────────────────────
 
-  /** Send `message` to every active chat IF `event` is enabled + bot configured. */
-  async broadcastIfEnabled(
-    businessId: string,
-    event: TelegramEvent,
-    message: string,
-  ): Promise<void> {
-    if (!this.sender.isConfigured()) return;
-    const settings = await this.getSettings(businessId);
-    if (!settings[event]) return;
-
+  /** Active chat ids linked to the business (login-gated bot links). */
+  async listActiveChatIds(businessId: string): Promise<string[]> {
     const links = await this.db
       .select({chatId: telegramLinks.chatId})
       .from(telegramLinks)
@@ -191,20 +191,48 @@ export class TelegramNotifyService {
           eq(telegramLinks.isActive, true),
         ),
       );
-    for (const link of links) {
+    return links.map((l) => l.chatId);
+  }
+
+  /**
+   * Gate on settings + bot config, then hand the message to the queue (retries +
+   * rate limiting) — or, when no queue is registered (no Redis), send it directly
+   * best-effort. Awaitable so the digest can enqueue-then-continue; the hot paths
+   * call it fire-and-forget via the `notify*` helpers.
+   */
+  async dispatch(
+    businessId: string,
+    event: TelegramEvent,
+    message: string,
+  ): Promise<void> {
+    if (!this.sender.isConfigured()) return;
+    const settings = await this.getSettings(businessId);
+    if (!settings[event]) return;
+
+    if (this.queue) {
+      await this.queue.add(event, {businessId, event, message});
+    } else {
+      await this.broadcast(businessId, message);
+    }
+  }
+
+  /** Best-effort direct send to every active chat (queue fallback). */
+  async broadcast(businessId: string, message: string): Promise<void> {
+    if (!this.sender.isConfigured()) return;
+    for (const chatId of await this.listActiveChatIds(businessId)) {
       try {
-        await this.sender.sendMessage(link.chatId, message);
+        await this.sender.sendMessage(chatId, message);
       } catch (e) {
         this.logger.warn(
-          `notify ${event} → chat ${link.chatId} failed: ${(e as Error).message}`,
+          `notify → chat ${chatId} failed: ${(e as Error).message}`,
         );
       }
     }
   }
 
-  /** Fire-and-forget: build+deliver in the background; never throw/block. */
+  /** Fire-and-forget: gate+enqueue in the background; never throw/block. */
   private fire(businessId: string, event: TelegramEvent, message: string): void {
-    void this.broadcastIfEnabled(businessId, event, message).catch((e) =>
+    void this.dispatch(businessId, event, message).catch((e) =>
       this.logger.warn(`notify ${event} error: ${(e as Error).message}`),
     );
   }
@@ -244,22 +272,39 @@ export class TelegramNotifyService {
     if (num(o.taxAmount) > 0) lines.push(`＋ QQS: ${uz(o.taxAmount)} so'm`);
     lines.push(`💰 Jami: ${uz(o.totalAmount)} so'm`);
 
-    // Payment details: per-method breakdown if present, else the single method.
+    // Payment details.
     const payments = (o.payments ?? []).filter((p) => p && p.method);
+    const paidNow = payments.reduce((s, p) => s + num(p.amount), 0);
     lines.push('');
-    if (payments.length > 1) {
-      lines.push("💳 To'lov:");
+    if (o.paymentMethod === 'debt') {
+      // Nasiya: down payment (if any) up front, remainder owed. The remainder is
+      // total − bonus − what was paid now (matches order.service's debtAmount).
+      const debt = Math.max(
+        0,
+        num(o.totalAmount) - num(o.loyaltyRedeemed) - paidNow,
+      );
+      lines.push("💳 To'lov: Nasiya");
       payments.forEach((p) =>
         lines.push(`  • ${paymentLabel(p.method)}: ${uz(p.amount)} so'm`),
       );
+      if (paidNow > 0) lines.push(`💵 To'landi: ${uz(paidNow)} so'm`);
+      lines.push(`🔴 Qarz: ${uz(debt)} so'm`);
     } else {
-      const method = payments[0]?.method ?? o.paymentMethod;
-      lines.push(`💳 To'lov: ${paymentLabel(method)}`);
+      // Per-method breakdown if split, else the single method.
+      if (payments.length > 1) {
+        lines.push("💳 To'lov:");
+        payments.forEach((p) =>
+          lines.push(`  • ${paymentLabel(p.method)}: ${uz(p.amount)} so'm`),
+        );
+      } else {
+        const method = payments[0]?.method ?? o.paymentMethod;
+        lines.push(`💳 To'lov: ${paymentLabel(method)}`);
+      }
+      if (num(o.amountPaid) > 0)
+        lines.push(`💵 Berildi: ${uz(o.amountPaid)} so'm`);
+      if (num(o.changeAmount) > 0)
+        lines.push(`🔁 Qaytim: ${uz(o.changeAmount)} so'm`);
     }
-    if (num(o.amountPaid) > 0)
-      lines.push(`💵 Berildi: ${uz(o.amountPaid)} so'm`);
-    if (num(o.changeAmount) > 0)
-      lines.push(`🔁 Qaytim: ${uz(o.changeAmount)} so'm`);
 
     if (o.customerName) lines.push('', `🙍 Mijoz: ${o.customerName}`);
     if (o.cashierName) lines.push(`👤 Kassir: ${o.cashierName}`);

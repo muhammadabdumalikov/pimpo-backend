@@ -1,3 +1,8 @@
+// Load .env into process.env BEFORE any module is evaluated, so import-time
+// config decisions (e.g. TelegramModule's conditional BullMQ registration, which
+// reads REDIS_* at module-decoration time) see local-dev .env values too. In
+// prod the platform sets real env vars, already present at import.
+import 'dotenv/config';
 import {ValidationPipe} from '@nestjs/common';
 import {NestFactory} from '@nestjs/core';
 import {DocumentBuilder, SwaggerModule} from '@nestjs/swagger';

@@ -24,6 +24,7 @@ import {Logger} from '@nestjs/common';
 import type {ConfigService} from '@nestjs/config';
 import Keyv from 'keyv';
 import KeyvRedis from '@keyv/redis';
+import {resolveRedisUrl} from '../common/redis-config';
 
 /** Prefix for every key this app writes, so it can safely share a Redis DB. */
 const NAMESPACE = 'pimpo';
@@ -114,36 +115,6 @@ function boundStoreOps(keyv: Keyv, timeoutMs: number): void {
 }
 
 /**
- * Resolve the Redis connection string from env.
- * - REDIS_URL wins if set (full `redis[s]://user:pass@host:port` from a provider).
- * - Otherwise assembled from REDIS_HOST / REDIS_PORT / REDIS_USERNAME /
- *   REDIS_PASSWORD, with REDIS_TLS=true switching the scheme to `rediss://`.
- * Returns null when no Redis is configured (→ in-memory fallback).
- */
-function resolveRedisUrl(config: ConfigService): string | null {
-  const explicit = config.get<string>('REDIS_URL');
-  if (explicit) return explicit;
-
-  const host = config.get<string>('REDIS_HOST');
-  if (!host) return null;
-
-  const port = config.get<string>('REDIS_PORT');
-  const username = config.get<string>('REDIS_USERNAME');
-  const password = config.get<string>('REDIS_PASSWORD');
-  const scheme =
-    String(config.get('REDIS_TLS')).toLowerCase() === 'true' ? 'rediss' : 'redis';
-
-  // Credentials are URL-encoded so passwords with @ : / etc. don't corrupt the URL.
-  let auth = '';
-  if (username || password) {
-    auth = `${encodeURIComponent(username ?? '')}:${encodeURIComponent(
-      password ?? '',
-    )}@`;
-  }
-  return `${scheme}://${auth}${host}:${port}`;
-}
-
-/**
  * Options for `CacheModule.registerAsync`. Returns a Redis-backed Keyv store
  * when configured, else `undefined` stores (cache-manager's default in-memory).
  */
@@ -154,7 +125,7 @@ export function buildCacheOptions(config: ConfigService): {
   // Fallback default TTL (ms); every call site passes an explicit TTL to wrap().
   const ttl = 60_000;
 
-  const url = resolveRedisUrl(config);
+  const url = resolveRedisUrl((k) => config.get<string>(k));
   if (!url) {
     logger.warn('No REDIS_URL/REDIS_HOST set — using in-memory cache (per-process).');
     return {ttl};
