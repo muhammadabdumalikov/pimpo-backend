@@ -4,6 +4,14 @@ import { ErrorCode } from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
 import { products, orders, orderItems, businesses } from '../database/schema';
 import { eq, and, desc, count, inArray, ilike, sql } from 'drizzle-orm';
+import { SubscriptionService } from '../subscription/subscription.service';
+import { tierAtLeast } from '../subscription/tier';
+
+// The online storefront is a Business-plan (`pro`) feature. Unlike the admin
+// API there is no JWT here to hang PlanTierGuard off, so the tier is checked
+// once in resolveBusinessId — the single choke point every storefront read and
+// the checkout already go through.
+const STORE_MIN_TIER = 'pro' as const;
 
 // Public product shape for the storefront. Never expose the full products row:
 // priceIn (cost), barcode, businessId etc. are internal.
@@ -29,12 +37,15 @@ export type StorePublicProduct = {
 
 @Injectable()
 export class StoreService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly subscriptionService: SubscriptionService,
+  ) {}
 
   /**
    * Resolve the storefront's business from the request's subdomain slug.
    * - A slug (e.g. "salom" from salom.kpos.uz) must map to an enabled, active
-   *   store, else STORE_NOT_FOUND.
+   *   store on a Business (`pro`) plan or higher, else STORE_NOT_FOUND.
    * - No slug (apex domain / local dev) falls back to the STORE_BUSINESS_ID env,
    *   or null (unscoped) when that is unset too.
    * The resolved businessId is threaded into every query below so one tenant's
@@ -55,6 +66,14 @@ export class StoreService {
         )
         .limit(1);
       if (!biz) {
+        throw new AppException(ErrorCode.STORE_NOT_FOUND);
+      }
+      // A downgraded/expired shop keeps its slug and data but its public store
+      // goes dark. Reported as STORE_NOT_FOUND rather than a plan error: the
+      // visitor is a shopper, not the subscriber, and must not be shown the
+      // tenant's billing state.
+      const tier = await this.subscriptionService.getEffectiveTier(biz.id);
+      if (!tierAtLeast(tier, STORE_MIN_TIER)) {
         throw new AppException(ErrorCode.STORE_NOT_FOUND);
       }
       return biz.id;

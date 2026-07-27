@@ -7,10 +7,14 @@ import {ReportService} from './report.service';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 
-// Reports split by plan (see NARX-TAHLIL / pricing tiers):
+// Reports split by plan (see NARX-DRAFT / pricing tiers):
 //   • basic  — operational reports (the class-level default below)
-//   • pro    — extended analytics (@MinTier('pro') on the method)
-//   • proplus— multi-branch analytics (@MinTier('proplus') on the method)
+//   • pro    — extended analytics AND multi-branch analytics (branch
+//              comparison, transfer suggestions) via @MinTier('pro')
+// Multi-branch analytics sits on `pro` because Business is the multi-branch
+// plan: gating it to proplus meant selling a shop several branches and hiding
+// the comparison two tiers above what they were paying for. Business+ is a
+// scale ceiling (unlimited branches / 50 users), not a separate report set.
 @ApiTags('reports')
 @Controller('reports')
 @UseGuards(JwtAuthGuard, PlanTierGuard)
@@ -265,7 +269,7 @@ export class ReportController {
   }
 
   @Get('transfer-suggestions')
-  @MinTier('proplus')
+  @MinTier('pro')
   @ApiOperation({summary: 'Filiallararo transfer tavsiyasi (rebalans)'})
   @ApiQuery({name: 'days', required: false, description: 'Velocity window (default 30)'})
   @ApiQuery({name: 'coverDays', required: false, description: 'Cover target days (default 14)'})
@@ -316,7 +320,7 @@ export class ReportController {
   }
 
   @Get('branch-comparison')
-  @MinTier('proplus')
+  @MinTier('pro')
   @ApiOperation({summary: 'Filiallar taqqoslash'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})

@@ -26,6 +26,8 @@ import {and, desc, eq} from 'drizzle-orm';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
+import {PlanTierGuard} from '../subscription/plan-tier.guard';
+import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
@@ -47,9 +49,14 @@ const XLSX_MIME =
 // the filename ends with .xlsx.
 const FALLBACK_MIMES = ['application/octet-stream', 'application/zip'];
 
+// Telegram notifications ship with Standart (`basic`) and up — cheap to run and
+// good for retention, so they are not held back for the higher tiers. Only
+// linking/configuration is gated: deliveries for an already-linked business keep
+// flowing through TelegramNotifyService regardless of tier.
 @ApiTags('telegram')
 @Controller('telegram')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class TelegramController {
   constructor(

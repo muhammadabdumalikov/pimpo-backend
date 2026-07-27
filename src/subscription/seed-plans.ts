@@ -28,13 +28,17 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       id: generateId(),
       tier: 'basic',
       name: 'Standard',
-      description: 'For growing shops',
+      description: 'For a single shop',
       price: '119000',
       isActive: true,
       debtsLimit: null,
       productsLimit: null,
       usersLimit: 10,
-      branchesLimit: 4,
+      // Main shop + 2. Business is the multi-branch plan, so Standart stops
+      // short of a real network — a 4th point means moving up. Enforced on
+      // branch CREATE only (branch.service.ts), so a shop that already has more
+      // keeps them and simply cannot add another.
+      branchesLimit: 3,
     },
     {
       id: generateId(),
@@ -53,7 +57,11 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       tier: 'proplus',
       name: 'Business+',
       description: 'For large retail networks',
-      price: '499000',
+      // Business+ is a pure scale ceiling (unlimited branches, 50 users) — it
+      // carries no exclusive feature now that multi-branch analytics moved to
+      // `pro`. 499k could not be defended on scale alone; revisit if offline
+      // mode ships and lands here.
+      price: '399000',
       isActive: true,
       debtsLimit: null,
       productsLimit: null,

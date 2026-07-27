@@ -16,14 +16,22 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { PlanTierGuard } from '../subscription/plan-tier.guard';
+import { MinTier } from '../subscription/required-tier.decorator';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { IBusiness } from '../business/types';
 import { LoyaltyService } from './loyalty.service';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 
+// Loyalty (keshbek/bonus) is a Business-plan feature: it is one of the paid
+// differentiators the tiers are priced on, so it sits behind `pro` rather than
+// shipping on every plan. Earning/redeeming during checkout stays available to
+// whoever already has balances — only configuring and reading the programme is
+// gated here.
 @ApiTags('loyalty')
 @Controller('loyalty')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard)
+@MinTier('pro')
 @ApiBearerAuth('JWT-auth')
 export class LoyaltyController {
   constructor(private readonly loyaltyService: LoyaltyService) {}
