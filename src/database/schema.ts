@@ -369,6 +369,11 @@ export const orders = pgTable(
     // Contact phone snapshot (storefront checkout / debt sales) — no user row
     // required, so the store can call the customer back about the order.
     customerPhone: varchar('customer_phone', {length: 32}),
+    // Telegram user id, set when the order was placed from the Telegram mini
+    // app and its signed launch payload verified. It is both the customer's
+    // durable order history (browser storage does not survive in a webview)
+    // and the chat we DM status changes to. Null for plain-web orders.
+    telegramUserId: varchar('telegram_user_id', {length: 32}),
     status: varchar('status', {length: 20}).notNull().default('Pending'), // 'Pending' | 'Completed' | 'Cancelled' | 'Held' (parked cart — stock untouched)
     totalAmount: decimal('total_amount', {precision: 12, scale: 2})
       .notNull()
@@ -427,6 +432,13 @@ export const orders = pgTable(
     uniqueClientBusiness: uniqueIndex('unique_order_client_business').on(
       table.businessId,
       table.clientId,
+    ),
+    // "My orders" in the Telegram mini app: newest-first for one customer of
+    // one store.
+    telegramUserIdx: index('orders_business_telegram_idx').on(
+      table.businessId,
+      table.telegramUserId,
+      table.createdAt,
     ),
   }),
 );
@@ -1912,6 +1924,38 @@ export type TelegramNotificationSettings =
   typeof telegramNotificationSettings.$inferSelect;
 export type NewTelegramNotificationSettings =
   typeof telegramNotificationSettings.$inferInsert;
+
+// ─── Store bot (per-shop Telegram Mini App storefront) ───────────────────────
+// One row per business that runs its own customer-facing bot: the shop creates
+// it in BotFather, points its Mini App at <storeSlug>.<root-domain> and pastes
+// the token here. That token is what verifies mini-app launch payloads for this
+// shop's storefront and what DMs its customers about their orders — so the
+// whole customer relationship stays under the shop's own brand.
+//
+// Deliberately NOT a column on `businesses`: that row is spread wholesale into
+// login/profile payloads, and a bot token must never ride along. `botUsername`
+// is captured from getMe when the token is saved (used to build the t.me link
+// shown to the shop). Shops with no row fall back to the platform bot
+// (TELEGRAM_BOT_TOKEN), which is also what powers owner notifications.
+export const storeBots = pgTable('store_bots', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  botToken: varchar('bot_token', {length: 100}).notNull(),
+  botUsername: varchar('bot_username', {length: 64}),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const storeBotsRelations = relations(storeBots, ({one}) => ({
+  business: one(businesses, {
+    fields: [storeBots.businessId],
+    references: [businesses.id],
+  }),
+}));
+
+export type StoreBot = typeof storeBots.$inferSelect;
+export type NewStoreBot = typeof storeBots.$inferInsert;
 
 // ─── BiLLZ migration (data import from BiLLZ 2.0) ────────────────────────────
 // One row per business that has connected a BiLLZ account for a one-off data

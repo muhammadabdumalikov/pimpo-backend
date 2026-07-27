@@ -5,6 +5,8 @@ import {Queue} from 'bullmq';
 import {and, eq} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {
+  businesses,
+  storeBots,
   telegramLinks,
   telegramNotificationSettings,
   TelegramNotificationSettings,
@@ -88,6 +90,14 @@ function dateTime(date?: Date | null): string {
 
 // Cap the product list so a huge cart can't blow past Telegram's 4096-char limit.
 const MAX_ITEM_LINES = 40;
+
+// Customer-facing headlines for an online order's status. Wording matches the
+// storefront's own status labels (Uzbek — the storefront's default locale).
+const STORE_STATUS_HEADLINES: Record<string, string> = {
+  Confirmed: '✅ Buyurtmangiz qabul qilindi',
+  Completed: '📦 Buyurtmangiz topshirildi. Xaridingiz uchun rahmat!',
+  Cancelled: '❌ Buyurtmangiz rad etildi',
+};
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: 'Naqd',
@@ -310,6 +320,62 @@ export class TelegramNotifyService {
     if (o.cashierName) lines.push(`👤 Kassir: ${o.cashierName}`);
 
     this.fire(businessId, 'checkout', lines.join('\n'));
+  }
+
+  /**
+   * DM a storefront customer that their online order moved on.
+   *
+   * Different audience from every other helper here: the recipient is the
+   * shopper's own chat (their Telegram user id, captured at mini-app checkout),
+   * not the business's linked chats — so it bypasses both the per-business
+   * settings gate and the broadcast queue. It also sends from the shop's own
+   * store bot (the one that opened the mini app), not the platform bot: a
+   * customer can only be messaged by a bot they have started.
+   *
+   * Best-effort and non-blocking: a customer who never pressed Start simply
+   * cannot be reached, and that must never fail the shop's status update.
+   */
+  notifyStoreOrderStatus(
+    businessId: string,
+    o: {
+      telegramUserId: string;
+      orderId: string;
+      status: string;
+      totalAmount: string | number;
+      itemCount?: number | null;
+    },
+  ): void {
+    const headline = STORE_STATUS_HEADLINES[o.status];
+    // Only the transitions the shopper cares about; 'Pending' is the state they
+    // already saw at checkout.
+    if (!headline) return;
+
+    void (async () => {
+      // The shop's own store bot, else the platform bot (single-bot setups).
+      const [row] = await this.db
+        .select({name: businesses.name, botToken: storeBots.botToken})
+        .from(businesses)
+        .leftJoin(storeBots, eq(storeBots.businessId, businesses.id))
+        .where(eq(businesses.id, businessId))
+        .limit(1);
+      const token = row?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
+      if (!token) return;
+
+      const lines = [headline, ''];
+      lines.push(`🧾 Buyurtma: #${o.orderId.slice(0, 8).toUpperCase()}`);
+      if (o.itemCount != null) lines.push(`📦 Jami: ${qty(o.itemCount)} dona`);
+      lines.push(`💰 Summa: ${uz(o.totalAmount)} so'm`);
+      if (row?.name) lines.push('', `🏪 ${row.name}`);
+
+      // A private chat's id is the user's own id.
+      await this.sender.sendMessage(o.telegramUserId, lines.join('\n'), token);
+    })().catch((e) =>
+      this.logger.warn(
+        `store order status DM failed (user ${o.telegramUserId}): ${
+          (e as Error).message
+        }`,
+      ),
+    );
   }
 
   notifyShiftOpened(businessId: string, shift: CashShift): void {

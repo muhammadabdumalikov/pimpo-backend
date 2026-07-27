@@ -168,6 +168,8 @@ export enum ErrorCode {
   TELEGRAM_LINK_NOT_FOUND = 'TELEGRAM_LINK_NOT_FOUND',
   TELEGRAM_NO_TARGETS = 'TELEGRAM_NO_TARGETS',
   TELEGRAM_SEND_FAILED = 'TELEGRAM_SEND_FAILED',
+  TELEGRAM_AUTH_INVALID = 'TELEGRAM_AUTH_INVALID',
+  TELEGRAM_BOT_TOKEN_INVALID = 'TELEGRAM_BOT_TOKEN_INVALID',
 
   // ── BiLLZ migration (data import) ──────────────────────────────────────────
   // The secret_token was rejected by BiLLZ — a normal outcome for a wrong key.
@@ -707,6 +709,17 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.TELEGRAM_SEND_FAILED]: {
     status: HttpStatus.BAD_GATEWAY,
     message: 'Failed to send the document to Telegram.',
+  },
+  [ErrorCode.TELEGRAM_BOT_TOKEN_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Telegram rejected this bot token. Copy it again from BotFather.',
+  },
+  [ErrorCode.TELEGRAM_AUTH_INVALID]: {
+    // Deliberately BAD_REQUEST: this is the public storefront, where a stale or
+    // forged mini-app launch payload means "carry on as a guest", not a session
+    // to tear down.
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Telegram session is invalid or expired. Reopen the mini app.',
   },
 
   // BiLLZ migration

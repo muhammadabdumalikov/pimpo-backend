@@ -47,4 +47,17 @@ export class StoreCheckoutDto {
   @MaxLength(500)
   @IsOptional()
   note?: string;
+
+  @ApiProperty({
+    description:
+      'Telegram Mini App launch payload (window.Telegram.WebApp.initData). ' +
+      'Verified against the bot token; when it checks out the order is bound ' +
+      'to that Telegram user for history and status notifications. Ignored ' +
+      'when absent or invalid — checkout still succeeds as a guest.',
+    required: false,
+  })
+  @IsString()
+  @MaxLength(4096)
+  @IsOptional()
+  initData?: string;
 }

@@ -37,10 +37,13 @@ import {
   TelegramLink,
   businesses,
   staff,
+  storeBots,
+  StoreBot,
 } from '../database/schema';
 import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramNotifyService} from './telegram-notify.service';
 import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
+import {UpdateStoreBotDto} from './dto/update-store-bot.dto';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const XLSX_MIME =
@@ -95,6 +98,86 @@ export class TelegramController {
       cashShifts: s.cashShifts,
       cashOperations: s.cashOperations,
       dailySales: s.dailySales,
+    };
+  }
+
+  // ── Store bot (Telegram Mini App storefront) ───────────────────────────────
+  // Pro-gated like the storefront itself, unlike the owner notifications above.
+
+  @Get('store-bot')
+  @MinTier('pro')
+  @ApiOperation({
+    summary: "The shop's own customer-facing bot for the mini-app storefront",
+  })
+  async getStoreBot(@CurrentBusiness() business: IBusiness) {
+    const [row] = await this.db
+      .select()
+      .from(storeBots)
+      .where(eq(storeBots.businessId, business.id))
+      .limit(1);
+    return this.toStoreBotApi(business, row ?? null);
+  }
+
+  @Put('store-bot')
+  @MinTier('pro')
+  @ApiOperation({
+    summary: "Connect or disconnect the shop's own storefront bot",
+  })
+  async updateStoreBot(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: UpdateStoreBotDto,
+  ) {
+    const token = dto.botToken?.trim();
+
+    // Empty or null disconnects: the storefront falls back to the platform bot.
+    if (!token) {
+      await this.db
+        .delete(storeBots)
+        .where(eq(storeBots.businessId, business.id));
+      return this.toStoreBotApi(business, null);
+    }
+
+    // getMe is the only way to tell a real token from a typo, and it hands us
+    // the @username the shop needs for its customer link.
+    const me = await this.sender.getMe(token);
+    if (!me) {
+      throw new AppException(ErrorCode.TELEGRAM_BOT_TOKEN_INVALID);
+    }
+
+    const [row] = await this.db
+      .insert(storeBots)
+      .values({
+        businessId: business.id,
+        botToken: token,
+        botUsername: me.username ?? null,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: storeBots.businessId,
+        set: {
+          botToken: token,
+          botUsername: me.username ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return this.toStoreBotApi(business, row);
+  }
+
+  /**
+   * Public shape of a store bot — never the token itself, only what the owner
+   * needs to finish the BotFather setup.
+   */
+  private toStoreBotApi(business: IBusiness, row: StoreBot | null) {
+    const slug = business.storeSlug ?? null;
+    const rootDomain = process.env.STORE_ROOT_DOMAIN || 'kpos.uz';
+    return {
+      connected: !!row,
+      botUsername: row?.botUsername ?? null,
+      botLink: row?.botUsername ? `https://t.me/${row.botUsername}` : null,
+      // The URL the owner pastes into BotFather (Menu Button / Mini App URL).
+      miniAppUrl: slug ? `https://${slug}.${rootDomain}` : null,
+      updatedAt: row?.updatedAt ?? null,
     };
   }
 

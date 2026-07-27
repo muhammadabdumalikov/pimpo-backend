@@ -39,8 +39,10 @@ export class TelegramSenderService {
     return process.env.TELEGRAM_BOT_TOKEN;
   }
 
-  private url(method: string): string {
-    return `${TELEGRAM_API_BASE}/bot${this.token ?? ''}/${method}`;
+  // `token` overrides the platform bot for calls made on behalf of a shop's own
+  // store bot (the Mini App storefront) — see the store_bots table.
+  private url(method: string, token?: string): string {
+    return `${TELEGRAM_API_BASE}/bot${token ?? this.token ?? ''}/${method}`;
   }
 
   /** True when a bot token is configured. */
@@ -53,12 +55,19 @@ export class TelegramSenderService {
     return this.botUsername;
   }
 
-  /** Send a plain text message. Throws on failure so callers can react. */
-  async sendMessage(chatId: string, text: string): Promise<TelegramMessage> {
-    if (!this.token) {
+  /**
+   * Send a plain text message. Throws on failure so callers can react.
+   * Pass `token` to send as a shop's own store bot instead of the platform bot.
+   */
+  async sendMessage(
+    chatId: string,
+    text: string,
+    token?: string,
+  ): Promise<TelegramMessage> {
+    if (!token && !this.token) {
       throw new AppException(ErrorCode.TELEGRAM_NOT_CONFIGURED);
     }
-    const res = await fetch(this.url('sendMessage'), {
+    const res = await fetch(this.url('sendMessage', token), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({chat_id: chatId, text}),
@@ -131,13 +140,17 @@ export class TelegramSenderService {
   /**
    * Fetch the bot identity and cache its @username. Best-effort: returns null
    * (and logs) on any failure so startup never crashes.
+   *
+   * Pass `token` to identify a shop's own store bot — that call is also how a
+   * pasted token is validated before it is saved, so it must NOT overwrite the
+   * cached platform @username.
    */
-  async getMe(): Promise<TelegramUser | null> {
-    if (!this.token) {
+  async getMe(token?: string): Promise<TelegramUser | null> {
+    if (!token && !this.token) {
       return null;
     }
     try {
-      const res = await fetch(this.url('getMe'));
+      const res = await fetch(this.url('getMe', token));
       const data = (await res.json()) as TelegramApiResponse<TelegramUser>;
       if (!res.ok || !data.ok || !data.result) {
         this.logger.warn(
@@ -145,7 +158,9 @@ export class TelegramSenderService {
         );
         return null;
       }
-      this.botUsername = data.result.username ?? null;
+      if (!token) {
+        this.botUsername = data.result.username ?? null;
+      }
       return data.result;
     } catch (e) {
       this.logger.warn(`getMe error: ${(e as Error).message}`);

@@ -2,7 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { AppException } from '../common/errors/app.exception';
 import { ErrorCode } from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
-import { products, orders, orderItems, businesses } from '../database/schema';
+import {
+  products,
+  orders,
+  orderItems,
+  businesses,
+  storeBots,
+} from '../database/schema';
 import { eq, and, desc, count, inArray, ilike, sql } from 'drizzle-orm';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { tierAtLeast } from '../subscription/tier';
@@ -79,6 +85,27 @@ export class StoreService {
       return biz.id;
     }
     return process.env.STORE_BUSINESS_ID || null;
+  }
+
+  /**
+   * The bot this storefront speaks through: the shop's own store bot when it
+   * has connected one, else the platform bot. It is what mini-app launch
+   * payloads are verified against, so getting it wrong means a valid customer
+   * reads as anonymous — never cross-tenant access, since the businessId is
+   * resolved from the host slug first and the token is looked up from it.
+   */
+  async resolveBotToken(
+    businessId: string | null,
+  ): Promise<string | undefined> {
+    if (businessId) {
+      const [row] = await this.dbService.db
+        .select({botToken: storeBots.botToken})
+        .from(storeBots)
+        .where(eq(storeBots.businessId, businessId))
+        .limit(1);
+      if (row?.botToken) return row.botToken;
+    }
+    return process.env.TELEGRAM_BOT_TOKEN || undefined;
   }
 
   /** Public storefront branding for the resolved business (name shown in the
@@ -218,6 +245,82 @@ export class StoreService {
       .where(eq(orderItems.orderId, id));
 
     return { ...order, items };
+  }
+
+  /**
+   * Order history for a verified Telegram mini-app customer.
+   *
+   * The plain-web storefront remembers order ids in localStorage, which a
+   * Telegram webview does not keep reliably and never carries to the
+   * customer's other devices. Once the launch payload is verified the user id
+   * itself is the key, so history survives both. Same public projection as
+   * findOrder — never the raw order row.
+   */
+  async findOrdersByTelegramUser(
+    businessId: string | null,
+    telegramUserId: string,
+    limit = 30,
+  ): Promise<
+    {
+      id: string;
+      status: string;
+      totalAmount: string;
+      itemCount: number;
+      createdAt: Date;
+      items: {productName: string; quantity: number; lineTotal: string}[];
+    }[]
+  > {
+    const rows = await this.dbService.db
+      .select({
+        id: orders.id,
+        status: orders.status,
+        totalAmount: orders.totalAmount,
+        itemCount: orders.itemCount,
+        createdAt: orders.createdAt,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.telegramUserId, telegramUserId),
+          eq(orders.source, 'store'),
+          ...(businessId ? [eq(orders.businessId, businessId)] : []),
+        ),
+      )
+      .orderBy(desc(orders.createdAt))
+      .limit(Math.min(limit, 50));
+
+    if (rows.length === 0) return [];
+
+    const lines = await this.dbService.db
+      .select({
+        orderId: orderItems.orderId,
+        productName: orderItems.productName,
+        quantity: orderItems.quantity,
+        lineTotal: orderItems.lineTotal,
+      })
+      .from(orderItems)
+      .where(
+        inArray(
+          orderItems.orderId,
+          rows.map((r) => r.id),
+        ),
+      );
+
+    const byOrder = new Map<
+      string,
+      {productName: string; quantity: number; lineTotal: string}[]
+    >();
+    for (const line of lines) {
+      const list = byOrder.get(line.orderId) ?? [];
+      list.push({
+        productName: line.productName,
+        quantity: line.quantity,
+        lineTotal: line.lineTotal,
+      });
+      byOrder.set(line.orderId, list);
+    }
+
+    return rows.map((row) => ({...row, items: byOrder.get(row.id) ?? []}));
   }
 
   /**

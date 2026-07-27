@@ -221,7 +221,9 @@ export class OrderService {
 
   async create(
     businessId: string,
-    dto: CreateOrderDto,
+    // `telegramUserId` is server-set only (the storefront controller derives it
+    // from a verified Telegram launch payload), never part of the HTTP DTO.
+    dto: CreateOrderDto & {telegramUserId?: string | null},
     account?: IAccount,
   ): Promise<OrderWithItems> {
     // Idempotency: an offline sale may be re-sent from the client's outbox over
@@ -540,6 +542,7 @@ export class OrderService {
           userId: customerId,
           customerName,
           customerPhone: dto.phone ?? null,
+          telegramUserId: dto.telegramUserId ?? null,
           status: dto.status ?? 'Pending',
           totalAmount: money(total),
           subtotalAmount: money(subtotal),
@@ -980,7 +983,9 @@ export class OrderService {
    * owning business is derived from the first product, and all items must
    * belong to it (enforced by create()'s per-product business check).
    */
-  async createStore(dto: CreateOrderDto): Promise<OrderWithItems> {
+  async createStore(
+    dto: CreateOrderDto & {telegramUserId?: string | null},
+  ): Promise<OrderWithItems> {
     const firstId = dto.items[0]?.productId;
     if (!firstId) {
       throw new AppException(ErrorCode.ORDER_EMPTY);
@@ -1209,13 +1214,26 @@ export class OrderService {
           .set({status, updatedAt: new Date()})
           .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
       });
-      return this.findOne(businessId, id) as Promise<OrderWithItems>;
+    } else {
+      await this.dbService.db
+        .update(orders)
+        .set({status, updatedAt: new Date()})
+        .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
     }
 
-    await this.dbService.db
-      .update(orders)
-      .set({status, updatedAt: new Date()})
-      .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+    // Storefront order placed from the Telegram mini app: tell the customer
+    // their order moved on. Fire-and-forget — the shop's status change must
+    // never wait on (or fail with) Telegram.
+    if (existing.source === 'store' && existing.telegramUserId) {
+      this.telegramNotify.notifyStoreOrderStatus(businessId, {
+        telegramUserId: existing.telegramUserId,
+        orderId: existing.id,
+        status,
+        totalAmount: existing.totalAmount,
+        itemCount: existing.itemCount,
+      });
+    }
+
     return this.findOne(businessId, id) as Promise<OrderWithItems>;
   }
 

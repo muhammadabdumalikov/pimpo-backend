@@ -3,16 +3,23 @@ import {
   Get,
   Post,
   Body,
+  Headers,
   Param,
   Query,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiHeader } from '@nestjs/swagger';
 import { StoreService } from './store.service';
 import { CategoryService } from '../category/category.service';
 import { OrderService } from '../order/order.service';
 import { StoreCheckoutDto } from './dto/store-checkout.dto';
+import { AppException } from '../common/errors/app.exception';
+import { ErrorCode } from '../common/errors/error-codes';
+import {
+  telegramDisplayName,
+  verifyTelegramInitData,
+} from '../telegram/telegram-init-data';
 
 // The `store` query param carries the tenant's subdomain slug (e.g. "salom"
 // from salom.kpos.uz). The ecommerce app reads it from the request Host and
@@ -92,6 +99,37 @@ export class StoreController {
     return this.storeService.findOrder(businessId, id);
   }
 
+  @Get('my-orders')
+  @ApiOperation({
+    summary: 'Orders placed by the current Telegram mini-app user (public)',
+  })
+  @ApiHeader({
+    name: 'X-Telegram-Init-Data',
+    required: true,
+    description: 'Telegram Mini App launch payload (WebApp.initData)',
+  })
+  @ApiQuery({ name: 'store', required: false, type: String, description: 'Store subdomain slug' })
+  @ApiResponse({ status: 200, description: 'Order list, newest first' })
+  async getMyOrders(
+    @Headers('x-telegram-init-data') initData?: string,
+    @Query('store') store?: string,
+  ) {
+    // Resolve the shop first: the launch payload is signed by *that* shop's
+    // store bot, so the token to verify against depends on the tenant.
+    const businessId = await this.storeService.resolveBusinessId(store);
+    const telegramUser = verifyTelegramInitData(
+      initData,
+      await this.storeService.resolveBotToken(businessId),
+    );
+    if (!telegramUser) {
+      throw new AppException(ErrorCode.TELEGRAM_AUTH_INVALID);
+    }
+    return this.storeService.findOrdersByTelegramUser(
+      businessId,
+      telegramUser.id,
+    );
+  }
+
   @Post('orders')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Place a store order (public)' })
@@ -106,11 +144,24 @@ export class StoreController {
     // hand, else the customer gets a clear error instead of an oversell.
     await this.storeService.assertOrderable(businessId, dto.items);
 
+    // Mini-app checkout: a launch payload that verifies against the bot token
+    // binds the order to that Telegram user (durable history + status DMs). An
+    // absent or forged one is simply ignored — this stays a guest checkout.
+    const telegramUser = verifyTelegramInitData(
+      dto.initData,
+      await this.storeService.resolveBotToken(businessId),
+    );
+
     const order = await this.orderService.createStore({
       items: dto.items,
-      customerName: dto.customerName,
+      customerName:
+        dto.customerName ||
+        (telegramUser
+          ? (telegramDisplayName(telegramUser) ?? undefined)
+          : undefined),
       phone: dto.phone,
       note: dto.note || undefined,
+      telegramUserId: telegramUser?.id ?? null,
     });
 
     return {
