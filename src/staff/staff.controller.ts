@@ -44,6 +44,15 @@ export class StaffController {
     return this.staffService.findAll(business.id);
   }
 
+  @Get('seat-usage')
+  @ApiOperation({
+    summary: 'Plan seat usage — owner + staff who hold a system account',
+  })
+  @ApiResponse({ status: 200, description: '{ used, limit }' })
+  async seatUsage(@CurrentBusiness() business: IBusiness) {
+    return this.staffService.getSeatUsage(business.id);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get staff by id' })
   @ApiParam({ name: 'id', description: 'Staff ID' })

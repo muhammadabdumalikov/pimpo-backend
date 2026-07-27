@@ -59,20 +59,60 @@ export const roles = pgTable(
   }),
 );
 
+// An employee of the business. NOT every employee needs a system login: a
+// cleaner or a warehouse hand exists here purely as a payroll record. Only rows
+// with hasAccount = true carry credentials, can sign in, and consume a seat
+// against the plan's usersLimit (see StaffService.countAccountHolders).
 export const staff = pgTable('staff', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
     .notNull()
     .references(() => businesses.id, {onDelete: 'cascade'}),
-  roleId: varchar('role_id', {length: 36})
-    .notNull()
-    .references(() => roles.id),
+  // Null for employees without a system account (nothing to authorise).
+  roleId: varchar('role_id', {length: 36}).references(() => roles.id),
   name: varchar('name', {length: 255}).notNull(),
-  // Globally unique so the unified login lookup is unambiguous.
-  login: varchar('login', {length: 100}).notNull().unique(),
-  password: varchar('password', {length: 255}).notNull(),
+  // Globally unique so the unified login lookup is unambiguous. Null when the
+  // employee has no account — Postgres treats NULLs as distinct in a unique
+  // index, so any number of accountless rows can coexist.
+  login: varchar('login', {length: 100}).unique(),
+  password: varchar('password', {length: 255}),
+  // Whether this employee can sign in (POS + dashboard). Drives seat counting.
+  hasAccount: boolean('has_account').default(false).notNull(),
   // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
   avatarUrl: varchar('avatar_url', {length: 500}),
+  // ─── HR fields ───────────────────────────────────────────────────────────
+  // Free-text job title ("Sotuvchi", "Omborchi"); independent of roleId, which
+  // only governs dashboard permissions for account holders.
+  position: varchar('position', {length: 100}),
+  phone: varchar('phone', {length: 32}),
+  branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+    onDelete: 'set null',
+  }),
+  hiredAt: timestamp('hired_at'),
+  // ─── Payroll configuration ───────────────────────────────────────────────
+  // 'none'    — not on payroll (excluded from accrual runs)
+  // 'fixed'   — baseSalary only
+  // 'percent' — salesPercent of own sales only
+  // 'mixed'   — baseSalary + salesPercent of own sales
+  salaryType: varchar('salary_type', {length: 10}).default('none').notNull(),
+  // Monthly fixed wage (oklad), UZS.
+  baseSalary: decimal('base_salary', {precision: 14, scale: 2})
+    .default('0')
+    .notNull(),
+  // Percent of the employee's OWN sales (orders.cashierId = staff.id).
+  salesPercent: decimal('sales_percent', {precision: 6, scale: 3})
+    .default('0')
+    .notNull(),
+  // What salesPercent applies to: 'revenue' (tushum) or 'profit' (foyda =
+  // revenue − COGS from order_items.cost_total).
+  percentBase: varchar('percent_base', {length: 10})
+    .default('revenue')
+    .notNull(),
+  // Running payroll balance, UZS. Positive = business owes the employee.
+  // Denormalised mirror of SUM(payroll_entries) so the list view is one query.
+  salaryBalance: decimal('salary_balance', {precision: 14, scale: 2})
+    .default('0')
+    .notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -961,6 +1001,74 @@ export const financialTransactions = pgTable(
   }),
 );
 
+// Payroll ledger ("Ish haqi"). A per-employee running account, the same shape
+// as the customer-debt ledger but with the sign flipped: a positive
+// staff.salary_balance means the BUSINESS owes the EMPLOYEE.
+//
+//   accrual   (hisoblandi)  balance += amount   monthly run: oklad + sales %
+//   bonus     (mukofot)     balance += amount   manual one-off
+//   payment   (to'landi)    balance -= amount   moves money → finance expense
+//   advance   (avans)       balance -= amount   moves money → finance expense
+//   deduction (ushlanma)    balance -= amount   fine/withholding, no money moves
+//
+// Only 'accrual' rows carry periodMonth, and only one may exist per
+// (business, staff, month) — that unique index is what makes re-running a
+// month idempotent instead of double-paying.
+export const payrollEntries = pgTable(
+  'payroll_entries',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    staffId: varchar('staff_id', {length: 36})
+      .notNull()
+      .references(() => staff.id, {onDelete: 'cascade'}),
+    // Snapshot so the ledger survives renames.
+    staffName: varchar('staff_name', {length: 255}).notNull(),
+    // 'accrual' | 'bonus' | 'payment' | 'advance' | 'deduction'
+    type: varchar('type', {length: 12}).notNull(),
+    // Always positive; the sign is implied by `type` (see table above).
+    amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
+    // staff.salary_balance immediately after this row was applied.
+    balanceAfter: decimal('balance_after', {precision: 14, scale: 2}).notNull(),
+    // 'YYYY-MM' — set on accrual rows only.
+    periodMonth: varchar('period_month', {length: 7}),
+    // ─── Accrual breakdown (null on every other type) ──────────────────────
+    baseAmount: decimal('base_amount', {precision: 14, scale: 2}),
+    salesAmount: decimal('sales_amount', {precision: 14, scale: 2}),
+    // Revenue (or profit) the percentage was applied to, for auditability.
+    salesBase: decimal('sales_base', {precision: 14, scale: 2}),
+    percentApplied: decimal('percent_applied', {precision: 6, scale: 3}),
+    // ─── Money movement (payment / advance only) ───────────────────────────
+    accountId: varchar('account_id', {length: 36}),
+    financialTransactionId: varchar('financial_transaction_id', {length: 36}),
+    note: varchar('note', {length: 500}),
+    // Who posted it (owner or staff id) — snapshotted name.
+    createdById: varchar('created_by_id', {length: 36}),
+    createdByName: varchar('created_by_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    staffCreatedIdx: index('payroll_entries_staff_created_idx').on(
+      table.staffId,
+      table.createdAt,
+    ),
+    businessCreatedIdx: index('payroll_entries_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    // Serves "which employees are already accrued for this month". The
+    // per-staff uniqueness for that same month is enforced by a PARTIAL unique
+    // index (accrual rows only) created in the migration, since Drizzle cannot
+    // express a WHERE clause on a unique index here.
+    businessPeriodIdx: index('payroll_entries_business_period_idx').on(
+      table.businessId,
+      table.periodMonth,
+    ),
+  }),
+);
+
 // Monthly sales target ("Oylik reja") per business — R31 Reja vs fakt. One row
 // per (business, month); `month` is 'YYYY-MM'. Actuals are computed live from
 // completed orders, so only the goal is stored here.
@@ -1128,7 +1236,7 @@ export const rolesRelations = relations(roles, ({one, many}) => ({
   staff: many(staff),
 }));
 
-export const staffRelations = relations(staff, ({one}) => ({
+export const staffRelations = relations(staff, ({one, many}) => ({
   business: one(businesses, {
     fields: [staff.businessId],
     references: [businesses.id],
@@ -1136,6 +1244,22 @@ export const staffRelations = relations(staff, ({one}) => ({
   role: one(roles, {
     fields: [staff.roleId],
     references: [roles.id],
+  }),
+  branch: one(branches, {
+    fields: [staff.branchId],
+    references: [branches.id],
+  }),
+  payrollEntries: many(payrollEntries),
+}));
+
+export const payrollEntriesRelations = relations(payrollEntries, ({one}) => ({
+  business: one(businesses, {
+    fields: [payrollEntries.businessId],
+    references: [businesses.id],
+  }),
+  staff: one(staff, {
+    fields: [payrollEntries.staffId],
+    references: [staff.id],
   }),
 }));
 
@@ -1322,6 +1446,8 @@ export type Role = typeof roles.$inferSelect;
 export type NewRole = typeof roles.$inferInsert;
 export type Staff = typeof staff.$inferSelect;
 export type NewStaff = typeof staff.$inferInsert;
+export type PayrollEntry = typeof payrollEntries.$inferSelect;
+export type NewPayrollEntry = typeof payrollEntries.$inferInsert;
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
 export type OrderItem = typeof orderItems.$inferSelect;

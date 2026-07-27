@@ -50,6 +50,9 @@ const DEFAULT_CATEGORIES: Array<{name: string; kind: 'income' | 'expense'}> = [
 // Non-cash "account" that collects kassa card/non-cash money for a business.
 const NONCASH_DEFAULT_NAME = 'Naqdsiz (kassa)';
 
+// Expense category salary payments are booked under (see PayrollService).
+export const PAYROLL_CATEGORY_NAME = 'Ish haqi';
+
 @Injectable()
 export class FinanceService {
   constructor(private readonly dbService: DatabaseService) {}
@@ -233,6 +236,42 @@ export class FinanceService {
       .from(financialCategories)
       .where(and(...conditions))
       .orderBy(desc(financialCategories.createdAt));
+  }
+
+  /**
+   * The expense category payroll payments post under. Normally seeded by
+   * ensureDefaultCategories, but a business can rename or deactivate it — so
+   * re-create it on demand rather than letting a salary payment land
+   * uncategorised in the ledger.
+   */
+  async getOrCreatePayrollCategory(
+    businessId: string,
+  ): Promise<FinancialCategory> {
+    await this.ensureDefaultCategories(businessId);
+    const [existing] = await this.db
+      .select()
+      .from(financialCategories)
+      .where(
+        and(
+          eq(financialCategories.businessId, businessId),
+          eq(financialCategories.name, PAYROLL_CATEGORY_NAME),
+          eq(financialCategories.kind, 'expense'),
+        ),
+      )
+      .limit(1);
+    if (existing) return existing;
+
+    const [created] = await this.db
+      .insert(financialCategories)
+      .values({
+        id: generateId(),
+        businessId,
+        name: PAYROLL_CATEGORY_NAME,
+        kind: 'expense',
+        isActive: true,
+      })
+      .returning();
+    return created;
   }
 
   async createCategory(
@@ -736,6 +775,66 @@ export class FinanceService {
       account.id,
       params.currency,
       -params.amount,
+    );
+    return txn;
+  }
+
+  /**
+   * Book an income inside the caller's transaction. Used to reverse a posted
+   * expense (payroll undo) as a compensating entry, so the correction stays
+   * visible in the ledger instead of vanishing with a delete.
+   */
+  async recordIncomeTx(
+    tx: DbTx,
+    businessId: string,
+    params: {
+      accountId: string;
+      amount: number;
+      currency: string;
+      note?: string | null;
+      categoryId?: string | null;
+      categoryName?: string | null;
+      cashierId?: string | null;
+      cashierName?: string | null;
+    },
+  ): Promise<FinancialTransaction> {
+    const [account] = await tx
+      .select()
+      .from(accounts)
+      .where(
+        and(
+          eq(accounts.id, params.accountId),
+          eq(accounts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!account) throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
+
+    const [txn] = await tx
+      .insert(financialTransactions)
+      .values({
+        id: generateId(),
+        businessId,
+        kind: 'income',
+        accountId: account.id,
+        accountName: account.name,
+        isCash: account.type === 'cash',
+        amount: String(params.amount),
+        currency: params.currency,
+        categoryId: params.categoryId ?? null,
+        categoryName: params.categoryName ?? null,
+        cashierId: params.cashierId ?? null,
+        cashierName: params.cashierName ?? null,
+        note: params.note ?? null,
+      })
+      .returning();
+
+    await this.applyBalanceDelta(
+      tx,
+      businessId,
+      account.id,
+      params.currency,
+      params.amount,
     );
     return txn;
   }

@@ -73,6 +73,12 @@ export class AuthService {
     if (!member.isActive) {
       throw new AppException(ErrorCode.STAFF_INACTIVE);
     }
+    // Employees kept only as payroll records have no credentials. Their login
+    // is NULL so the lookup above cannot match them, but guard anyway: this is
+    // the single gate between "employee" and "user".
+    if (!member.hasAccount || !member.password || !member.roleId) {
+      throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+    }
     if (!verifyPassword(password, member.password)) {
       throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
@@ -117,6 +123,11 @@ export class AuthService {
 
     if (!member || !member.isActive) {
       throw new AppException(ErrorCode.STAFF_INACTIVE);
+    }
+    // The account was revoked while this token was still live (hasAccount
+    // cleared roleId) — invalidate the session on the next refresh.
+    if (!member.hasAccount || !member.roleId) {
+      throw new AppException(ErrorCode.STAFF_NO_ACCOUNT);
     }
 
     const [role] = await this.dbService.db
@@ -198,10 +209,17 @@ export class AuthService {
   }
 
   private async buildStaffSession(member: typeof staff.$inferSelect) {
+    // Callers gate on hasAccount before reaching here, so credentials are set.
+    // Re-checked (and narrowed) locally because an employee kept only as a
+    // payroll record carries a null login/roleId.
+    const {login, roleId} = member;
+    if (!login || !roleId) {
+      throw new AppException(ErrorCode.STAFF_NO_ACCOUNT);
+    }
     const [role] = await this.dbService.db
       .select()
       .from(roles)
-      .where(eq(roles.id, member.roleId))
+      .where(eq(roles.id, roleId))
       .limit(1);
 
     if (!role || !role.isActive) {
@@ -216,9 +234,9 @@ export class AuthService {
     const accessToken = this.signToken({
       sub: member.id,
       businessId: member.businessId,
-      login: member.login,
+      login,
       type: 'staff',
-      roleId: member.roleId,
+      roleId,
     });
 
     return {
@@ -238,7 +256,7 @@ export class AuthService {
         type: 'staff' as const,
         id: member.id,
         name: member.name,
-        login: member.login,
+        login,
         avatarUrl: member.avatarUrl ?? null,
         roleId: role.id,
         roleName: role.name,
@@ -300,7 +318,11 @@ export class AuthService {
       .from(staff)
       .where(eq(staff.id, identity.id))
       .limit(1);
-    if (!member || !verifyPassword(currentPassword, member.password)) {
+    if (
+      !member ||
+      !member.password ||
+      !verifyPassword(currentPassword, member.password)
+    ) {
       throw new AppException(ErrorCode.INVALID_CREDENTIALS);
     }
     await this.dbService.db

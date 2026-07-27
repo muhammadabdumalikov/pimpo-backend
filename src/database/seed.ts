@@ -72,6 +72,7 @@ async function ensureDemoStaff(
     name: 'Demo Cashier',
     login: 'cashier',
     password: hashPassword('cashier1234'),
+    hasAccount: true,
     isActive: true,
   });
   console.log(

@@ -124,6 +124,17 @@ export enum ErrorCode {
   USER_LIMIT_REACHED = 'USER_LIMIT_REACHED',
   STAFF_LOGIN_EXISTS = 'STAFF_LOGIN_EXISTS',
   STAFF_NOT_FOUND = 'STAFF_NOT_FOUND',
+  STAFF_ACCOUNT_FIELDS_REQUIRED = 'STAFF_ACCOUNT_FIELDS_REQUIRED',
+  STAFF_NO_ACCOUNT = 'STAFF_NO_ACCOUNT',
+
+  // ── Payroll (Ish haqi) ─────────────────────────────────────────────────────
+  PAYROLL_PERIOD_INVALID = 'PAYROLL_PERIOD_INVALID',
+  PAYROLL_PERIOD_IN_FUTURE = 'PAYROLL_PERIOD_IN_FUTURE',
+  PAYROLL_ALREADY_ACCRUED = 'PAYROLL_ALREADY_ACCRUED',
+  PAYROLL_NOTHING_TO_ACCRUE = 'PAYROLL_NOTHING_TO_ACCRUE',
+  PAYROLL_AMOUNT_INVALID = 'PAYROLL_AMOUNT_INVALID',
+  PAYROLL_ENTRY_NOT_FOUND = 'PAYROLL_ENTRY_NOT_FOUND',
+  PAYROLL_SALARY_NOT_CONFIGURED = 'PAYROLL_SALARY_NOT_CONFIGURED',
 
   // ── Store (online storefront) ──────────────────────────────────────────────
   STORE_INSUFFICIENT_STOCK = 'STORE_INSUFFICIENT_STOCK',
@@ -553,6 +564,44 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.STAFF_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Staff not found',
+  },
+  [ErrorCode.STAFF_ACCOUNT_FIELDS_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Login, password and role are required to give an employee an account',
+  },
+  [ErrorCode.STAFF_NO_ACCOUNT]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'This employee has no system account',
+  },
+
+  // Payroll (Ish haqi)
+  [ErrorCode.PAYROLL_PERIOD_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Period must be in YYYY-MM format',
+  },
+  [ErrorCode.PAYROLL_PERIOD_IN_FUTURE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Cannot accrue payroll for a future month',
+  },
+  [ErrorCode.PAYROLL_ALREADY_ACCRUED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Payroll for {period} has already been accrued for every selected employee',
+  },
+  [ErrorCode.PAYROLL_NOTHING_TO_ACCRUE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No employee with a salary configured for {period}',
+  },
+  [ErrorCode.PAYROLL_AMOUNT_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Amount must be greater than zero',
+  },
+  [ErrorCode.PAYROLL_ENTRY_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Payroll entry not found',
+  },
+  [ErrorCode.PAYROLL_SALARY_NOT_CONFIGURED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This employee has no salary configured',
   },
 
   // Store (online storefront)

@@ -95,9 +95,11 @@ export class PlatformService {
           .where(eq(branches.isActive, true))
           .groupBy(branches.businessId),
         this.dbService.db
+          // Seats, not headcount: accountless payroll-only employees don't
+          // consume a user slot, so they must not show up as users here.
           .select({ businessId: staff.businessId, c: count() })
           .from(staff)
-          .where(eq(staff.isActive, true))
+          .where(and(eq(staff.isActive, true), eq(staff.hasAccount, true)))
           .groupBy(staff.businessId),
         this.dbService.db
           .select({
@@ -168,7 +170,13 @@ export class PlatformService {
         this.dbService.db
           .select({ c: count() })
           .from(staff)
-          .where(and(eq(staff.businessId, id), eq(staff.isActive, true))),
+          .where(
+            and(
+              eq(staff.businessId, id),
+              eq(staff.isActive, true),
+              eq(staff.hasAccount, true),
+            ),
+          ),
         this.subscriptionService.getBusinessSubscription(id),
         this.subscriptionService.getBillingInfo(id),
       ]);
