@@ -1,4 +1,22 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "drizzle.config.ts"]
+  "compilerOptions": {
+    // Pins the emit layout to dist/main.js, which is what the Dockerfile CMD
+    // and `start:prod` both run. Without it TypeScript infers the common root
+    // of whatever it happens to compile: one .ts file outside src/ (a helper
+    // script, a config) silently shifts EVERYTHING to dist/src/main.js and
+    // production dies with "Cannot find module '/app/dist/main'". With rootDir
+    // set, that same mistake is a loud compile error instead.
+    "rootDir": "./src"
+  },
+  // scripts/ are dev tools run through ts-node (see `ai:schema-doc`), never
+  // shipped — and drizzle.config.ts is read by drizzle-kit, not the server.
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "**/*spec.ts",
+    "drizzle.config.ts",
+    "scripts"
+  ]
 }
