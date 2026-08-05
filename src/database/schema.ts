@@ -2288,3 +2288,35 @@ export const loyaltyTransactions = pgTable(
 
 export type LoyaltyTransaction = typeof loyaltyTransactions.$inferSelect;
 export type NewLoyaltyTransaction = typeof loyaltyTransactions.$inferInsert;
+// ── AI assistant ("Do'koningdan so'ra") ─────────────────────────────────────
+// Per-business LLM configuration. BYOK: the shop owner supplies their own
+// Anthropic / OpenAI / Gemini key, so Pimpo carries no variable token cost and
+// the key never leaves this row.
+//
+// `apiKeyCipher` is AES-256-GCM (see src/ai/crypto.util.ts) — the plaintext key
+// is NEVER returned by the API; the UI shows `apiKeyLast4` only.
+export const aiSettings = pgTable('ai_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // 'anthropic' | 'openai' | 'gemini'
+  provider: varchar('provider', {length: 20}).notNull(),
+  // Provider-specific model id, e.g. 'claude-opus-5'.
+  model: varchar('model', {length: 60}).notNull(),
+  // 'v1:<iv_b64>:<tag_b64>:<cipher_b64>'; null while unconfigured.
+  apiKeyCipher: text('api_key_cipher'),
+  // Last 4 chars of the raw key, for "sk-…a1b2" style display.
+  apiKeyLast4: varchar('api_key_last4', {length: 8}),
+  // Owner can switch the assistant off without deleting the key.
+  enabled: boolean('enabled').default(false).notNull(),
+  // Usage counters, reset when `monthlyPeriod` rolls over ('YYYY-MM').
+  monthlyCount: integer('monthly_count').default(0).notNull(),
+  monthlyPeriod: varchar('monthly_period', {length: 7}),
+  lastUsedAt: timestamp('last_used_at'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type AiSettings = typeof aiSettings.$inferSelect;
+export type NewAiSettings = typeof aiSettings.$inferInsert;

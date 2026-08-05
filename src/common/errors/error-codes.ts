@@ -198,6 +198,20 @@ export enum ErrorCode {
 
   // ── User ───────────────────────────────────────────────────────────────────
   USER_PHONE_EXISTS = 'USER_PHONE_EXISTS',
+
+  // ── AI assistant ───────────────────────────────────────────────────────────
+  AI_NOT_CONFIGURED = 'AI_NOT_CONFIGURED',
+  AI_DISABLED = 'AI_DISABLED',
+  AI_ENCRYPTION_UNAVAILABLE = 'AI_ENCRYPTION_UNAVAILABLE',
+  AI_UNKNOWN_MODEL = 'AI_UNKNOWN_MODEL',
+  AI_PROVIDER_AUTH_FAILED = 'AI_PROVIDER_AUTH_FAILED',
+  AI_PROVIDER_UNAVAILABLE = 'AI_PROVIDER_UNAVAILABLE',
+  AI_RATE_LIMITED = 'AI_RATE_LIMITED',
+  AI_TIMEOUT = 'AI_TIMEOUT',
+  AI_SQL_INVALID = 'AI_SQL_INVALID',
+  AI_SQL_TIMEOUT = 'AI_SQL_TIMEOUT',
+  AI_SQL_TOO_EXPENSIVE = 'AI_SQL_TOO_EXPENSIVE',
+  AI_SQL_UNAVAILABLE = 'AI_SQL_UNAVAILABLE',
 }
 
 export interface ErrorDefinition {
@@ -779,6 +793,56 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.USER_PHONE_EXISTS]: {
     status: HttpStatus.CONFLICT,
     message: 'User with this phone number already exists',
+  },
+
+  // AI assistant
+  [ErrorCode.AI_NOT_CONFIGURED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No AI provider key is configured for this business',
+  },
+  [ErrorCode.AI_DISABLED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The AI assistant is switched off in settings',
+  },
+  [ErrorCode.AI_ENCRYPTION_UNAVAILABLE]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'AI_KEY_ENCRYPTION_SECRET is not set on the server',
+  },
+  [ErrorCode.AI_UNKNOWN_MODEL]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Model {model} is not available for provider {provider}',
+  },
+  [ErrorCode.AI_PROVIDER_AUTH_FAILED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The AI provider rejected the API key',
+  },
+  [ErrorCode.AI_PROVIDER_UNAVAILABLE]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'The AI provider is unreachable or returned an error',
+  },
+  [ErrorCode.AI_RATE_LIMITED]: {
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    message: 'Too many AI questions in the last hour',
+  },
+  [ErrorCode.AI_TIMEOUT]: {
+    status: HttpStatus.GATEWAY_TIMEOUT,
+    message: 'The AI assistant took too long to answer',
+  },
+  [ErrorCode.AI_SQL_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The generated query was rejected by the safety validator',
+  },
+  [ErrorCode.AI_SQL_TIMEOUT]: {
+    status: HttpStatus.GATEWAY_TIMEOUT,
+    message: 'The generated query exceeded the time limit',
+  },
+  [ErrorCode.AI_SQL_TOO_EXPENSIVE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The generated query is estimated to be too expensive to run',
+  },
+  [ErrorCode.AI_SQL_UNAVAILABLE]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'Ad-hoc SQL is not enabled on this server',
   },
 };
 

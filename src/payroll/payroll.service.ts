@@ -590,6 +590,10 @@ export class PayrollService {
 
     const accruedByStaff = new Map<string, number>();
     const paidByStaff = new Map<string, number>();
+    // Deductions get their own bucket so the month's remainder can be exact:
+    // accrued − paid − deducted. Folding them into "paid" would claim money
+    // moved when it didn't.
+    const deductedByStaff = new Map<string, number>();
     // Whether the monthly accrual itself has been posted — distinct from
     // "accrued > 0", since a lone bonus also lands in the accrued bucket.
     const accrualPosted = new Set<string>();
@@ -600,13 +604,38 @@ export class PayrollService {
           ? accruedByStaff
           : e.type === 'payment' || e.type === 'advance'
             ? paidByStaff
-            : null;
+            : e.type === 'deduction'
+              ? deductedByStaff
+              : null;
       if (!target) continue;
       target.set(e.staffId, (target.get(e.staffId) ?? 0) + Number(e.amount));
     }
 
     const rows = members.map(({staff: m, branches: branch}) => {
       const personal = sales.get(m.id) ?? {revenue: 0, cogs: 0};
+      // The month's wage as it stands RIGHT NOW. Once the accrual is posted,
+      // the ledger figure is the truth; until then it is computed live with
+      // the same formula previewPeriod uses (base + % of own sales so far).
+      // This is what lets the UI show a meaningful wage for an open month
+      // instead of an empty "not accrued yet" cell. Bonuses posted in the
+      // month ride along in periodAccrued either way.
+      const posted = accrualPosted.has(m.id);
+      const periodAccrued = accruedByStaff.get(m.id) ?? 0;
+      const wantsPercent =
+        m.salaryType === 'percent' || m.salaryType === 'mixed';
+      const wantsBase = m.salaryType === 'fixed' || m.salaryType === 'mixed';
+      const salesBase = wantsPercent
+        ? m.percentBase === 'profit'
+          ? personal.revenue - personal.cogs
+          : personal.revenue
+        : 0;
+      const liveWage =
+        m.isActive && m.salaryType !== 'none'
+          ? (wantsBase ? Number(m.baseSalary) : 0) +
+            Math.max(0, (salesBase * Number(m.salesPercent)) / 100)
+          : 0;
+      const periodWage =
+        Math.round(((posted ? 0 : liveWage) + periodAccrued) * 100) / 100;
       return {
         id: m.id,
         name: m.name,
@@ -623,13 +652,15 @@ export class PayrollService {
         balance: Number(m.salaryBalance),
         periodRevenue: personal.revenue,
         periodProfit: personal.revenue - personal.cogs,
-        periodAccrued: accruedByStaff.get(m.id) ?? 0,
+        periodAccrued,
         periodPaid: paidByStaff.get(m.id) ?? 0,
+        periodDeducted: deductedByStaff.get(m.id) ?? 0,
+        periodWage,
         // Drives the "hisoblanmagan" marker: on payroll, but this month's
         // accrual was never run. Without it a paid-but-unaccrued employee
         // reads as overpaid, which is what the balance literally says and
         // not at all what happened.
-        accrualPosted: accrualPosted.has(m.id),
+        accrualPosted: posted,
       };
     });
 
@@ -726,9 +757,15 @@ export class PayrollService {
   /**
    * Closed months that were never accrued — the reason a balance can read as
    * an "overpayment" when the employee was simply paid before the month was
-   * posted. Scanned from when payroll was first configured (capped at 12
-   * months) up to the last closed month; the current month is excluded because
-   * it is not finished yet.
+   * posted. Scanned back to the first payroll activity (capped at 12 months)
+   * up to the last closed month; the current month is excluded because it is
+   * not finished yet.
+   *
+   * Anchored on the first ledger entry rather than on when staff were hired:
+   * `salaryType` carries no history, so an employee created in January and put
+   * on salary in August would otherwise make February–July look skipped, and
+   * the preview would offer to accrue them at a wage they were never on. With
+   * no entries at all there is no ledger to misread, so nothing is flagged.
    *
    * A month counts as accrued if it has ANY accrual row: a partially-run month
    * is not worth nagging about, and the preview modal shows who is left.
@@ -737,16 +774,11 @@ export class PayrollService {
     const lastClosed = this.previousPeriod(this.currentPeriod());
     const floor = this.previousPeriod(this.currentPeriod(), 12);
 
-    const [[earliest], accruedRows] = await Promise.all([
+    const [[activity], accruedRows, [onPayroll]] = await Promise.all([
       this.db
-        .select({first: sql<string | null>`MIN(${staff.createdAt})`})
-        .from(staff)
-        .where(
-          and(
-            eq(staff.businessId, businessId),
-            sql`${staff.salaryType} <> 'none'`,
-          ),
-        ),
+        .select({first: sql<string | null>`MIN(${payrollEntries.createdAt})`})
+        .from(payrollEntries)
+        .where(eq(payrollEntries.businessId, businessId)),
       this.db
         .selectDistinct({period: payrollEntries.periodMonth})
         .from(payrollEntries)
@@ -756,14 +788,25 @@ export class PayrollService {
             eq(payrollEntries.type, 'accrual'),
           ),
         ),
+      this.db
+        .select({count: sql<string>`COUNT(*)`})
+        .from(staff)
+        .where(
+          and(
+            eq(staff.businessId, businessId),
+            eq(staff.isActive, true),
+            sql`${staff.salaryType} <> 'none'`,
+          ),
+        ),
     ]);
 
-    // Nobody on payroll → nothing was ever owed, so nothing is missing.
-    if (!earliest?.first) return [];
-    // Business zone, not UTC: someone hired at 00:30 on the 1st must not make
+    // No ledger yet, or nobody left to accrue — either way the banner's button
+    // would lead nowhere, so don't raise it.
+    if (!activity?.first || Number(onPayroll?.count ?? 0) === 0) return [];
+    // Business zone, not UTC: an entry posted at 00:30 on the 1st must not make
     // the previous month look like a month we forgot to pay.
     const start = new Date(
-      new Date(earliest.first).getTime() + 5 * 60 * 60 * 1000,
+      new Date(activity.first).getTime() + 5 * 60 * 60 * 1000,
     )
       .toISOString()
       .slice(0, 7);

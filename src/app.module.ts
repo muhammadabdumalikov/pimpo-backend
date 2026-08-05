@@ -34,6 +34,7 @@ import {TelegramModule} from './telegram/telegram.module';
 import {BillzModule} from './billz/billz.module';
 import {PlatformModule} from './platform/platform.module';
 import {LoyaltyModule} from './loyalty/loyalty.module';
+import {AiModule} from './ai/ai.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
@@ -111,6 +112,7 @@ class JwtGlobalModule {}
     BillzModule,
     PlatformModule,
     LoyaltyModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [AppService],

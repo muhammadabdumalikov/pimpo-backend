@@ -46,6 +46,17 @@ export const TTL = {
   // search keystroke and filter change. Quantity moves on every sale, so
   // write-invalidation would be noisy — short TTL, same reasoning as ORDERS_SUMMARY.
   PRODUCT_STATS: 5 * 60 * 1000, // 5m
+
+  // AI assistant tool results. Short: the owner asking "and today?" right after
+  // a sale must see the sale. Long enough that a multi-step answer which reads
+  // the same report twice only pays for it once.
+  AI_TOOL: 60 * 1000, // 60s
+  // Hourly question counter; the key itself carries the hour, so the TTL only
+  // has to outlive the bucket.
+  AI_RATE: 70 * 60 * 1000, // 70m
+  // Provider model catalogue. Long: vendors ship models weekly at most, and the
+  // settings page has an explicit refresh button for the impatient.
+  AI_MODELS: 60 * 60 * 1000, // 1h
 } as const;
 
 /** Stable, compact suffix for endpoints whose result depends on query params. */
@@ -92,4 +103,16 @@ export const CacheKeys = {
     `orders:byemp:${businessId}:${paramsKey(p)}`,
   productStats: (businessId: string, p?: Record<string, unknown>) =>
     `products:stats:${businessId}:${paramsKey(p)}`,
+
+  // AI assistant tool calls. The model often asks for the same report twice in
+  // one conversation (e.g. "and compare that to last month"), and ReportService
+  // itself is uncached, so this is where those repeats get absorbed.
+  aiTool: (businessId: string, tool: string, p?: Record<string, unknown>) =>
+    `ai:tool:${businessId}:${tool}:${paramsKey(p)}`,
+  /** Sliding hourly question counter, per business. */
+  aiRate: (businessId: string, hourBucket: string) =>
+    `ai:rate:${businessId}:${hourBucket}`,
+  /** Model catalogue for a business's configured provider. */
+  aiModels: (businessId: string, provider: string) =>
+    `ai:models:${businessId}:${provider}`,
 } as const;
