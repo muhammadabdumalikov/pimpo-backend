@@ -1081,6 +1081,24 @@ export const payrollEntries = pgTable(
   }),
 );
 
+// Per-business payroll preferences. Currently just the auto-accrual switch:
+// when on, a cron posts the previous month's accrual on the 1st, so an owner
+// who never opens the page still gets a truthful balance.
+export const payrollSettings = pgTable('payroll_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  autoAccrue: boolean('auto_accrue').notNull().default(false),
+  // 'YYYY-MM' of the last period the cron accrued, so a re-run inside the same
+  // month is a no-op without touching payroll_entries.
+  lastAutoPeriod: varchar('last_auto_period', {length: 7}),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type PayrollSettings = typeof payrollSettings.$inferSelect;
+export type NewPayrollSettings = typeof payrollSettings.$inferInsert;
+
 // Monthly sales target ("Oylik reja") per business — R31 Reja vs fakt. One row
 // per (business, month); `month` is 'YYYY-MM'. Actuals are computed live from
 // completed orders, so only the goal is stored here.

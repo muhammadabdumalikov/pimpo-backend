@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -28,6 +29,7 @@ import {PayrollService} from './payroll.service';
 import {AccruePeriodDto} from './dto/accrue-period.dto';
 import {CreatePaymentDto} from './dto/create-payment.dto';
 import {CreateAdjustmentDto} from './dto/create-adjustment.dto';
+import {UpdatePayrollSettingsDto} from './dto/update-settings.dto';
 
 /**
  * Payroll ("Ish haqi") lives under Moliya. Every write is owner-only: salaries
@@ -52,6 +54,23 @@ export class PayrollController {
     @Query('period') period?: string,
   ) {
     return this.payrollService.getSummary(business.id, period);
+  }
+
+  @Get('settings')
+  @UseGuards(OwnerGuard)
+  @ApiOperation({summary: 'Payroll preferences (auto-accrual switch)'})
+  async settings(@CurrentBusiness() business: IBusiness) {
+    return this.payrollService.getSettings(business.id);
+  }
+
+  @Put('settings')
+  @UseGuards(OwnerGuard)
+  @ApiOperation({summary: 'Update payroll preferences'})
+  async updateSettings(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: UpdatePayrollSettingsDto,
+  ) {
+    return this.payrollService.updateSettings(business.id, dto);
   }
 
   @Get('periods/:period/preview')
