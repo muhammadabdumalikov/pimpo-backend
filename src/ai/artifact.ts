@@ -62,6 +62,19 @@ export type AiArtifact =
 
 export const RENDER_TOOL_NAME = 'render_result';
 
+/** Shared by kpi items, table columns and the chart's values. */
+const FORMAT_ENUM = ['money', 'number', 'percent', 'date', 'text'];
+
+/**
+ * One flat object covering all four artifact kinds, with `kind` selecting which
+ * fields apply.
+ *
+ * A per-kind union (oneOf/anyOf) would describe this far better, but Gemini's
+ * OpenAPI subset does not accept those reliably, and this tool has to validate
+ * identically on all three providers. The cost of the flat shape is that every
+ * field carries a "<kind> only" marker — kept as short as possible, because
+ * this is the single largest tool schema and it ships on every request.
+ */
 const ARTIFACT_SCHEMA: JsonSchemaObject = {
   type: 'object',
   properties: {
@@ -69,31 +82,22 @@ const ARTIFACT_SCHEMA: JsonSchemaObject = {
       type: 'string',
       enum: ['kpi', 'table', 'chart', 'link'],
       description:
-        'kpi = 1-4 headline numbers. table = a ranked list. chart = a trend over time. link = send the owner to the full report page.',
+        'kpi = 1-4 headline numbers. table = ranked list. chart = trend over time. link = open the full report page.',
     },
-    title: {
-      type: 'string',
-      description: "Short heading in the user's language.",
-    },
+    title: {type: 'string', description: "Short heading, user's language."},
     items: {
       type: 'array',
-      description: 'kpi only. 1-4 entries.',
+      description: 'kpi. 1-4 entries.',
       items: {
         type: 'object',
         properties: {
           label: {type: 'string'},
           value: {type: 'number'},
-          format: {
-            type: 'string',
-            enum: ['money', 'number', 'percent', 'date', 'text'],
-          },
-          delta: {
-            type: 'number',
-            description: 'Percent change vs the comparison period.',
-          },
+          format: {type: 'string', enum: FORMAT_ENUM},
+          delta: {type: 'number', description: 'Percent change vs comparison.'},
           invertDelta: {
             type: 'boolean',
-            description: 'True when a decrease is good (costs, shortages).',
+            description: 'True when a decrease is good.',
           },
         },
         required: ['label', 'value'],
@@ -101,39 +105,31 @@ const ARTIFACT_SCHEMA: JsonSchemaObject = {
     },
     columns: {
       type: 'array',
-      description: 'table only. Column definitions, in display order.',
+      description: 'table. In display order.',
       items: {
         type: 'object',
         properties: {
           key: {type: 'string'},
           label: {type: 'string'},
-          format: {
-            type: 'string',
-            enum: ['money', 'number', 'percent', 'date', 'text'],
-          },
+          format: {type: 'string', enum: FORMAT_ENUM},
         },
         required: ['key', 'label'],
       },
     },
     rows: {
       type: 'array',
-      description:
-        'table only. Each object keyed by the column keys. Max 50 rows — rank and cut rather than dumping everything.',
+      description: 'table. Keyed by column keys. Max 50 — rank and cut.',
       items: {type: 'object'},
     },
-    chartType: {
-      type: 'string',
-      enum: ['bar', 'line'],
-      description: 'chart only.',
-    },
+    chartType: {type: 'string', enum: ['bar', 'line'], description: 'chart.'},
     categories: {
       type: 'array',
-      description: 'chart only. X-axis labels.',
+      description: 'chart. X-axis labels.',
       items: {type: 'string'},
     },
     series: {
       type: 'array',
-      description: 'chart only. One entry per line/bar series.',
+      description: 'chart. One per line/bar.',
       items: {
         type: 'object',
         properties: {
@@ -143,21 +139,16 @@ const ARTIFACT_SCHEMA: JsonSchemaObject = {
         required: ['name', 'data'],
       },
     },
-    format: {
-      type: 'string',
-      enum: ['money', 'number', 'percent', 'date', 'text'],
-      description: 'chart only. How to format the values.',
-    },
+    format: {type: 'string', enum: FORMAT_ENUM, description: 'chart values.'},
     reportId: {
       type: 'string',
       description:
-        'link only. One of: sales, traffic, discounts, cancelled, pnl, shifts, payment-methods, target, product-performance, stock, product-movement, abc, stock-takes, imports, supplier-returns, sellers, customers, debt-aging, dead-stock, reorder, assortment, suppliers, branch-comparison, transfers, transfer-suggestions.',
+        'link. One of: sales, traffic, discounts, cancelled, pnl, shifts, payment-methods, target, product-performance, stock, product-movement, abc, stock-takes, imports, supplier-returns, sellers, customers, debt-aging, dead-stock, reorder, assortment, suppliers, branch-comparison, transfers, transfer-suggestions.',
     },
-    label: {type: 'string', description: 'link only. Button text.'},
+    label: {type: 'string', description: 'link. Button text.'},
     query: {
       type: 'object',
-      description:
-        'link only. Query string params, e.g. {"from":"2026-08-01"}.',
+      description: 'link. Params, e.g. {"from":"2026-08-01"}.',
     },
   },
   required: ['kind'],
@@ -166,11 +157,13 @@ const ARTIFACT_SCHEMA: JsonSchemaObject = {
 export const RENDER_TOOL: LlmToolDef = {
   name: RENDER_TOOL_NAME,
   description:
-    'Display a structured result in the UI: KPI tiles, a table, a chart, or a link to the full report page. ' +
-    'Call this whenever the answer contains numbers the owner will want to scan or export — which is almost always. ' +
-    'Call it BEFORE writing your final sentences, then keep your prose short because the numbers are already on screen. ' +
-    'You may call it more than once (for example a KPI row and then a table). Never restate a whole table in prose.',
+    'Put numbers on screen as KPI tiles, a table, a chart, or a link to the full report. ' +
+    'Write your answer first, then call this LAST, in the same turn — you get no turn after it. ' +
+    'May be called more than once. Never restate a table in prose.',
   parameters: ARTIFACT_SCHEMA,
+  // Returns {rendered:true} — nothing to reason about, so a turn that only
+  // renders (after real prose) is the end of the answer. See `turnEndsHere`.
+  displayOnly: true,
 };
 
 /** Narrows a tool-call payload into an artifact, or null when unusable. */

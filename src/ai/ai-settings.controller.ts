@@ -6,6 +6,7 @@ import {
   HttpCode,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {ApiBearerAuth, ApiOperation, ApiTags} from '@nestjs/swagger';
@@ -19,6 +20,10 @@ import {MinTier} from '../subscription/required-tier.decorator';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {AiSettingsService} from './ai-settings.service';
 import {decryptSecret} from './crypto.util';
+import {
+  AiProviderId,
+  PROVIDER_MODELS,
+} from './providers/llm-provider.interface';
 import {SaveAiSettingsDto} from './dto/save-ai-settings.dto';
 import {TestAiConnectionDto} from './dto/test-ai-connection.dto';
 
@@ -83,19 +88,14 @@ export class AiSettingsController {
     }
   }
 
-  @Post('models')
-  @HttpCode(200)
-  @ApiOperation({
-    summary: 'Provayderdan mavjud modellar ro‘yxatini olish (jonli)',
-  })
-  async models(
-    @CurrentBusiness() business: IBusiness,
-    @Body() dto: TestAiConnectionDto,
-  ) {
-    // Same body shape as /test: an omitted key means "use the stored one", so
-    // the dropdown can refresh after a reload without the owner re-typing it.
-    const apiKey = dto.apiKey?.trim() || (await this.storedKey(business.id));
-    return this.settings.listModels(dto.provider, apiKey);
+  @Get('models')
+  @ApiOperation({summary: 'Tanlash mumkin bo‘lgan modellar ro‘yxati'})
+  models(@Query('provider') provider?: string) {
+    // Static catalogue, so this needs no key and cannot fail — it replaced a
+    // live vendor call that filled the dropdown with image, video and music
+    // models. See PROVIDER_MODELS.
+    const id = (provider ?? '') as AiProviderId;
+    return {models: PROVIDER_MODELS[id] ?? []};
   }
 
   @Delete()

@@ -3,6 +3,11 @@
 /node_modules
 /build
 
+# TypeScript incremental caches — never commit these. A checked-in buildinfo
+# tells tsc "everything is already emitted" on a machine whose dist/ is empty,
+# so the build exits 0 having written nothing and node fails on dist/main.
+*.tsbuildinfo
+
 # Logs
 logs
 *.log

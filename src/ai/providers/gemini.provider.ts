@@ -1,6 +1,7 @@
 import {
   Content,
   FunctionDeclaration,
+  GenerateContentResponseUsageMetadata,
   GoogleGenAI,
   Part,
   Schema,
@@ -8,10 +9,11 @@ import {
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
-  LlmModelOption,
   LlmProvider,
   LlmRunOptions,
   MAX_OUTPUT_TOKENS,
+  displayOnlyNames,
+  turnEndsHere,
 } from './llm-provider.interface';
 
 /**
@@ -42,28 +44,6 @@ export class GeminiProvider implements LlmProvider {
     });
   }
 
-  async listModels(): Promise<LlmModelOption[]> {
-    const pager = await this.client.models.list();
-
-    const out: LlmModelOption[] = [];
-    for await (const model of pager) {
-      // `supportedActions` is authoritative here, so this one CAN be an
-      // allowlist: a model that cannot generateContent is unusable for us.
-      if (
-        model.supportedActions &&
-        !model.supportedActions.includes('generateContent')
-      ) {
-        continue;
-      }
-      // Resource names arrive as `models/gemini-2.5-pro`; the API accepts the
-      // bare id, which is also what the owner recognises.
-      const id = (model.name ?? '').replace(/^models\//, '');
-      if (!id) continue;
-      out.push({id, label: model.displayName || id});
-    }
-    return out;
-  }
-
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {
     const {system, history, question, tools, executeTool, signal} = opts;
     const maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -85,6 +65,7 @@ export class GeminiProvider implements LlmProvider {
       // already conform to (object / string / number / boolean / array + enum).
       parameters: t.parameters as unknown as Schema,
     }));
+    const displayOnly = displayOnlyNames(tools);
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       const stream = await this.client.models.generateContentStream({
@@ -108,6 +89,13 @@ export class GeminiProvider implements LlmProvider {
       }[] = [];
       // Accumulated VERBATIM, never rebuilt from the values we extracted below.
       const modelParts: Part[] = [];
+      // Gemini repeats cumulative usage on many chunks. Keeping only the last
+      // and reporting once per iteration avoids a log line per chunk that would
+      // otherwise read as dozens of separate charges for one round-trip.
+      let usage: GenerateContentResponseUsageMetadata | undefined;
+      // Visible prose only (thought parts excluded), to decide whether this
+      // turn already answered the question.
+      let turnText = '';
 
       for await (const chunk of stream) {
         // Reading `candidates[0].content.parts` rather than the `chunk.text` /
@@ -123,6 +111,7 @@ export class GeminiProvider implements LlmProvider {
           // `thought: true` marks the model's internal reasoning — it belongs in
           // the echoed history but must not be streamed to the shop owner.
           if (part.text && !part.thought) {
+            turnText += part.text;
             yield {type: 'text', delta: part.text};
           }
 
@@ -140,13 +129,22 @@ export class GeminiProvider implements LlmProvider {
           }
         }
 
-        if (chunk.usageMetadata) {
-          yield {
-            type: 'usage',
-            inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
-            outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-          };
-        }
+        if (chunk.usageMetadata) usage = chunk.usageMetadata;
+      }
+
+      if (usage) {
+        // `candidatesTokenCount` is the ANSWER only — thinking is counted in
+        // `thoughtsTokenCount` and billed as output, so leaving it out
+        // under-reports the real charge (badly, on the thinking-heavy models).
+        const thinking = usage.thoughtsTokenCount ?? 0;
+        yield {
+          type: 'usage',
+          inputTokens: usage.promptTokenCount ?? 0,
+          outputTokens: (usage.candidatesTokenCount ?? 0) + thinking,
+          // Non-zero means Gemini's implicit cache absorbed our stable prefix.
+          cachedInputTokens: usage.cachedContentTokenCount ?? 0,
+          thinkingTokens: thinking,
+        };
       }
 
       if (calls.length === 0) return; // final answer already streamed
@@ -156,6 +154,7 @@ export class GeminiProvider implements LlmProvider {
       contents.push({role: 'model', parts: modelParts});
 
       const responseParts: Part[] = [];
+      const outcomes: {name: string; ok: boolean}[] = [];
       for (const call of calls) {
         yield {
           type: 'tool_start',
@@ -166,6 +165,7 @@ export class GeminiProvider implements LlmProvider {
 
         const startedAt = Date.now();
         const {ok, result} = await executeTool(call.name, call.args);
+        outcomes.push({name: call.name, ok});
         yield {
           type: 'tool_end',
           id: call.id,
@@ -185,6 +185,12 @@ export class GeminiProvider implements LlmProvider {
             response: {result} as Record<string, unknown>,
           },
         });
+      }
+
+      // The answer was written alongside the render call, so there is nothing
+      // left for another round-trip to produce.
+      if (turnEndsHere(turnText, outcomes, displayOnly)) {
+        return;
       }
 
       contents.push({role: 'user', parts: responseParts});

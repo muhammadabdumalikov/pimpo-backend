@@ -109,24 +109,23 @@ export interface Range {
 
 // ── Shared parameter shapes ──────────────────────────────────────────────────
 
-const DATE_DESC =
-  'Date in YYYY-MM-DD format, business timezone Asia/Tashkent (+05:00). Omit for all time.';
-
-/** from / to / branchId — the shape ~80% of the report endpoints take. */
+/**
+ * from / to / branchId — the shape 19 of the report endpoints take.
+ *
+ * Descriptions here are deliberately terse. Every tool schema is re-sent on
+ * every iteration of the tool loop, so a sentence written once in this helper
+ * is really paid for 19 times per request and 3-ish times per question. The
+ * date format, the timezone, the "omit for all time" default and the
+ * list_branches lookup are therefore stated ONCE in the system prompt (see
+ * prompt.ts, "Tool arguments") instead of on all 57 of these parameters.
+ */
 function rangeParams(extra: Record<string, unknown> = {}): JsonSchemaObject {
   return {
     type: 'object',
     properties: {
-      from: {
-        type: 'string',
-        description: `Start date, inclusive. ${DATE_DESC}`,
-      },
-      to: {type: 'string', description: `End date, inclusive. ${DATE_DESC}`},
-      branchId: {
-        type: 'string',
-        description:
-          'Restrict to one branch. Call list_branches first to get the id. Omit for all branches.',
-      },
+      from: {type: 'string', description: 'Start date, inclusive.'},
+      to: {type: 'string', description: 'End date, inclusive.'},
+      branchId: {type: 'string', description: 'One branch only.'},
       ...extra,
     },
   };
@@ -160,7 +159,7 @@ export const TOOLS: ToolDefinition[] = [
     label: 'Filiallar ro‘yxati',
     minTier: 'basic',
     description:
-      "List this business's branches (filiallar / do'konlar) with their ids and names. Call this before any tool that takes a branchId, and whenever the owner names a branch in words.",
+      "List this business's branches (filiallar / do'konlar) with their ids and names. Only needed to turn a branch NAME the owner typed into an id. Every other tool already covers all branches when branchId is omitted, so do not call this just because a question mentions branches in general.",
     parameters: {type: 'object', properties: {}},
     cacheParams: () => ({}),
     run: (d, c) => d.branch.findAll(c.businessId),
@@ -237,7 +236,7 @@ export const TOOLS: ToolDefinition[] = [
     label: 'Filiallar taqqoslash',
     minTier: 'pro',
     description:
-      'Side-by-side branch metrics: revenue, margin, receipts, average check, stock value, turnover. Use whenever the owner compares shops.',
+      'EVERY branch side by side in ONE call: revenue, margin, receipts, average check, stock value, turnover. This is the complete answer to any "compare the branches / which shop is doing better" question. Do not fetch branches one at a time and do not call list_branches first — this already returns them all, named.',
     parameters: rangeParams(),
     cacheParams: rangeKey,
     run: (d, c, a) => d.report.getBranchComparison(c.businessId, toRange(a)),
@@ -322,7 +321,7 @@ export const TOOLS: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        date: {type: 'string', description: `As-of date. ${DATE_DESC}`},
+        date: {type: 'string', description: 'As-of date. Defaults to today.'},
       },
     },
     cacheParams: (a) => ({date: a.date}),

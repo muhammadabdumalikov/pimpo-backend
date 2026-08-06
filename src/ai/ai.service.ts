@@ -19,6 +19,9 @@ import {LlmProvider, LlmTurn} from './providers/llm-provider.interface';
 import {Tier} from '../subscription/tier';
 import {AiToolsService} from './tools/ai-tools.service';
 
+/** Dropped from the tool list when the branch roster is inlined instead. */
+const LIST_BRANCHES_TOOL = 'list_branches';
+
 /** Questions one business may ask per hour. Protects a 2 vCPU host. */
 const HOURLY_LIMIT = 20;
 /** Wall-clock budget for a whole answer, including every tool round-trip. */
@@ -97,7 +100,7 @@ export class AiService {
       tier = await this.subscriptions.getEffectiveTier(businessId);
       provider = await this.settings.resolveProvider(businessId, opts.model);
     } catch (err) {
-      yield this.toErrorEvent(err);
+      yield this.toErrorEvent(err, opts.model);
       return;
     }
 
@@ -110,8 +113,15 @@ export class AiService {
     const ctx = {businessId, tier, today: this.today()};
     const sqlEnabled = this.aiSql.enabled;
 
+    // Handing the model the branch ids up front is strictly cheaper than making
+    // it ask: the roster costs a few tokens per request, the lookup cost a whole
+    // round-trip. When it is inlined the tool becomes dead weight and a
+    // temptation, so it comes out of the list entirely.
+    const branches = await this.tools.branchesForPrompt(businessId);
     const toolDefs = [
-      ...this.tools.listFor(tier),
+      ...this.tools
+        .listFor(tier)
+        .filter((t) => !(branches && t.name === LIST_BRANCHES_TOOL)),
       RENDER_TOOL,
       ...(sqlEnabled ? [SQL_TOOL] : []),
     ];
@@ -121,11 +131,20 @@ export class AiService {
       locale: opts.locale,
       today: ctx.today,
       schemaDoc: sqlEnabled ? SQL_SCHEMA_DOC : null,
+      branches,
     });
 
     // Artifacts surface as their own SSE events, but the model produces them
     // through a tool call, so the executor has to hand them back out here.
     const pendingArtifacts: AiArtifact[] = [];
+
+    // Token spend across every round-trip of this one question.
+    const spent = {input: 0, output: 0, cached: 0, thinking: 0, calls: 0};
+    /** Tool names in call order, for the closing summary line. */
+    const trace: string[] = [];
+    /** Artifacts that parsed and reached the browser. */
+    let renderedArtifacts = 0;
+    const startedAt = Date.now();
 
     const stream = provider.run({
       system,
@@ -146,6 +165,7 @@ export class AiService {
             };
           }
           pendingArtifacts.push(artifact);
+          renderedArtifacts += 1;
           return {ok: true, result: {rendered: true}};
         }
         if (name === SQL_TOOL_NAME) return this.runSql(businessId, args);
@@ -173,6 +193,12 @@ export class AiService {
             break;
 
           case 'tool_end':
+            // Recorded so the closing `ai.answer` line shows WHICH tools ran.
+            // Cost here is driven almost entirely by the number of round-trips,
+            // and without the sequence there is no way to tell a question that
+            // genuinely needs five tools from one where the model failed to
+            // find the single tool built for it.
+            trace.push(`${event.name}${event.ok ? '' : '!'}`);
             yield {type: 'tool_end', id: event.id, ok: event.ok, ms: event.ms};
             // Flush any artifact the call just produced, so it lands in order
             // relative to the prose around it.
@@ -182,8 +208,22 @@ export class AiService {
             break;
 
           case 'usage':
+            // Per round-trip, plus a running total: one question is several
+            // model calls, and it is the TOTAL that shows up on the owner's
+            // provider bill. `cached` is the diagnostic that matters most —
+            // this feature re-sends a ~5.5k-token prefix every iteration, so a
+            // cached figure stuck at 0 means we are paying full price for it.
+            spent.input += event.inputTokens;
+            spent.output += event.outputTokens;
+            spent.cached += event.cachedInputTokens ?? 0;
+            spent.thinking += event.thinkingTokens ?? 0;
+            spent.calls += 1;
+            // `log`, not `debug`: Nest drops debug lines under some production
+            // logger configs, and this is the number the owner gets billed for.
             this.logger.log(
-              `ai.usage business=${businessId} in=${event.inputTokens} out=${event.outputTokens}`,
+              `ai.call #${spent.calls} business=${businessId} in=${event.inputTokens}` +
+                ` out=${event.outputTokens} cached=${event.cachedInputTokens ?? 0}` +
+                ` thinking=${event.thinkingTokens ?? 0}`,
             );
             break;
 
@@ -202,7 +242,33 @@ export class AiService {
         yield {type: 'artifact', artifact: pendingArtifacts.shift()!};
       }
 
-      await this.settings.recordUsage(businessId);
+      // One line per question — the unit the owner is actually billed in.
+      // Counted from artifacts the owner actually received, NOT from the trace:
+      // a rejected payload still shows up there (as `render_result!`) and would
+      // otherwise be reported as a rendered result.
+      const rendered = renderedArtifacts;
+      this.logger.log(
+        `ai.answer business=${businessId} calls=${spent.calls} ms=${Date.now() - startedAt}` +
+          ` in=${spent.input} out=${spent.output} cached=${spent.cached} thinking=${spent.thinking}` +
+          ` artifacts=${rendered} tools=[${trace.join(' → ') || 'none'}]`,
+      );
+      // The whole promise of this feature is "text AND a real component". A
+      // model that answers in prose alone still looks fine in the log line
+      // above, so it gets called out here — silently degrading to a wall of
+      // digits is the failure mode nobody notices until a shop owner complains.
+      if (!rendered && trace.length) {
+        this.logger.warn(
+          `ai.answer business=${businessId} produced no artifact after [${trace.join(' → ')}]`,
+        );
+      }
+
+      await this.settings.recordUsage(businessId, {
+        input: spent.input,
+        output: spent.output,
+        // The model that actually ran, which is the per-question override when
+        // one was given rather than the business's saved default.
+        model: opts.model ?? (await this.settings.getView(businessId)).model,
+      });
       yield {type: 'done'};
     } catch (err) {
       if (controller.signal.aborted && !clientSignal.aborted) {
@@ -216,7 +282,7 @@ export class AiService {
       // Client hung up: nothing is listening, so there is nothing to report.
       if (clientSignal.aborted) return;
 
-      yield this.toErrorEvent(err);
+      yield this.toErrorEvent(err, opts.model);
     } finally {
       clearTimeout(budgetTimer);
       clientSignal.removeEventListener('abort', onClientAbort);
@@ -264,9 +330,17 @@ export class AiService {
     }
   }
 
-  private toErrorEvent(err: unknown): AiStreamEvent {
+  /**
+   * @param model the model that was asked for, logged alongside the failure.
+   *   AI_UNKNOWN_MODEL without it is unactionable: the owner reports "model not
+   *   found" and nothing on the server says which id the provider rejected.
+   */
+  private toErrorEvent(err: unknown, model?: string): AiStreamEvent {
     const app =
       err instanceof AppException ? err : this.settings.toAppException(err);
+    this.logger.warn(
+      `ai.error code=${app.code} model=${model ?? 'default'}: ${app.message}`,
+    );
     return {type: 'error', code: app.code, message: app.message};
   }
 }

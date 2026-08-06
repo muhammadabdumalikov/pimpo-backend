@@ -7,7 +7,14 @@
     // script, a config) silently shifts EVERYTHING to dist/src/main.js and
     // production dies with "Cannot find module '/app/dist/main'". With rootDir
     // set, that same mistake is a loud compile error instead.
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // Keep the incremental cache INSIDE the output dir. nest-cli's
+    // `deleteOutDir` wipes dist/ before every build; with the buildinfo sitting
+    // next to package.json it survives that wipe, tsc decides every file is
+    // still up to date and emits NOTHING — leaving no dist/main.js at all and
+    // an exit code of 0. Co-locating them means they are always deleted
+    // together, so the cache can never outlive the output it describes.
+    "tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
   },
   // scripts/ are dev tools run through ts-node (see `ai:schema-doc`), never
   // shipped — and drizzle.config.ts is read by drizzle-kit, not the server.

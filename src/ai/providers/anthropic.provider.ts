@@ -2,10 +2,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
-  LlmModelOption,
   LlmProvider,
   LlmRunOptions,
   MAX_OUTPUT_TOKENS,
+  displayOnlyNames,
+  turnEndsHere,
 } from './llm-provider.interface';
 
 /**
@@ -39,13 +40,6 @@ export class AnthropicProvider implements LlmProvider {
     );
   }
 
-  async listModels(signal?: AbortSignal): Promise<LlmModelOption[]> {
-    // Every model the Messages API lists is chat-capable, so no filtering is
-    // needed here. The API returns newest first.
-    const page = await this.client.models.list({limit: 40}, {signal});
-    return page.data.map((m) => ({id: m.id, label: m.display_name || m.id}));
-  }
-
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {
     const {system, history, question, tools, executeTool, signal} = opts;
     const maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -62,6 +56,7 @@ export class AnthropicProvider implements LlmProvider {
       description: t.description,
       input_schema: t.parameters as Anthropic.Tool.InputSchema,
     }));
+    const displayOnly = displayOnlyNames(tools);
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       const stream = this.client.messages.stream(
@@ -89,12 +84,15 @@ export class AnthropicProvider implements LlmProvider {
         {signal},
       );
 
-      // Text deltas stream straight through to the browser.
+      // Text deltas stream straight through to the browser. `turnText` is kept
+      // only to decide whether this turn already answered the question.
+      let turnText = '';
       for await (const event of stream) {
         if (
           event.type === 'content_block_delta' &&
           event.delta.type === 'text_delta'
         ) {
+          turnText += event.delta.text;
           yield {type: 'text', delta: event.delta.text};
         }
       }
@@ -102,10 +100,20 @@ export class AnthropicProvider implements LlmProvider {
       const message = await stream.finalMessage();
 
       if (message.usage) {
+        // `input_tokens` counts only the UNCACHED part — the SDK docs spell it
+        // out: total input is input + cache_creation + cache_read. Reporting
+        // the bare field would hide the entire cached prefix, which on a warm
+        // cache is most of the request.
+        const cacheRead = message.usage.cache_read_input_tokens ?? 0;
+        const cacheWrite = message.usage.cache_creation_input_tokens ?? 0;
         yield {
           type: 'usage',
-          inputTokens: message.usage.input_tokens ?? 0,
+          inputTokens:
+            (message.usage.input_tokens ?? 0) + cacheRead + cacheWrite,
+          // Anthropic already folds thinking into output_tokens, so there is no
+          // separate `thinkingTokens` to report here.
           outputTokens: message.usage.output_tokens ?? 0,
+          cachedInputTokens: cacheRead,
         };
       }
 
@@ -131,12 +139,14 @@ export class AnthropicProvider implements LlmProvider {
       messages.push({role: 'assistant', content: message.content});
 
       const results: Anthropic.ToolResultBlockParam[] = [];
+      const outcomes: {name: string; ok: boolean}[] = [];
       for (const call of toolUses) {
         const args = (call.input ?? {}) as Record<string, unknown>;
         yield {type: 'tool_start', id: call.id, name: call.name, args};
 
         const startedAt = Date.now();
         const {ok, result} = await executeTool(call.name, args);
+        outcomes.push({name: call.name, ok});
         yield {
           type: 'tool_end',
           id: call.id,
@@ -151,6 +161,12 @@ export class AnthropicProvider implements LlmProvider {
           content: JSON.stringify(result),
           is_error: !ok,
         });
+      }
+
+      // The answer was written alongside the render call, so there is nothing
+      // left for another round-trip to produce.
+      if (turnEndsHere(turnText, outcomes, displayOnly)) {
+        return;
       }
 
       // All results go back in ONE user turn — splitting them trains the model

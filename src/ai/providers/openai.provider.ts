@@ -2,10 +2,11 @@ import OpenAI from 'openai';
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
-  LlmModelOption,
   LlmProvider,
   LlmRunOptions,
   MAX_OUTPUT_TOKENS,
+  displayOnlyNames,
+  turnEndsHere,
 } from './llm-provider.interface';
 
 /**
@@ -38,22 +39,6 @@ export class OpenAiProvider implements LlmProvider {
     );
   }
 
-  async listModels(signal?: AbortSignal): Promise<LlmModelOption[]> {
-    const page = await this.client.models.list({signal});
-
-    // The catalogue mixes in embeddings, audio, image and moderation models.
-    // A DENYLIST rather than an allowlist: worst case an irrelevant entry shows
-    // up in the dropdown, whereas an allowlist would hide a chat model released
-    // after this code was written — which is the failure we are fixing.
-    const NOT_CHAT =
-      /^(text-embedding|whisper|tts|dall-e|gpt-image|omni-moderation|text-moderation|davinci|babbage|sora)/;
-
-    return page.data
-      .filter((m) => !NOT_CHAT.test(m.id))
-      .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
-      .map((m) => ({id: m.id, label: m.id}));
-  }
-
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {
     const {system, history, question, tools, executeTool, signal} = opts;
     const maxIterations = opts.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -77,6 +62,7 @@ export class OpenAiProvider implements LlmProvider {
         parameters: t.parameters as Record<string, unknown>,
       },
     }));
+    const displayOnly = displayOnlyNames(tools);
 
     for (let iteration = 0; iteration < maxIterations; iteration++) {
       const stream = await this.client.chat.completions.create(
@@ -101,10 +87,17 @@ export class OpenAiProvider implements LlmProvider {
 
       for await (const chunk of stream) {
         if (chunk.usage) {
+          // `completion_tokens` already includes reasoning tokens; they are
+          // broken out here only so the log can show how much of the output
+          // charge bought thinking the owner never sees.
           yield {
             type: 'usage',
             inputTokens: chunk.usage.prompt_tokens ?? 0,
             outputTokens: chunk.usage.completion_tokens ?? 0,
+            cachedInputTokens:
+              chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+            thinkingTokens:
+              chunk.usage.completion_tokens_details?.reasoning_tokens ?? 0,
           };
         }
 
@@ -138,6 +131,7 @@ export class OpenAiProvider implements LlmProvider {
         })),
       });
 
+      const outcomes: {name: string; ok: boolean}[] = [];
       for (const call of calls) {
         let args: Record<string, unknown> = {};
         try {
@@ -152,12 +146,15 @@ export class OpenAiProvider implements LlmProvider {
               error: 'Arguments were not valid JSON. Send valid JSON.',
             }),
           });
+          // Unparsable arguments are a failure the model must see and fix.
+          outcomes.push({name: call.name, ok: false});
           continue;
         }
 
         yield {type: 'tool_start', id: call.id, name: call.name, args};
         const startedAt = Date.now();
         const {ok, result} = await executeTool(call.name, args);
+        outcomes.push({name: call.name, ok});
         yield {
           type: 'tool_end',
           id: call.id,
@@ -171,6 +168,12 @@ export class OpenAiProvider implements LlmProvider {
           tool_call_id: call.id,
           content: JSON.stringify(result),
         });
+      }
+
+      // The answer was written alongside the render call, so there is nothing
+      // left for another round-trip to produce.
+      if (turnEndsHere(text, outcomes, displayOnly)) {
+        return;
       }
     }
 

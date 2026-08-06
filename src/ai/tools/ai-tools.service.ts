@@ -73,6 +73,42 @@ export class AiToolsService {
     return toolDefsForTier(tier);
   }
 
+  /**
+   * The shop's branches, for inlining into the system prompt.
+   *
+   * Worth the extra query: without the ids in the prompt, any question naming a
+   * branch spends a whole round-trip on `list_branches` first — measured at
+   * ~5,000 input tokens, against ~15 tokens per branch to just include them.
+   * Cached like any other tool result, and `null` when there are too many to
+   * inline (then the tool stays in play).
+   */
+  async branchesForPrompt(
+    businessId: string,
+    max = 15,
+  ): Promise<{id: string; name: string}[] | null> {
+    try {
+      const rows = await this.cache.wrap(
+        CacheKeys.aiTool(businessId, 'list_branches', {}),
+        () => this.deps.branch.findAll(businessId),
+        TTL.AI_TOOL,
+      );
+      if (!Array.isArray(rows) || !rows.length || rows.length > max)
+        return null;
+      return rows
+        .map((r) => r as {id?: unknown; name?: unknown})
+        .filter(
+          (r): r is {id: string; name: string} =>
+            typeof r.id === 'string' && typeof r.name === 'string',
+        )
+        .map((r) => ({id: r.id, name: r.name}));
+    } catch (err) {
+      // A prompt nicety, never a reason to fail the question — the model still
+      // has `list_branches` to fall back on.
+      this.logger.warn(`branchesForPrompt failed: ${String(err)}`);
+      return null;
+    }
+  }
+
   /** Human label for the "running…" line in the UI. */
   labelFor(name: string): string {
     return findTool(name)?.label ?? name;

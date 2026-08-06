@@ -1,10 +1,7 @@
-import {CACHE_MANAGER} from '@nestjs/cache-manager';
-import {Inject, Injectable, Logger} from '@nestjs/common';
-import {Cache} from 'cache-manager';
+import {Injectable, Logger} from '@nestjs/common';
 import {eq} from 'drizzle-orm';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
-import {CacheKeys, TTL} from '../cache/cache.util';
 import {DatabaseService} from '../database/database.service';
 import {aiSettings} from '../database/schema';
 import {SaveAiSettingsDto} from './dto/save-ai-settings.dto';
@@ -20,6 +17,7 @@ import {
   LlmProvider,
   PROVIDER_MODELS,
   isValidModelId,
+  estimateCostUsd,
 } from './providers/llm-provider.interface';
 import {createProvider} from './providers/provider.factory';
 
@@ -31,6 +29,16 @@ export interface AiSettingsView {
   hasKey: boolean;
   apiKeyLast4: string | null;
   monthlyCount: number;
+  monthlyInputTokens: number;
+  monthlyOutputTokens: number;
+  /**
+   * Approximate USD spend this month, from our own price table — the provider's
+   * invoice is the authority. Questions answered on a model we have no price
+   * for add tokens but no cost, which `monthlyCostPartial` flags so the UI can
+   * say "at least this much" instead of quietly under-reporting.
+   */
+  monthlyCostUsd: number;
+  monthlyCostPartial: boolean;
   lastUsedAt: Date | null;
   /** Catalogue for the model dropdown, so the UI has one source of truth. */
   availableModels: Record<AiProviderId, {id: string; label: string}[]>;
@@ -40,13 +48,58 @@ export interface AiSettingsView {
 export class AiSettingsService {
   private readonly logger = new Logger(AiSettingsService.name);
 
-  constructor(
-    private readonly dbService: DatabaseService,
-    @Inject(CACHE_MANAGER) private readonly cache: Cache,
-  ) {}
+  constructor(private readonly dbService: DatabaseService) {}
 
   private get db() {
     return this.dbService.db;
+  }
+
+  /**
+   * This month's counters, or zeros when the stored ones belong to an earlier
+   * period. They are only reset lazily (on the next question), so reading them
+   * without this check would show last month's totals all through the 1st.
+   */
+  private periodUsage(
+    row: {
+      monthlyPeriod: string | null;
+      monthlyCount: number;
+      monthlyInputTokens: number;
+      monthlyOutputTokens: number;
+      monthlyCostUsd: number;
+      provider: string;
+      model: string;
+    } | null,
+  ): {
+    monthlyCount: number;
+    monthlyInputTokens: number;
+    monthlyOutputTokens: number;
+    monthlyCostUsd: number;
+    monthlyCostPartial: boolean;
+  } {
+    const empty = {
+      monthlyCount: 0,
+      monthlyInputTokens: 0,
+      monthlyOutputTokens: 0,
+      monthlyCostUsd: 0,
+      monthlyCostPartial: false,
+    };
+    if (!row || row.monthlyPeriod !== this.currentPeriod()) return empty;
+
+    // Detects the realistic gap — the owner is running a hand-typed model we
+    // have no price for. It cannot catch a month that MIXED priced and unpriced
+    // models; that would need a per-question column, which is more bookkeeping
+    // than an approximate figure is worth.
+    const priced = PROVIDER_MODELS[row.provider as AiProviderId]?.some(
+      (m) => m.id === row.model && m.usdPer1M,
+    );
+    return {
+      monthlyCount: row.monthlyCount,
+      monthlyInputTokens: row.monthlyInputTokens,
+      monthlyOutputTokens: row.monthlyOutputTokens,
+      monthlyCostUsd: row.monthlyCostUsd,
+      monthlyCostPartial:
+        !priced || (row.monthlyInputTokens > 0 && row.monthlyCostUsd === 0),
+    };
   }
 
   private currentPeriod(): string {
@@ -72,10 +125,9 @@ export class AiSettingsService {
       enabled: row?.enabled ?? false,
       hasKey: Boolean(row?.apiKeyCipher),
       apiKeyLast4: row?.apiKeyLast4 ?? null,
-      monthlyCount:
-        row && row.monthlyPeriod === this.currentPeriod()
-          ? row.monthlyCount
-          : 0,
+      // A stale period means last month's numbers — report zeros rather than
+      // showing figures the owner will read as "this month".
+      ...this.periodUsage(row),
       lastUsedAt: row?.lastUsedAt ?? null,
       availableModels: PROVIDER_MODELS,
     };
@@ -202,6 +254,16 @@ export class AiSettingsService {
     try {
       await createProvider(provider, apiKey, model).test(controller.signal);
     } catch (err) {
+      // Logged with the exact pair that failed. "Model not found" on its own is
+      // unactionable — an id can be present in the vendor's catalogue and still
+      // 404 for a given key, and without this line there is no way to tell that
+      // apart from the id simply being wrong.
+      const status = (err as {status?: number})?.status;
+      this.logger.warn(
+        `ai.test failed provider=${provider} model=${model} status=${status ?? '?'}: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
       throw this.toAppException(err);
     } finally {
       clearTimeout(timer);
@@ -242,75 +304,66 @@ export class AiSettingsService {
   }
 
   /**
-   * Live model catalogue for the settings dropdown.
+   * Models offered for this business's configured provider.
    *
-   * Falls back to the static suggestions rather than failing the page: a key
-   * that cannot list models can still perfectly well run one, and the owner
-   * should not be blocked from saving because a catalogue call timed out.
-   */
-  async listModels(
-    provider: AiProviderId,
-    apiKey: string,
-  ): Promise<{models: LlmModelOption[]; live: boolean}> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15_000);
-    try {
-      const models = await createProvider(
-        provider,
-        apiKey,
-        'unused',
-      ).listModels(controller.signal);
-      if (models.length) return {models, live: true};
-    } catch (err) {
-      this.logger.warn(
-        `Could not list ${provider} models: ${(err as Error)?.message ?? String(err)}`,
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-    return {models: PROVIDER_MODELS[provider], live: false};
-  }
-
-  /**
-   * Model catalogue for the chat screen's picker.
+   * Reads the curated catalogue rather than asking the vendor. Fetching it live
+   * meant every provider's full product line landed in a shop owner's dropdown —
+   * image, video, music, embedding and realtime models alongside a dozen dated
+   * snapshots of each chat model — and no amount of filtering made that a list
+   * someone could choose from. See PROVIDER_MODELS for how to keep it current
+   * and why a stale entry is harmless.
    *
-   * Cached because this sits on the page-load path and every miss is a provider
-   * round trip. Unlike the settings page's version it takes no key argument —
-   * it always uses the stored one — so it is safe to expose to staff accounts,
-   * who may pick a model but must never see or change the key.
+   * Takes no key, so it is safe for staff accounts: they may switch model but
+   * must never see or change the key.
    */
   async listModelsForBusiness(businessId: string): Promise<LlmModelOption[]> {
     const row = await this.getRow(businessId);
     if (!row?.apiKeyCipher || !isEncryptionConfigured()) return [];
-
-    const provider = row.provider as AiProviderId;
-    return this.cache.wrap(
-      CacheKeys.aiModels(businessId, provider),
-      async () => {
-        let apiKey: string;
-        try {
-          apiKey = decryptSecret(row.apiKeyCipher!);
-        } catch {
-          return PROVIDER_MODELS[provider];
-        }
-        const {models} = await this.listModels(provider, apiKey);
-        return models;
-      },
-      TTL.AI_MODELS,
-    );
+    return PROVIDER_MODELS[row.provider as AiProviderId] ?? [];
   }
 
   /** Bumps the usage counter, rolling it over at the start of a new month. */
-  async recordUsage(businessId: string): Promise<void> {
+  async recordUsage(
+    businessId: string,
+    spent?: {input: number; output: number; model: string},
+  ): Promise<void> {
     const period = this.currentPeriod();
     const row = await this.getRow(businessId);
     if (!row) return;
 
+    // Priced with the model that actually ran, not the one currently saved —
+    // an owner comparing models mid-month would otherwise see every earlier
+    // question silently repriced.
+    //
+    // No stored key means the tokens came out of Pimpo's account, so the shop
+    // is quoted list price plus SYSTEM_TOKEN_MARKUP. Today that branch is never
+    // taken (resolveProvider refuses without a key), but the accounting is the
+    // part that has to be right the day a Pimpo-supplied key ships — see
+    // SHIP.md's follow-ups.
+    const systemKey = !row.apiKeyCipher;
+    const cost = spent
+      ? estimateCostUsd(
+          spent.model,
+          row.provider as AiProviderId,
+          spent.input,
+          spent.output,
+          systemKey,
+        )
+      : 0;
+
+    // A new month starts the counters from this question rather than adding to
+    // last month's totals.
+    const fresh = row.monthlyPeriod !== period;
     await this.db
       .update(aiSettings)
       .set({
         monthlyPeriod: period,
-        monthlyCount: row.monthlyPeriod === period ? row.monthlyCount + 1 : 1,
+        monthlyCount: fresh ? 1 : row.monthlyCount + 1,
+        monthlyInputTokens:
+          (fresh ? 0 : row.monthlyInputTokens) + (spent?.input ?? 0),
+        monthlyOutputTokens:
+          (fresh ? 0 : row.monthlyOutputTokens) + (spent?.output ?? 0),
+        monthlyCostUsd: (fresh ? 0 : row.monthlyCostUsd) + cost,
         lastUsedAt: new Date(),
       })
       .where(eq(aiSettings.businessId, businessId));

@@ -2312,6 +2312,16 @@ export const aiSettings = pgTable('ai_settings', {
   enabled: boolean('enabled').default(false).notNull(),
   // Usage counters, reset when `monthlyPeriod` rolls over ('YYYY-MM').
   monthlyCount: integer('monthly_count').default(0).notNull(),
+  // Billable tokens this period, summed across every model round-trip. Input
+  // dwarfs output here (~19x) because the tool schemas are re-sent each call.
+  monthlyInputTokens: integer('monthly_input_tokens').default(0).notNull(),
+  monthlyOutputTokens: integer('monthly_output_tokens').default(0).notNull(),
+  // Running USD estimate, accumulated per question at the price of the model
+  // that actually ran — so switching models mid-month stays accurate. Double
+  // precision rather than numeric on purpose: this is openly an ESTIMATE for
+  // the owner's own dashboard, never an invoice, and the provider's bill is
+  // the authority.
+  monthlyCostUsd: doublePrecision('monthly_cost_usd').default(0).notNull(),
   monthlyPeriod: varchar('monthly_period', {length: 7}),
   lastUsedAt: timestamp('last_used_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
