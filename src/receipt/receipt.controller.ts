@@ -30,6 +30,7 @@ import { CurrentAccount } from '../business/decorators/current-account.decorator
 import { IBusiness, IAccount } from '../business/types';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
 import { UpdateReceiptDto } from './dto/update-receipt.dto';
+import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 
@@ -123,6 +124,31 @@ export class ReceiptController {
       updateReceiptDto,
     );
     return { message: 'Receipt updated successfully', receipt };
+  }
+
+  @Patch(':id/header')
+  @ApiOperation({
+    summary:
+      "Change a receipt's supplier and/or branch — allowed at any status. " +
+      'Moving a received receipt to another branch moves its remaining stock.',
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  @ApiResponse({status: 200, description: 'Receipt header updated'})
+  @ApiResponse({
+    status: 404,
+    description: 'Receipt, supplier or branch not found',
+  })
+  async updateHeader(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Body() dto: UpdateReceiptHeaderDto,
+  ) {
+    const receipt = await this.receiptService.updateHeader(
+      business.id,
+      id,
+      dto,
+    );
+    return {message: 'Receipt header updated successfully', receipt};
   }
 
   @Delete(':id')

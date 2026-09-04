@@ -43,6 +43,7 @@ import {FinanceService} from '../finance/finance.service';
 import {BranchService} from '../branch/branch.service';
 import {CreateReceiptDto} from './dto/create-receipt.dto';
 import {UpdateReceiptDto} from './dto/update-receipt.dto';
+import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import {AddPaymentDto} from './dto/add-payment.dto';
 import {CreateReturnDto} from './dto/create-return.dto';
 
@@ -769,6 +770,271 @@ export class ReceiptService {
     });
 
     return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
+  }
+
+  /**
+   * Fix a receipt's header — its supplier and its branch ("do'kon") — at any
+   * point in its life, not just while it is a draft. Both are things a shop
+   * commonly gets wrong on entry and only notices later.
+   *
+   * A draft holds nothing, so it is a plain relabel. A received receipt already
+   * put stock somewhere: moving it to another branch moves what is LEFT of its
+   * own lots along with it, while the part already sold stays booked to the
+   * branch that sold it. The supplier is metadata, but this receipt's payments
+   * and returns each carry a supplier snapshot of their own — they are
+   * relabelled too, or the supplier ledger would split across two names.
+   */
+  async updateHeader(
+    businessId: string,
+    receiptId: string,
+    dto: UpdateReceiptHeaderDto,
+  ): Promise<ReceiptWithItems> {
+    const [receipt] = await this.dbService.db
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+
+    // Supplier: undefined leaves it alone, null detaches it.
+    const supplierGiven = dto.supplierId !== undefined;
+    let supplierId = receipt.supplierId;
+    let supplierName = receipt.supplierName;
+    if (supplierGiven) {
+      if (dto.supplierId) {
+        const [supplier] = await this.dbService.db
+          .select()
+          .from(suppliers)
+          .where(
+            and(
+              eq(suppliers.businessId, businessId),
+              eq(suppliers.id, dto.supplierId),
+            ),
+          )
+          .limit(1);
+        if (!supplier) {
+          throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND_BY_ID, {
+            supplierId: dto.supplierId,
+          });
+        }
+        supplierId = supplier.id;
+        supplierName = supplier.name;
+      } else {
+        supplierId = null;
+        supplierName = null;
+      }
+    }
+
+    // Legacy rows can carry no branch; their stock went to the default one.
+    const fromBranchId =
+      receipt.branchId ??
+      (await this.branchService.ensureDefault(businessId)).id;
+    let branchId = fromBranchId;
+    if (dto.branchId !== undefined && dto.branchId !== fromBranchId) {
+      const [branch] = await this.dbService.db
+        .select()
+        .from(branches)
+        .where(
+          and(
+            eq(branches.businessId, businessId),
+            eq(branches.id, dto.branchId),
+          ),
+        )
+        .limit(1);
+      if (!branch) throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
+      branchId = branch.id;
+    }
+
+    // Only a received receipt holds stock to move.
+    const movesStock = branchId !== fromBranchId && receipt.status !== 'draft';
+    // Same freeze as receiving: an open count snapshots the book figure, and
+    // shifting stock between branches underneath it would desync the count.
+    if (
+      movesStock &&
+      (await isStockTakeActive(this.cache, this.dbService.db, businessId))
+    ) {
+      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
+    }
+
+    await this.dbService.db.transaction(async (tx) => {
+      if (movesStock) {
+        await this.moveReceiptStockTx(
+          tx,
+          businessId,
+          receiptId,
+          fromBranchId,
+          branchId,
+        );
+      }
+
+      await tx
+        .update(goodsReceipts)
+        .set({supplierId, supplierName, branchId, updatedAt: new Date()})
+        .where(
+          and(
+            eq(goodsReceipts.id, receiptId),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        );
+
+      if (supplierGiven) {
+        await tx
+          .update(supplierPayments)
+          .set({supplierId, supplierName})
+          .where(
+            and(
+              eq(supplierPayments.businessId, businessId),
+              eq(supplierPayments.receiptId, receiptId),
+            ),
+          );
+        await tx
+          .update(supplierReturns)
+          .set({supplierId, supplierName})
+          .where(
+            and(
+              eq(supplierReturns.businessId, businessId),
+              eq(supplierReturns.receiptId, receiptId),
+            ),
+          );
+      }
+    });
+
+    return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
+  }
+
+  /**
+   * Move a received receipt's own inventory lots from one branch to another,
+   * along with the branch stock they back. products.quantity is the sum across
+   * branches, so it does not change — only where the goods sit does.
+   *
+   * A lot nobody has touched moves whole. A partly sold lot is split: the sold
+   * part stays at the old branch (that is where it was sold from) and the
+   * remainder opens as a lot at the new branch, keeping the receipt link so a
+   * later branch change finds it again. Splitting `qtyReceived` across the two
+   * rows keeps the receipt's received total exact.
+   */
+  private async moveReceiptStockTx(
+    tx: DbTx,
+    businessId: string,
+    receiptId: string,
+    fromBranchId: string,
+    toBranchId: string,
+  ): Promise<void> {
+    const itemIds = (
+      await tx
+        .select({id: goodsReceiptItems.id})
+        .from(goodsReceiptItems)
+        .where(
+          and(
+            eq(goodsReceiptItems.businessId, businessId),
+            eq(goodsReceiptItems.receiptId, receiptId),
+          ),
+        )
+    ).map((r) => r.id);
+    if (itemIds.length === 0) return;
+
+    const lots = await tx
+      .select({
+        id: inventoryBatches.id,
+        productId: inventoryBatches.productId,
+        receiptItemId: inventoryBatches.receiptItemId,
+        priceIn: inventoryBatches.priceIn,
+        priceOut: inventoryBatches.priceOut,
+        qtyReceived: inventoryBatches.qtyReceived,
+        qtyRemaining: inventoryBatches.qtyRemaining,
+        createdAt: inventoryBatches.createdAt,
+      })
+      .from(inventoryBatches)
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          eq(inventoryBatches.branchId, fromBranchId),
+          inArray(inventoryBatches.receiptItemId, itemIds),
+        ),
+      )
+      .for('update');
+
+    const moved = new Map<string, number>();
+    const newLots: (typeof inventoryBatches.$inferInsert)[] = [];
+
+    for (const lot of lots) {
+      const qty = lot.qtyRemaining;
+      // Sold out at the old branch — nothing left of this lot to move.
+      if (qty <= 0) continue;
+      moved.set(
+        lot.productId,
+        Math.round(((moved.get(lot.productId) ?? 0) + qty) * 1000) / 1000,
+      );
+
+      if (qty === lot.qtyReceived) {
+        await tx
+          .update(inventoryBatches)
+          .set({branchId: toBranchId})
+          .where(eq(inventoryBatches.id, lot.id));
+        continue;
+      }
+
+      await tx
+        .update(inventoryBatches)
+        .set({
+          qtyReceived: Math.round((lot.qtyReceived - qty) * 1000) / 1000,
+          qtyRemaining: 0,
+        })
+        .where(eq(inventoryBatches.id, lot.id));
+      newLots.push({
+        id: generateId(),
+        businessId,
+        productId: lot.productId,
+        branchId: toBranchId,
+        receiptItemId: lot.receiptItemId,
+        priceIn: lot.priceIn,
+        priceOut: lot.priceOut,
+        qtyReceived: qty,
+        qtyRemaining: qty,
+        createdAt: lot.createdAt,
+      });
+    }
+
+    if (newLots.length > 0) await tx.insert(inventoryBatches).values(newLots);
+
+    // Per-branch on-hand follows the lots. ROUND needs the ::numeric cast —
+    // branch_stock.quantity is double precision.
+    for (const [productId, qty] of moved) {
+      await tx
+        .update(branchStock)
+        .set({
+          quantity: sql`GREATEST(0, ROUND((${branchStock.quantity} - ${qty})::numeric, 3))`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(branchStock.businessId, businessId),
+            eq(branchStock.productId, productId),
+            eq(branchStock.branchId, fromBranchId),
+          ),
+        );
+      await tx
+        .insert(branchStock)
+        .values({
+          id: generateId(),
+          businessId,
+          productId,
+          branchId: toBranchId,
+          quantity: qty,
+        })
+        .onConflictDoUpdate({
+          target: [branchStock.productId, branchStock.branchId],
+          set: {
+            quantity: sql`ROUND((${branchStock.quantity} + ${qty})::numeric, 3)`,
+            updatedAt: new Date(),
+          },
+        });
+    }
   }
 
   /**
