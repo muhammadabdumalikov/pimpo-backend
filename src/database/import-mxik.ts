@@ -100,8 +100,15 @@ async function main() {
 
   // De-dupe by MXIK code within the file (keep the last occurrence), so the
   // batch upsert never hits "cannot affect row a second time" from Postgres.
+  //
+  // The table is keyed by the MXIK code, so a code appearing twice with two
+  // different barcodes can only keep one of them. That silently costs barcode
+  // coverage, which is what drives the scanner's auto-fill — so count it and
+  // say so, instead of leaving the loss invisible.
   const byCode = new Map<string, NewMxikClassifier>();
   let skipped = 0;
+  let collapsed = 0;
+  let barcodesLost = 0;
   for (const row of dataRows) {
     const mxikCode = clean(row[COL.mxik], 17);
     const name = clean(row[COL.name], 500);
@@ -109,10 +116,18 @@ async function main() {
       skipped++;
       continue;
     }
+    const previous = byCode.get(mxikCode);
+    const barcode = clean(row[COL.barcode], 20);
+    if (previous) {
+      collapsed++;
+      if (previous.barcode && barcode && previous.barcode !== barcode) {
+        barcodesLost++;
+      }
+    }
     byCode.set(mxikCode, {
       mxikCode,
       name,
-      barcode: clean(row[COL.barcode], 20),
+      barcode,
       groupName: cleanGroup(row[COL.group]),
       brand: cleanBrand(row[COL.brand]),
       unitName:
@@ -126,8 +141,17 @@ async function main() {
   const records = [...byCode.values()];
   console.log(
     `Prepared ${records.length} unique rows ` +
-      `(${skipped} skipped for missing code/name).`,
+      `(${skipped} skipped for missing code/name, ` +
+      `${collapsed} collapsed onto an earlier MXIK code).`,
   );
+  if (barcodesLost > 0) {
+    console.warn(
+      `WARNING: ${barcodesLost} distinct barcode(s) were discarded because ` +
+        `their MXIK code already had a different one. mxik_classifier is keyed ` +
+        `by the MXIK code and cannot hold both; scanner auto-fill loses those ` +
+        `barcodes. A separate barcode->MXIK table would be needed to keep them.`,
+    );
+  }
 
   const client = postgres(databaseUrl, { max: 1 });
   const db = drizzle(client, { schema });

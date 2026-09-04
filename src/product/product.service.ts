@@ -1,4 +1,4 @@
-import {Injectable, Inject} from '@nestjs/common';
+import {Injectable, Inject, Logger} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -13,6 +13,7 @@ import {
   type Product,
   type NewProduct,
   type Unit,
+  type MxikClassifier,
 } from '../database/schema';
 import {eq, and, desc, ilike, or, sql, isNull, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
@@ -21,9 +22,14 @@ import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 import {CacheKeys, TTL} from '../cache/cache.util';
+import {mxikDisplayName, mxikClassName} from '../common/mxik-name';
+import {latinToCyrillic, escapeRegex} from '../common/uz-translit';
+import {parseScannedCode, type ScannedCode} from '../common/gs1';
 
 @Injectable()
 export class ProductService {
+  private readonly logger = new Logger(ProductService.name);
+
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
@@ -78,6 +84,8 @@ export class ProductService {
       brandId?: string;
       supplierId?: string;
       branchId?: string;
+      mxikCode?: string;
+      packageCode?: string;
     },
   ): Promise<Product> {
     // Enforce the plan's product limit (null = unlimited).
@@ -143,6 +151,8 @@ export class ProductService {
       brandId: data.brandId || null,
       supplierId: data.supplierId || null,
       branchId,
+      mxikCode: data.mxikCode || null,
+      packageCode: data.packageCode || null,
       isActive: true,
     };
 
@@ -811,6 +821,46 @@ export class ProductService {
   }
 
   /**
+   * Every distinct class prefix in the national classifier ("Газланган сув"),
+   * loaded once and kept for the life of the process — the classifier is static
+   * reference data imported offline, so it cannot go stale under us.
+   *
+   * Needed because a bare ": " split is not safe on shop-typed names: it would
+   * turn "ATVYORKA NABOR AFIXS NO: 3013" into "3013". Matching the prefix
+   * against real class names is the same guard drizzle/data/
+   * 0064_strip_classifier_prefix.sql uses to repair already-written rows.
+   */
+  private classifierClassesCache: Promise<Set<string>> | null = null;
+
+  private classifierClasses(): Promise<Set<string>> {
+    this.classifierClassesCache ??= this.dbService.db
+      .execute(
+        sql`SELECT DISTINCT split_part(name, ': ', 1) AS prefix
+            FROM mxik_classifier
+            WHERE name LIKE '%: %'`,
+      )
+      .then((result: unknown) => {
+        // db.execute() returns a bare row array or a { rows } object depending
+        // on the driver — normalise both.
+        const rows = ((result as {rows?: unknown[]}).rows ??
+          (result as unknown[])) as Array<{prefix: string | null}>;
+        return new Set(
+          rows.map((r) => r.prefix?.trim()).filter((p): p is string => !!p),
+        );
+      })
+      .catch((err) => {
+        // Never fail a lookup over this: drop the cache so the next scan retries
+        // and fall back to leaving names as contributed.
+        this.classifierClassesCache = null;
+        this.logger.warn(
+          `Could not load classifier class prefixes: ${String(err)}`,
+        );
+        return new Set<string>();
+      });
+    return this.classifierClassesCache;
+  }
+
+  /**
    * Look up a scanned barcode to pre-fill a new product.
    *
    * Priority: the business's own catalog first (so we can flag "you already have
@@ -826,6 +876,8 @@ export class ProductService {
     image: string | null;
     categoryName: string | null;
     mxikCode: string | null;
+    /** Official classifier name behind `mxikCode`, verbatim (prefix included). */
+    mxikName: string | null;
     existsInBusiness: boolean;
     productId: string | null;
   }> {
@@ -836,6 +888,7 @@ export class ProductService {
       image: null,
       categoryName: null,
       mxikCode: null,
+      mxikName: null,
       existsInBusiness: false,
       productId: null,
     };
@@ -863,6 +916,7 @@ export class ProductService {
         image: own.image,
         categoryName: null,
         mxikCode: null,
+        mxikName: null,
         existsInBusiness: true,
         productId: own.id,
       };
@@ -876,13 +930,23 @@ export class ProductService {
       .limit(1);
 
     if (global) {
+      // Community names are whatever the first contributor typed, and a shop
+      // that seeded its catalog from the classifier (or from Billz, which bakes
+      // the category into the name) contributes "<class>: <product>" here too.
+      // Strip it like the classifier path does — but ONLY when the prefix is a
+      // real classifier class, so a shop's own "ATVYORKA NABOR AFIXS NO: 3013"
+      // survives untouched. The prefix then doubles as the category hint;
+      // global_barcodes carries no categoryName of its own.
+      const cls = mxikClassName(global.name);
+      const isClass = cls !== null && (await this.classifierClasses()).has(cls);
       return {
         found: true,
         source: 'community',
-        name: global.name,
+        name: isClass ? mxikDisplayName(global.name) : global.name,
         image: global.image,
-        categoryName: global.categoryName,
+        categoryName: global.categoryName ?? (isClass ? cls : null),
         mxikCode: null,
+        mxikName: null,
         existsInBusiness: false,
         productId: null,
       };
@@ -901,16 +965,179 @@ export class ProductService {
       return {
         found: true,
         source: 'classifier',
-        name: classifier.name,
+        // The classifier stores "<class>: <brand>, <attributes>". Only the part
+        // after the class belongs in a product name — see mxikDisplayName.
+        name: mxikDisplayName(classifier.name),
         image: null,
         categoryName: classifier.groupName,
         mxikCode: classifier.mxikCode,
+        mxikName: classifier.name,
         existsInBusiness: false,
         productId: null,
       };
     }
 
     return empty;
+  }
+
+  /**
+   * Resolve whatever the till's scanner produced into a product.
+   *
+   * Handles both codes a shop meets in practice: a plain retail barcode, and an
+   * "Asl belgi" marking DataMatrix, whose GS1 payload carries the barcode
+   * inside it (see common/gs1.ts). Without the second case every marked bottle
+   * — drinks, tobacco, medicines — fails to scan at the till.
+   *
+   * Resolution goes through `findAll` so the returned product is shaped exactly
+   * like the catalogue's, with branch-scoped stock; the checkout relies on that
+   * quantity for its out-of-stock guard.
+   */
+  async resolveScannedCode(
+    businessId: string,
+    code: string,
+    branchId?: string,
+  ): Promise<{
+    product: Product | null;
+    isGs1: boolean;
+    gtin: string | null;
+    /** Per-item serial, for the marking system and the fiscal receipt line. */
+    serial: string | null;
+  }> {
+    const scan: ScannedCode = parseScannedCode(code);
+
+    // A GS1 scan is a barcode and nothing else; a plain scan may equally be an
+    // internal SKU, so its raw form is worth trying as a `code` match too.
+    const terms = scan.isGs1 ? scan.candidates : [...scan.candidates, scan.raw];
+
+    for (const term of [...new Set(terms)]) {
+      if (!term) continue;
+      const {products: found} = await this.findAll(businessId, {
+        page: 1,
+        limit: 5,
+        search: term,
+        branchId,
+      });
+      const lower = term.toLowerCase();
+      const match = found.find(
+        (p) =>
+          (p.barcode ?? '').toLowerCase() === lower ||
+          (p.code ?? '').toLowerCase() === lower,
+      );
+      if (match) {
+        return {
+          product: match,
+          isGs1: scan.isGs1,
+          gtin: scan.gtin,
+          serial: scan.serial,
+        };
+      }
+    }
+
+    return {
+      product: null,
+      isGs1: scan.isGs1,
+      gtin: scan.gtin,
+      serial: scan.serial,
+    };
+  }
+
+  /**
+   * Search the national classifier (IKPU / MXIK, ~383k rows) for the product
+   * form's code picker. Not scoped to a business — it is global reference data.
+   *
+   * Digits-only input is treated as a barcode (exact) or an MXIK prefix; any
+   * other input is a free-text name search, served by the trigram GIN index
+   * added in migration 0064 (an unanchored ILIKE no btree can help with).
+   * Shortest names first, so the general classifier entry outranks the long
+   * brand-specific variants of the same thing.
+   *
+   * The classifier is 100% Cyrillic while our UI (and our shops' own product
+   * names) are Latin, so a Latin query is also matched in its transliterated
+   * form — searching "non" has to find "нон". Both branches ride the same
+   * trigram index; ORing them widens recall without a second round trip.
+   */
+  async searchMxik(
+    query: string,
+    limit = 20,
+  ): Promise<
+    Array<{
+      mxikCode: string;
+      /** Cleaned name, safe to drop into a product name field. */
+      name: string;
+      /** Classifier name verbatim, shown as the official label. */
+      officialName: string;
+      brand: string | null;
+      groupName: string | null;
+      unitName: string | null;
+      barcode: string | null;
+    }>
+  > {
+    const q = query.trim();
+    // Trigram matching needs 3 characters to be selective; below that the query
+    // degrades into a full scan of the whole classifier.
+    if (q.length < 3) return [];
+
+    if (/^\d+$/.test(q)) {
+      const rows = await this.dbService.db
+        .select()
+        .from(mxikClassifier)
+        .where(
+          or(
+            eq(mxikClassifier.barcode, q),
+            ilike(mxikClassifier.mxikCode, `${q}%`),
+          ),
+        )
+        .orderBy(sql`length(${mxikClassifier.name})`)
+        .limit(Math.min(Math.max(limit, 1), 50));
+      return rows.map((row) => ProductService.toMxikResult(row));
+    }
+
+    // Match the query as typed and, for Latin input, transliterated. Brand names
+    // inside the Cyrillic entries are often left in Latin ("...: PEPSI, ПЭТ
+    // бутилка 1 л"), so the raw form earns its place next to the Cyrillic one.
+    const cyrillic = latinToCyrillic(q);
+    const patterns = cyrillic ? [q, cyrillic] : [q];
+
+    // Ranking, in order:
+    //   1. the query IS the brand — "pepsi" wants the drink, not the hookah
+    //      tobacco that merely mentions it;
+    //   2. the query starts a word — without this, "non" ranks "Хинонлар"
+    //      (a chemical) above "Ёпган нон";
+    //   3. shortest name — the general entry over its brand-specific variants.
+    // Each fragment is rebuilt per pattern: a parameterised `sql` object reused
+    // in more than one clause binds its parameters only once.
+    const anyOf = (make: (pattern: string) => ReturnType<typeof sql>) =>
+      sql`(${sql.join(patterns.map(make), sql` or `)})`;
+
+    const rows = await this.dbService.db
+      .select()
+      .from(mxikClassifier)
+      .where(
+        or(...patterns.map((p) => ilike(mxikClassifier.name, `%${p}%`))),
+      )
+      .orderBy(
+        sql`${anyOf((p) => sql`${mxikClassifier.brand} ilike ${p}`)} desc`,
+        sql`${anyOf(
+          (p) =>
+            sql`${mxikClassifier.name} ~* ${`(^|[^[:alpha:]])${escapeRegex(p)}`}`,
+        )} desc`,
+        sql`length(${mxikClassifier.name})`,
+      )
+      .limit(Math.min(Math.max(limit, 1), 50));
+
+    return rows.map((row) => ProductService.toMxikResult(row));
+  }
+
+  private static toMxikResult(row: MxikClassifier) {
+    return {
+      mxikCode: row.mxikCode,
+      name: mxikDisplayName(row.name),
+      officialName: row.name,
+      brand: row.brand,
+      groupName: row.groupName,
+      unitName: row.unitName,
+      barcode: row.barcode,
+    };
   }
 
   async generateProductCode(businessId: string): Promise<string> {

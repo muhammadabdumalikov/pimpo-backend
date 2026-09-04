@@ -220,6 +220,74 @@ export class ProductController {
     return this.productService.lookupBarcode(business.id, trimmed);
   }
 
+  @Get('scan')
+  @ApiOperation({
+    summary:
+      "Resolve a scanned code (plain barcode or 'Asl belgi' marking DataMatrix) to a product",
+  })
+  @ApiQuery({
+    name: 'code',
+    required: true,
+    type: String,
+    description: 'Raw scanner output, exactly as it arrived',
+  })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    type: String,
+    description: 'Scope stock to this branch (defaults to the cross-branch sum)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Resolved product (null when nothing matches) plus parsed code parts',
+  })
+  async scan(
+    @CurrentBusiness() business: IBusiness,
+    @Query('code') code?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const trimmed = code?.trim();
+    if (!trimmed) {
+      throw new AppException(ErrorCode.SCAN_CODE_REQUIRED);
+    }
+    return this.productService.resolveScannedCode(
+      business.id,
+      trimmed,
+      branchId,
+    );
+  }
+
+  // Declared before @Get(':id') so the literal path always wins the match.
+  @Get('mxik/search')
+  @ApiOperation({
+    summary: "Search the national product classifier (IKPU / MXIK) by name, barcode or code",
+  })
+  @ApiQuery({
+    name: 'q',
+    required: true,
+    type: String,
+    description: 'Free-text name, full barcode, or MXIK code prefix (min 3 chars)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Max rows to return (default 20, max 50)',
+  })
+  @ApiResponse({status: 200, description: 'Matching classifier rows'})
+  async searchMxik(@Query('q') q?: string, @Query('limit') limit?: string) {
+    const trimmed = q?.trim();
+    if (!trimmed) {
+      throw new AppException(ErrorCode.MXIK_QUERY_REQUIRED);
+    }
+    const parsed = Number(limit);
+    const results = await this.productService.searchMxik(
+      trimmed,
+      Number.isFinite(parsed) && parsed > 0 ? parsed : 20,
+    );
+    return {results};
+  }
+
   @Get(':id')
   @ApiOperation({summary: 'Get a product by ID'})
   @ApiParam({name: 'id', description: 'Product ID'})

@@ -90,6 +90,8 @@ export enum ErrorCode {
   PRODUCT_CODE_EXISTS = 'PRODUCT_CODE_EXISTS',
   PRODUCT_NOT_FOUND = 'PRODUCT_NOT_FOUND',
   BARCODE_QUERY_REQUIRED = 'BARCODE_QUERY_REQUIRED',
+  MXIK_QUERY_REQUIRED = 'MXIK_QUERY_REQUIRED',
+  SCAN_CODE_REQUIRED = 'SCAN_CODE_REQUIRED',
 
   // ── Receipt template ───────────────────────────────────────────────────────
   RECEIPT_TEMPLATE_NOT_FOUND = 'RECEIPT_TEMPLATE_NOT_FOUND',
@@ -470,6 +472,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BARCODE_QUERY_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'barcode query parameter is required',
+  },
+  [ErrorCode.MXIK_QUERY_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'q query parameter is required',
+  },
+  [ErrorCode.SCAN_CODE_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'code query parameter is required',
   },
 
   // Receipt template

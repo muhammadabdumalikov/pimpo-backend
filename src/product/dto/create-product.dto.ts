@@ -147,4 +147,25 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   branchId?: string;
+
+  @ApiProperty({
+    description:
+      "National classifier code (IKPU / MXIK, 17 digits) — required on every fiscal receipt line",
+    example: '01905002004056061',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(17, {message: 'MXIK code must be at most 17 characters'})
+  mxikCode?: string;
+
+  @ApiProperty({
+    description: 'Packaging/measure code that accompanies the MXIK code',
+    example: '1',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(20, {message: 'Package code must be at most 20 characters'})
+  packageCode?: string;
 }

@@ -198,6 +198,14 @@ export const products = pgTable('products', {
   branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
     onDelete: 'set null',
   }),
+  // National classifier (IKPU / MXIK) row this product maps to, picked in the
+  // product form from `mxikClassifier`. Every fiscal receipt line needs it, so a
+  // product without one can't be fiscalized (FISCALIZATION.md). Nullable: the
+  // catalog is filled in gradually, long before fiscalization goes live.
+  mxikCode: varchar('mxik_code', {length: 17}),
+  // Packaging/measure code that goes with the MXIK code on the fiscal receipt
+  // ('PackageCode'). Sourced from the same classifier row.
+  packageCode: varchar('package_code', {length: 20}),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
