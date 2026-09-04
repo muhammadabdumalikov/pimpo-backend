@@ -42,6 +42,7 @@ import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
 import {BranchService} from '../branch/branch.service';
 import {CreateReceiptDto} from './dto/create-receipt.dto';
+import {UpdateReceiptDto} from './dto/update-receipt.dto';
 import {AddPaymentDto} from './dto/add-payment.dto';
 import {CreateReturnDto} from './dto/create-return.dto';
 
@@ -80,6 +81,29 @@ interface ReceiptLine {
   lineTotal: string;
 }
 
+// Everything a receipt payload turns into: the lines to store plus the
+// per-product aggregates that applying it to stock needs.
+interface PreparedReceipt {
+  supplierName: string | null;
+  currency: 'UZS' | 'USD';
+  rateToBase: number;
+  lines: ReceiptLine[];
+  received: Map<string, {qty: number; value: number}>;
+  productInfo: Map<
+    string,
+    {
+      name: string;
+      priceOut: string;
+      quantityType?: string | null;
+      repriceOverride?: boolean;
+    }
+  >;
+  wholesaleByProduct: Map<string, string>;
+  bundleByProduct: Map<string, string>;
+  total: number;
+  itemCount: number;
+}
+
 // Drizzle transaction handle (parameter of db.transaction's callback).
 type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
@@ -114,23 +138,14 @@ export class ReceiptService {
   }
 
   /**
-   * Create a goods receipt: insert the document + items, increment product
-   * stock, and roll each product's purchase cost into a weighted average — all
-   * in one transaction. Receipts are immutable once created.
+   * Turn a receipt payload into the lines to store plus the aggregates needed
+   * to apply it to stock. Validates the supplier, the currency/rate pair and
+   * every product. Shared by creating a receipt and by editing a draft.
    */
-  async create(
+  private async prepareReceipt(
     businessId: string,
     dto: CreateReceiptDto,
-  ): Promise<ReceiptWithItems> {
-    // Freeze inbound stock while a count is open — a receipt changes
-    // products.quantity and opens a new batch, which would desync the count's
-    // book snapshot and break the SUM(qtyRemaining)==quantity invariant when the
-    // count snaps stock back to the counted figure. Same freeze sales/shifts use
-    // (INVENTARIZATSIYA.md §9.4); guarded + fail-open if the table isn't migrated.
-    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
-      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
-    }
-
+  ): Promise<PreparedReceipt> {
     // Resolve supplier (optional) and snapshot its name.
     let supplierName: string | null = null;
     if (dto.supplierId) {
@@ -151,16 +166,6 @@ export class ReceiptService {
       }
       supplierName = supplier.name;
     }
-
-    // Default selling-price behaviour comes from the business settings, but a
-    // receipt line can override it per product.
-    const [settings] = await this.dbService.db
-      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
-      .from(receiptSettings)
-      .where(eq(receiptSettings.businessId, businessId))
-      .limit(1);
-    const repriceExistingDefault =
-      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
 
     // Supply currency + the USD→UZS rate used to convert cost to base for
     // inventory. USD receipts settle in USD (debt/payments) but stock cost is
@@ -263,6 +268,62 @@ export class ReceiptService {
       agg.value += priceInBase * item.quantity;
       received.set(item.productId, agg);
     }
+
+    return {
+      supplierName,
+      currency,
+      rateToBase,
+      lines,
+      received,
+      productInfo,
+      wholesaleByProduct,
+      bundleByProduct,
+      total,
+      itemCount,
+    };
+  }
+
+  /**
+   * Create a goods receipt: insert the document + items, increment product
+   * stock, and roll each product's purchase cost into a weighted average — all
+   * in one transaction. A received receipt is immutable; a draft can still be
+   * edited or deleted until it is received.
+   */
+  async create(
+    businessId: string,
+    dto: CreateReceiptDto,
+  ): Promise<ReceiptWithItems> {
+    // Freeze inbound stock while a count is open — a receipt changes
+    // products.quantity and opens a new batch, which would desync the count's
+    // book snapshot and break the SUM(qtyRemaining)==quantity invariant when the
+    // count snaps stock back to the counted figure. Same freeze sales/shifts use
+    // (INVENTARIZATSIYA.md §9.4); guarded + fail-open if the table isn't migrated.
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
+    }
+
+    const {
+      supplierName,
+      currency,
+      rateToBase,
+      lines,
+      received,
+      productInfo,
+      wholesaleByProduct,
+      bundleByProduct,
+      total,
+      itemCount,
+    } = await this.prepareReceipt(businessId, dto);
+
+    // Default selling-price behaviour comes from the business settings, but a
+    // receipt line can override it per product.
+    const [settings] = await this.dbService.db
+      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    const repriceExistingDefault =
+      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
 
     const receiptId = generateId();
     const draft = dto.draft === true;
@@ -607,6 +668,138 @@ export class ReceiptService {
     });
 
     return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
+  }
+
+  /**
+   * Load a receipt that is still editable. Only a draft qualifies: once
+   * received the document has moved stock, opened batches and may carry
+   * payments/returns, so it is corrected with a return instead of an edit.
+   */
+  private async loadDraft(
+    businessId: string,
+    receiptId: string,
+    onNotDraft: ErrorCode,
+  ): Promise<GoodsReceipt> {
+    const [receipt] = await this.dbService.db
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    if (receipt.status !== 'draft') throw new AppException(onNotDraft);
+    return receipt;
+  }
+
+  /**
+   * Edit a draft receipt: the payload replaces the header and every line. A
+   * draft holds no stock, batches, payments or returns, so swapping its lines
+   * needs no reversal — it stays a draft and is applied later by receiving it.
+   */
+  async update(
+    businessId: string,
+    receiptId: string,
+    dto: UpdateReceiptDto,
+  ): Promise<ReceiptWithItems> {
+    const receipt = await this.loadDraft(
+      businessId,
+      receiptId,
+      ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE,
+    );
+
+    const {supplierName, currency, rateToBase, lines, total, itemCount} =
+      await this.prepareReceipt(businessId, dto);
+
+    // Keep the receipt on its current branch unless the edit moves it.
+    const branchId =
+      dto.branchId ??
+      receipt.branchId ??
+      (await this.branchService.ensureDefault(businessId)).id;
+
+    await this.dbService.db.transaction(async (tx) => {
+      await tx
+        .delete(goodsReceiptItems)
+        .where(
+          and(
+            eq(goodsReceiptItems.businessId, businessId),
+            eq(goodsReceiptItems.receiptId, receiptId),
+          ),
+        );
+
+      await tx.insert(goodsReceiptItems).values(
+        lines.map((line) => ({
+          id: line.itemId,
+          receiptId,
+          businessId,
+          productId: line.productId,
+          productName: line.productName,
+          priceIn: line.priceIn,
+          currency: line.currency,
+          priceOut: line.priceOut,
+          priceWholesale: line.priceWholesale,
+          priceBundle: line.priceBundle,
+          quantity: line.quantity,
+          lineTotal: line.lineTotal,
+        })),
+      );
+
+      await tx
+        .update(goodsReceipts)
+        .set({
+          supplierId: dto.supplierId ?? null,
+          supplierName,
+          branchId,
+          totalAmount: money(total),
+          currency,
+          usdRate: currency === 'USD' ? money(rateToBase) : null,
+          itemCount,
+          note: dto.note ?? null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(goodsReceipts.id, receiptId),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        );
+    });
+
+    return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
+  }
+
+  /**
+   * Delete a draft receipt and its lines. Nothing else references a draft —
+   * stock, batches, payments and returns only exist once it is received.
+   */
+  async remove(businessId: string, receiptId: string): Promise<void> {
+    await this.loadDraft(
+      businessId,
+      receiptId,
+      ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE,
+    );
+
+    await this.dbService.db.transaction(async (tx) => {
+      await tx
+        .delete(goodsReceiptItems)
+        .where(
+          and(
+            eq(goodsReceiptItems.businessId, businessId),
+            eq(goodsReceiptItems.receiptId, receiptId),
+          ),
+        );
+      await tx
+        .delete(goodsReceipts)
+        .where(
+          and(
+            eq(goodsReceipts.id, receiptId),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        );
+    });
   }
 
   async findAll(

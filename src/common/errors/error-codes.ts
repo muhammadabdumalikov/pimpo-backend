@@ -102,6 +102,8 @@ export enum ErrorCode {
   SUPPLIER_NOT_FOUND_BY_ID = 'SUPPLIER_NOT_FOUND_BY_ID',
   RECEIPT_USD_RATE_REQUIRED = 'RECEIPT_USD_RATE_REQUIRED',
   RECEIPT_ONLY_DRAFT_RECEIVABLE = 'RECEIPT_ONLY_DRAFT_RECEIVABLE',
+  RECEIPT_ONLY_DRAFT_EDITABLE = 'RECEIPT_ONLY_DRAFT_EDITABLE',
+  RECEIPT_ONLY_DRAFT_DELETABLE = 'RECEIPT_ONLY_DRAFT_DELETABLE',
   RECEIPT_RECEIVE_BEFORE_PAYMENT = 'RECEIPT_RECEIVE_BEFORE_PAYMENT',
   RECEIPT_RECEIVE_BEFORE_RETURN = 'RECEIPT_RECEIVE_BEFORE_RETURN',
   RECEIPT_NOTHING_TO_RETURN = 'RECEIPT_NOTHING_TO_RETURN',
@@ -509,6 +511,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.RECEIPT_ONLY_DRAFT_RECEIVABLE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Only a draft receipt can be received',
+  },
+  [ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only a draft receipt can be edited; return the goods instead',
+  },
+  [ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only a draft receipt can be deleted; return the goods instead',
   },
   [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {
     status: HttpStatus.BAD_REQUEST,

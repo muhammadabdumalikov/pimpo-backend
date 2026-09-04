@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -27,6 +29,7 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { CurrentAccount } from '../business/decorators/current-account.decorator';
 import { IBusiness, IAccount } from '../business/types';
 import { CreateReceiptDto } from './dto/create-receipt.dto';
+import { UpdateReceiptDto } from './dto/update-receipt.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 
@@ -101,6 +104,39 @@ export class ReceiptController {
       throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     }
     return receipt;
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Edit a draft receipt (replaces its header and lines)' })
+  @ApiParam({ name: 'id', description: 'Receipt ID' })
+  @ApiResponse({ status: 200, description: 'Receipt updated' })
+  @ApiResponse({ status: 400, description: 'Receipt is not a draft' })
+  @ApiResponse({ status: 404, description: 'Receipt not found' })
+  async update(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Body() updateReceiptDto: UpdateReceiptDto,
+  ) {
+    const receipt = await this.receiptService.update(
+      business.id,
+      id,
+      updateReceiptDto,
+    );
+    return { message: 'Receipt updated successfully', receipt };
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete a draft receipt' })
+  @ApiParam({ name: 'id', description: 'Receipt ID' })
+  @ApiResponse({ status: 200, description: 'Receipt deleted' })
+  @ApiResponse({ status: 400, description: 'Receipt is not a draft' })
+  @ApiResponse({ status: 404, description: 'Receipt not found' })
+  async remove(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    await this.receiptService.remove(business.id, id);
+    return { message: 'Receipt deleted successfully' };
   }
 
   @Get(':id/payments')
