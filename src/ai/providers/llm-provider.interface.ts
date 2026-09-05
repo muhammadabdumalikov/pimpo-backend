@@ -1,3 +1,6 @@
+import {AppException} from '../../common/errors/app.exception';
+import {ErrorCode} from '../../common/errors/error-codes';
+
 /**
  * Provider-agnostic contract for the AI assistant.
  *
@@ -205,12 +208,69 @@ export function estimateCostUsd(
   return systemKey ? list * (1 + SYSTEM_TOKEN_MARKUP) : list;
 }
 
+/**
+ * One image or PDF handed to the model to read.
+ *
+ * Carried as bytes, never as a URL or an object key: the invoice a shop
+ * photographs is scanned in flight and thrown away, so it is never uploaded to
+ * S3 and there is nothing for a provider to fetch back.
+ */
+export interface LlmDocument {
+  /** e.g. `image/jpeg`, `image/png`, `image/webp`, `application/pdf`. */
+  mimeType: string;
+  /** Raw bytes, base64, with no `data:` prefix and no newlines. */
+  data: string;
+}
+
+export interface LlmExtractOptions {
+  /** Persona and rules. Stable across calls, so it caches where supported. */
+  system: string;
+  /** What to pull out of the documents, in the caller's own words. */
+  instruction: string;
+  documents: LlmDocument[];
+  /**
+   * JSON Schema the answer must validate against, enforced by each provider's
+   * structured-output mode rather than by asking nicely in the prompt.
+   *
+   * Keep it to the intersection the three of them agree on — objects, arrays,
+   * `string`/`number`/`boolean`, `enum`, `required`, `additionalProperties`.
+   * In particular do NOT use nullable types (`type: ['string','null']`) or
+   * `anyOf`: Gemini's JSON-Schema subset and OpenAI's strict mode disagree on
+   * both. Model "unknown" as an empty string or 0 and say so in the prompt.
+   */
+  schema: JsonSchemaObject;
+  /** Schema name, for the providers that require one. */
+  schemaName: string;
+  signal: AbortSignal;
+  maxOutputTokens?: number;
+}
+
+export interface LlmExtractResult {
+  /** Parsed JSON conforming to `schema` — never a string. */
+  data: unknown;
+  usage: Omit<LlmUsageEvent, 'type'>;
+}
+
+/**
+ * Output ceiling for an extraction. Higher than `MAX_OUTPUT_TOKENS` because a
+ * long delivery note is one large JSON document rather than a chat reply: a
+ * 60-line invoice runs to roughly 4k tokens, and on the thinking models the
+ * reasoning is drawn from the same allowance.
+ */
+export const MAX_EXTRACT_OUTPUT_TOKENS = 16000;
+
 export interface LlmProvider {
   readonly id: AiProviderId;
   /** Emits deltas and tool progress; resolves when the answer is complete. */
   run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void>;
   /** Cheap auth/connectivity probe for the settings page's "Test" button. */
   test(signal?: AbortSignal): Promise<void>;
+  /**
+   * Reads images/PDFs and returns JSON matching `schema`. One round trip, no
+   * tools, no streaming — the caller has nothing to show until the whole
+   * document is parsed anyway.
+   */
+  extractDocument(opts: LlmExtractOptions): Promise<LlmExtractResult>;
 }
 
 /** Default cap on model round-trips per question (tool calls + final answer). */
@@ -341,4 +401,24 @@ export function defaultModelFor(provider: AiProviderId): string {
  */
 export function isValidModelId(model: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._\-:/]{1,59}$/.test(model);
+}
+
+/**
+ * Parses a structured-output body.
+ *
+ * Structured output makes valid JSON the norm, not a guarantee: a response cut
+ * off at `maxOutputTokens` is truncated mid-object and still arrives as a
+ * successful call. Throwing a typed error here is what lets the caller answer
+ * "this document could not be read" instead of a raw `SyntaxError`.
+ */
+export function parseExtractJson(text: string | undefined): unknown {
+  const body = (text ?? '').trim();
+  if (!body) {
+    throw new AppException(ErrorCode.AI_INVOICE_UNREADABLE);
+  }
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new AppException(ErrorCode.AI_INVOICE_UNREADABLE);
+  }
 }

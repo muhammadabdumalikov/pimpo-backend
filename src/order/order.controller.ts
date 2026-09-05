@@ -161,17 +161,31 @@ export class OrderController {
 
   @Get('monthly-sales')
   @ApiOperation({
-    summary: 'Completed-order revenue per month for a year (12 values)',
+    summary:
+      'Completed-order revenue per month — a trailing window (`months`) or a full calendar year (12 values)',
+  })
+  @ApiQuery({
+    name: 'months',
+    required: false,
+    description:
+      'Trailing window of 1-24 months ending with the current one; takes precedence over `year` and may cross the year boundary',
   })
   @ApiQuery({
     name: 'year',
     required: false,
-    description: 'Defaults to current year',
+    description: 'Defaults to current year; ignored when `months` is given',
   })
   async getMonthlySales(
     @CurrentBusiness() business: IBusiness,
     @Query('year') year?: string,
+    @Query('months') months?: string,
   ) {
+    const window = months ? parseInt(months, 10) : NaN;
+    if (Number.isFinite(window) && window >= 1 && window <= 24) {
+      // `periods` labels the values ('YYYY-MM'), since a trailing window is not
+      // anchored to January and can span two years.
+      return this.orderService.getRecentMonthlySales(business.id, window);
+    }
     const parsed = year ? parseInt(year, 10) : NaN;
     const y = Number.isFinite(parsed) ? parsed : new Date().getFullYear();
     return {
@@ -269,13 +283,19 @@ export class OrderController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({summary: 'Delete an order'})
+  @ApiOperation({
+    summary:
+      'Delete an order. A held cart is just dropped; a real sale is reversed ' +
+      '(stock, debt, loyalty) and is owner-only.',
+  })
   @ApiParam({name: 'id', description: 'Order ID'})
+  @ApiResponse({status: 403, description: 'Only the owner can delete a sale'})
   async remove(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
   ) {
-    await this.orderService.remove(business.id, id);
+    await this.orderService.remove(business.id, id, account);
     return {message: 'Order deleted successfully'};
   }
 }

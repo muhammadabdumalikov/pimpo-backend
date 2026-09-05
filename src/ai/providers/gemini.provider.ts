@@ -9,10 +9,14 @@ import {
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
+  LlmExtractOptions,
+  LlmExtractResult,
   LlmProvider,
   LlmRunOptions,
+  MAX_EXTRACT_OUTPUT_TOKENS,
   MAX_OUTPUT_TOKENS,
   displayOnlyNames,
+  parseExtractJson,
   turnEndsHere,
 } from './llm-provider.interface';
 
@@ -42,6 +46,58 @@ export class GeminiProvider implements LlmProvider {
       contents: [{role: 'user', parts: [{text: 'Reply with OK.'}]}],
       config: {maxOutputTokens: 16, abortSignal: signal},
     });
+  }
+
+  /**
+   * Gemini's structured-output mode: `responseJsonSchema` takes plain JSON
+   * Schema (the older `responseSchema` field wants an OpenAPI-subset `Schema`
+   * and mangles anything else), and it is only honoured when the mime type is
+   * also pinned to JSON.
+   *
+   * Non-streaming on purpose — there is nothing to show a shop owner until the
+   * whole document has been read, and a half-parsed JSON body is unusable.
+   */
+  async extractDocument(opts: LlmExtractOptions): Promise<LlmExtractResult> {
+    const parts: Part[] = [
+      ...opts.documents.map(
+        (doc): Part => ({
+          inlineData: {mimeType: doc.mimeType, data: doc.data},
+        }),
+      ),
+      // Instruction last: the model reads the pages, then is told what to pull
+      // out of them.
+      {text: opts.instruction},
+    ];
+
+    const response = await this.client.models.generateContent({
+      model: this.model,
+      contents: [{role: 'user', parts}],
+      config: {
+        systemInstruction: opts.system,
+        maxOutputTokens: opts.maxOutputTokens ?? MAX_EXTRACT_OUTPUT_TOKENS,
+        responseMimeType: 'application/json',
+        responseJsonSchema: opts.schema,
+        // No temperature override, tempting as one is for a transcription job:
+        // Google's guidance for the Gemini 3 line — which is every model in our
+        // picker — is to leave it at the default, because the thinking models
+        // degrade and can loop when it is pulled down. A repeatable scan is not
+        // worth a scan that never returns.
+        abortSignal: opts.signal,
+      },
+    });
+
+    const usage = response.usageMetadata;
+    const thinking = usage?.thoughtsTokenCount ?? 0;
+
+    return {
+      data: parseExtractJson(response.text),
+      usage: {
+        inputTokens: usage?.promptTokenCount ?? 0,
+        outputTokens: (usage?.candidatesTokenCount ?? 0) + thinking,
+        cachedInputTokens: usage?.cachedContentTokenCount ?? 0,
+        thinkingTokens: thinking,
+      },
+    };
   }
 
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {
@@ -203,3 +259,4 @@ export class GeminiProvider implements LlmProvider {
     };
   }
 }
+

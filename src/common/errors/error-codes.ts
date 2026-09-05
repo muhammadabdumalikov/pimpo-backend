@@ -71,6 +71,7 @@ export enum ErrorCode {
 
   // ── Order ──────────────────────────────────────────────────────────────────
   ORDER_NOT_FOUND = 'ORDER_NOT_FOUND',
+  ORDER_DELETE_DEBT_PAID = 'ORDER_DELETE_DEBT_PAID',
   SHIFT_NOT_FOUND_FOR_BUSINESS = 'SHIFT_NOT_FOUND_FOR_BUSINESS',
   NO_CASH_REGISTER = 'NO_CASH_REGISTER',
   MULTIPLE_REGISTERS = 'MULTIPLE_REGISTERS',
@@ -216,6 +217,7 @@ export enum ErrorCode {
   AI_SQL_TIMEOUT = 'AI_SQL_TIMEOUT',
   AI_SQL_TOO_EXPENSIVE = 'AI_SQL_TOO_EXPENSIVE',
   AI_SQL_UNAVAILABLE = 'AI_SQL_UNAVAILABLE',
+  AI_INVOICE_UNREADABLE = 'AI_INVOICE_UNREADABLE',
 }
 
 export interface ErrorDefinition {
@@ -402,6 +404,11 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.ORDER_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Order not found',
+  },
+  [ErrorCode.ORDER_DELETE_DEBT_PAID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'This sale has payments recorded against its debt; settle the debt before deleting the sale',
   },
   [ErrorCode.SHIFT_NOT_FOUND_FOR_BUSINESS]: {
     status: HttpStatus.BAD_REQUEST,
@@ -863,6 +870,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.AI_SQL_UNAVAILABLE]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
     message: 'Ad-hoc SQL is not enabled on this server',
+  },
+  [ErrorCode.AI_INVOICE_UNREADABLE]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'No product lines could be read from this document',
   },
 };
 

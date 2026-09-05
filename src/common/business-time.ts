@@ -22,3 +22,32 @@ export function businessDayStart(ymd: string): Date {
 export function businessDayEnd(ymd: string): Date {
   return new Date(`${ymd.slice(0, 10)}T23:59:59.999${BUSINESS_UTC_OFFSET}`);
 }
+
+/** The +05:00 offset in milliseconds — the same shift, for Date arithmetic. */
+export const BUSINESS_OFFSET_MS = 5 * 3_600_000;
+
+/** Current calendar month ("YYYY-MM") in the business zone. */
+export function businessMonth(now: Date = new Date()): string {
+  const local = new Date(now.getTime() + BUSINESS_OFFSET_MS);
+  return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/**
+ * The last `count` calendar months in the business zone, oldest first and
+ * ending with the current one: ['2026-04' … '2026-09'] for count = 6. Crosses
+ * the year boundary, unlike a calendar-year window.
+ */
+export function recentBusinessMonths(
+  count: number,
+  now: Date = new Date(),
+): string[] {
+  const [y, m] = businessMonth(now).split('-').map(Number);
+  const out: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(y, m - 1 - i, 1));
+    out.push(
+      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`,
+    );
+  }
+  return out;
+}

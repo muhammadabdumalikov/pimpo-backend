@@ -2,10 +2,14 @@ import OpenAI from 'openai';
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
+  LlmExtractOptions,
+  LlmExtractResult,
   LlmProvider,
   LlmRunOptions,
+  MAX_EXTRACT_OUTPUT_TOKENS,
   MAX_OUTPUT_TOKENS,
   displayOnlyNames,
+  parseExtractJson,
   turnEndsHere,
 } from './llm-provider.interface';
 
@@ -37,6 +41,75 @@ export class OpenAiProvider implements LlmProvider {
       },
       {signal},
     );
+  }
+
+  /**
+   * Chat Completions takes images as a data URI on an `image_url` part; a PDF
+   * goes on a `file` part instead, base64 in `file_data` with the same prefix.
+   *
+   * `strict: true` needs `additionalProperties: false` on every object in the
+   * schema — the caller's schema already sets it, and OpenAI rejects the
+   * request loudly rather than silently degrading if it does not.
+   */
+  async extractDocument(opts: LlmExtractOptions): Promise<LlmExtractResult> {
+    const parts: OpenAI.Chat.ChatCompletionContentPart[] = [
+      ...opts.documents.map(
+        (doc, i): OpenAI.Chat.ChatCompletionContentPart =>
+          doc.mimeType === 'application/pdf'
+            ? {
+                type: 'file',
+                file: {
+                  filename: `document-${i + 1}.pdf`,
+                  file_data: `data:application/pdf;base64,${doc.data}`,
+                },
+              }
+            : {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${doc.mimeType};base64,${doc.data}`,
+                  // Small print on a delivery note is exactly what the low-res
+                  // path throws away.
+                  detail: 'high',
+                },
+              },
+      ),
+      {type: 'text', text: opts.instruction},
+    ];
+
+    const completion = await this.client.chat.completions.create(
+      {
+        model: this.model,
+        max_completion_tokens: opts.maxOutputTokens ?? MAX_EXTRACT_OUTPUT_TOKENS,
+        messages: [
+          {role: 'system', content: opts.system},
+          {role: 'user', content: parts},
+        ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: opts.schemaName,
+            schema: opts.schema as Record<string, unknown>,
+            strict: true,
+          },
+        },
+      },
+      {signal: opts.signal},
+    );
+
+    const usage = completion.usage;
+    const reasoning = usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+
+    return {
+      data: parseExtractJson(completion.choices[0]?.message?.content ?? ''),
+      usage: {
+        inputTokens: usage?.prompt_tokens ?? 0,
+        // `completion_tokens` already includes reasoning; it is reported
+        // separately only so the caller can see the split.
+        outputTokens: usage?.completion_tokens ?? 0,
+        cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        thinkingTokens: reasoning,
+      },
+    };
   }
 
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {

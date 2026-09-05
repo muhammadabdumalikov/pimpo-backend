@@ -24,7 +24,8 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "ts-node src/database/seed.ts",
     "db:import-mxik": "ts-node src/database/import-mxik.ts",
-    "ai:schema-doc": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/gen-schema-doc.ts"
+    "ai:schema-doc": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/gen-schema-doc.ts",
+    "ai:try-invoice": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/try-invoice.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

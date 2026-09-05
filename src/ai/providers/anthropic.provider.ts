@@ -2,10 +2,14 @@ import Anthropic from '@anthropic-ai/sdk';
 import {
   DEFAULT_MAX_ITERATIONS,
   LlmEvent,
+  LlmExtractOptions,
+  LlmExtractResult,
   LlmProvider,
   LlmRunOptions,
+  MAX_EXTRACT_OUTPUT_TOKENS,
   MAX_OUTPUT_TOKENS,
   displayOnlyNames,
+  parseExtractJson,
   turnEndsHere,
 } from './llm-provider.interface';
 
@@ -38,6 +42,72 @@ export class AnthropicProvider implements LlmProvider {
       },
       {signal},
     );
+  }
+
+  /**
+   * Structured outputs (`output_config.format`) rather than a forced tool call:
+   * a tool call would have to be un-wrapped from a `tool_use` block and is
+   * rejected outright on some newer models, while the format constraint returns
+   * the JSON as ordinary text on every model the picker offers.
+   *
+   * PDFs go in as `document` blocks and images as `image` blocks — Claude
+   * refuses a PDF sent as an image, so the mime type picks the block.
+   */
+  async extractDocument(opts: LlmExtractOptions): Promise<LlmExtractResult> {
+    const content: Anthropic.ContentBlockParam[] = [
+      ...opts.documents.map((doc): Anthropic.ContentBlockParam =>
+        doc.mimeType === 'application/pdf'
+          ? {
+              type: 'document',
+              source: {
+                type: 'base64',
+                media_type: 'application/pdf',
+                data: doc.data,
+              },
+            }
+          : {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type:
+                  doc.mimeType as Anthropic.Base64ImageSource['media_type'],
+                data: doc.data,
+              },
+            },
+      ),
+      {type: 'text', text: opts.instruction},
+    ];
+
+    const message = await this.client.messages.create(
+      {
+        model: this.model,
+        max_tokens: opts.maxOutputTokens ?? MAX_EXTRACT_OUTPUT_TOKENS,
+        system: opts.system,
+        messages: [{role: 'user', content}],
+        output_config: {format: {type: 'json_schema', schema: opts.schema}},
+      },
+      {signal: opts.signal},
+    );
+
+    const text = message.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('');
+
+    const usage = message.usage;
+    return {
+      data: parseExtractJson(text),
+      usage: {
+        // Anthropic reports cache traffic outside `input_tokens`; the contract
+        // wants the full billable input.
+        inputTokens:
+          usage.input_tokens +
+          (usage.cache_creation_input_tokens ?? 0) +
+          (usage.cache_read_input_tokens ?? 0),
+        outputTokens: usage.output_tokens,
+        cachedInputTokens: usage.cache_read_input_tokens ?? 0,
+      },
+    };
   }
 
   async *run(opts: LlmRunOptions): AsyncGenerator<LlmEvent, void, void> {

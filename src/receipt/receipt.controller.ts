@@ -23,6 +23,7 @@ import {
 } from '@nestjs/swagger';
 import { ReceiptService } from './receipt.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
+import { OwnerGuard } from '../business/owner.guard';
 import { PlanTierGuard } from '../subscription/plan-tier.guard';
 import { MinTier } from '../subscription/required-tier.decorator';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
@@ -152,10 +153,12 @@ export class ReceiptController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Delete a draft receipt' })
+  @UseGuards(OwnerGuard)
+  @ApiOperation({ summary: 'Delete a draft receipt (owner only)' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   @ApiResponse({ status: 200, description: 'Receipt deleted' })
   @ApiResponse({ status: 400, description: 'Receipt is not a draft' })
+  @ApiResponse({ status: 403, description: 'Owner only' })
   @ApiResponse({ status: 404, description: 'Receipt not found' })
   async remove(
     @CurrentBusiness() business: IBusiness,

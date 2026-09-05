@@ -17,7 +17,11 @@ import {
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {isStockTakeActive} from '../common/stock-take-lock';
-import {businessDayStart, businessDayEnd} from '../common/business-time';
+import {
+  businessDayStart,
+  businessDayEnd,
+  recentBusinessMonths,
+} from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {
   orders,
@@ -28,6 +32,7 @@ import {
   categories,
   users,
   userDebts,
+  debtPayments,
   receiptSettings,
   loyaltySettings,
   loyaltyTransactions,
@@ -47,6 +52,9 @@ import {HoldOrderDto} from './dto/hold-order.dto';
 import {UpdateOrderDto} from './dto/update-order.dto';
 import {IAccount} from '../business/types';
 import {consumeBatches, type CostingMethod} from './costing';
+
+// Drizzle transaction handle (parameter of db.transaction's callback).
+type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
 export type OrderWithItems = Order & {items: OrderItem[]};
 
@@ -1155,60 +1163,12 @@ export class OrderService {
       existing.status !== 'Held';
     if (restock) {
       await this.dbService.db.transaction(async (tx) => {
-        for (const item of existing.items) {
-          if (!item.productId) continue;
-          const [product] = await tx
-            .select({id: products.id})
-            .from(products)
-            .where(
-              and(
-                eq(products.businessId, businessId),
-                eq(products.id, item.productId),
-              ),
-            )
-            .limit(1);
-          if (!product) continue; // product deleted since the sale
-          await tx.insert(inventoryBatches).values({
-            id: generateId(),
-            businessId,
-            productId: item.productId,
-            branchId: existing.branchId ?? null,
-            priceIn: item.costIn,
-            priceOut: item.priceOut,
-            qtyReceived: item.quantity,
-            qtyRemaining: item.quantity,
-          });
-          if (existing.branchId) {
-            await tx
-              .insert(branchStock)
-              .values({
-                id: generateId(),
-                businessId,
-                productId: item.productId,
-                branchId: existing.branchId,
-                quantity: item.quantity,
-              })
-              .onConflictDoUpdate({
-                target: [branchStock.productId, branchStock.branchId],
-                set: {
-                  quantity: sql`ROUND((${branchStock.quantity} + ${item.quantity})::numeric, 3)`,
-                  updatedAt: new Date(),
-                },
-              });
-          }
-          await tx
-            .update(products)
-            .set({
-              quantity: sql`ROUND((${products.quantity} + ${item.quantity})::numeric, 3)`,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(products.businessId, businessId),
-                eq(products.id, item.productId),
-              ),
-            );
-        }
+        await this.restockOrderLinesTx(
+          tx,
+          businessId,
+          existing.items,
+          existing.branchId,
+        );
         await tx
           .update(orders)
           .set({status, updatedAt: new Date()})
@@ -1321,14 +1281,202 @@ export class OrderService {
     return this.findOne(businessId, id) as Promise<OrderWithItems>;
   }
 
-  async remove(businessId: string, id: string): Promise<void> {
+  /**
+   * Put a sale's goods back on the shelf: one restock batch per line at the
+   * line's own cost/price snapshot, in the order's branch, plus the branch and
+   * product quantities. Runs inside the caller's transaction.
+   *
+   * FIFO consumption cannot be undone exactly — `consumeBatches` doesn't record
+   * which lots a line drew from — so the goods return as one fresh lot valued at
+   * the line's cost. Stock level and inventory value are restored; lot identity
+   * is not. Shared by cancelling a storefront order and by deleting a sale.
+   */
+  private async restockOrderLinesTx(
+    tx: DbTx,
+    businessId: string,
+    items: OrderItem[],
+    branchId: string | null,
+  ): Promise<void> {
+    for (const item of items) {
+      if (!item.productId) continue;
+      const [product] = await tx
+        .select({id: products.id})
+        .from(products)
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, item.productId),
+          ),
+        )
+        .limit(1);
+      if (!product) continue; // product deleted since the sale
+      await tx.insert(inventoryBatches).values({
+        id: generateId(),
+        businessId,
+        productId: item.productId,
+        branchId: branchId ?? null,
+        priceIn: item.costIn,
+        priceOut: item.priceOut,
+        qtyReceived: item.quantity,
+        qtyRemaining: item.quantity,
+      });
+      if (branchId) {
+        await tx
+          .insert(branchStock)
+          .values({
+            id: generateId(),
+            businessId,
+            productId: item.productId,
+            branchId,
+            quantity: item.quantity,
+          })
+          .onConflictDoUpdate({
+            target: [branchStock.productId, branchStock.branchId],
+            set: {
+              quantity: sql`ROUND((${branchStock.quantity} + ${item.quantity})::numeric, 3)`,
+              updatedAt: new Date(),
+            },
+          });
+      }
+      await tx
+        .update(products)
+        .set({
+          quantity: sql`ROUND((${products.quantity} + ${item.quantity})::numeric, 3)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, item.productId),
+          ),
+        );
+    }
+  }
+
+  /**
+   * Delete a sale.
+   *
+   * A parked cart ("Held") is only a saved cart — no stock, money or customer
+   * was ever touched — and the till deletes its own drafts, so that stays a
+   * plain row delete any signed-in account may do.
+   *
+   * Everything else is a real sale, and only the business owner may remove one:
+   * the goods go back on the shelf, the debt it raised is dropped and the
+   * loyalty points it moved are taken back, all in one transaction.
+   *
+   * Deliberately NOT rewritten: a closed shift keeps the reconciliation it was
+   * signed off with (that snapshot is a historical document, not a live sum),
+   * and the cached sales summaries refresh on their own TTL.
+   */
+  async remove(
+    businessId: string,
+    id: string,
+    account?: IAccount,
+  ): Promise<void> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
       throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
-    await this.dbService.db
-      .delete(orders)
-      .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+
+    if (existing.status === 'Held') {
+      await this.dbService.db
+        .delete(orders)
+        .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+      return;
+    }
+
+    if (account?.type !== 'business') {
+      throw new AppException(ErrorCode.OWNER_ONLY);
+    }
+
+    // Deleting a sale moves products.quantity, so it is frozen while a count is
+    // open for the same reason ringing one up is.
+    await this.assertNoStockTakeInProgress(businessId);
+
+    // The credit this sale gave out can only go with it while nothing has been
+    // collected against it — money already taken must not vanish with the order.
+    const debts = await this.dbService.db
+      .select({id: userDebts.id})
+      .from(userDebts)
+      .where(
+        and(eq(userDebts.businessId, businessId), eq(userDebts.orderId, id)),
+      );
+    if (debts.length > 0) {
+      const [paid] = await this.dbService.db
+        .select({value: count()})
+        .from(debtPayments)
+        .where(
+          inArray(
+            debtPayments.debtId,
+            debts.map((d) => d.id),
+          ),
+        );
+      if (Number(paid?.value ?? 0) > 0) {
+        throw new AppException(ErrorCode.ORDER_DELETE_DEBT_PAID);
+      }
+    }
+
+    // A cancelled storefront order already put its goods back (updateStatus).
+    const restock = !(
+      existing.status === 'Cancelled' && existing.source === 'store'
+    );
+
+    await this.dbService.db.transaction(async (tx) => {
+      if (restock) {
+        await this.restockOrderLinesTx(
+          tx,
+          businessId,
+          existing.items,
+          existing.branchId,
+        );
+      }
+
+      // Loyalty: undo this sale's net balance movement and the spend it counted
+      // towards the customer's tier, then drop its ledger rows. The balance is
+      // clamped at zero — points earned here may already have been spent on a
+      // later sale, and leaving a customer in the negative is worse than
+      // under-clawing back.
+      if (existing.userId) {
+        const moves = await tx
+          .select({amount: loyaltyTransactions.amount})
+          .from(loyaltyTransactions)
+          .where(
+            and(
+              eq(loyaltyTransactions.businessId, businessId),
+              eq(loyaltyTransactions.orderId, id),
+            ),
+          );
+        const net = moves.reduce((sum, m) => sum + Number(m.amount), 0);
+        await tx
+          .update(users)
+          .set({
+            bonusBalance: sql`GREATEST(ROUND((${users.bonusBalance} - ${money(net)})::numeric, 2), 0)`,
+            totalSpent: sql`GREATEST(ROUND((${users.totalSpent} - ${existing.totalAmount})::numeric, 2), 0)`,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, existing.userId));
+        await tx
+          .delete(loyaltyTransactions)
+          .where(
+            and(
+              eq(loyaltyTransactions.businessId, businessId),
+              eq(loyaltyTransactions.orderId, id),
+            ),
+          );
+      }
+
+      // The debt this sale raised goes with it (guarded above: nothing paid).
+      await tx
+        .delete(userDebts)
+        .where(
+          and(eq(userDebts.businessId, businessId), eq(userDebts.orderId, id)),
+        );
+
+      // order_items cascade with the order row.
+      await tx
+        .delete(orders)
+        .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
+    });
   }
 
   /**
@@ -1596,6 +1744,56 @@ export class OrderService {
       if (m >= 1 && m <= 12) monthly[m - 1] = Number(r.sum);
     }
     return monthly;
+  }
+
+  /**
+   * Completed-order revenue for a TRAILING window of `months` calendar months
+   * ending with the current one — what the dashboard shows, so a January visit
+   * still sees the previous autumn instead of a near-empty year. Buckets are
+   * truncated in the business zone (+05:00), matching business-time.ts.
+   */
+  async getRecentMonthlySales(
+    businessId: string,
+    months: number,
+  ): Promise<{periods: string[]; monthly: number[]}> {
+    const periods = recentBusinessMonths(months);
+    return this.cache.wrap(
+      // The window's end month is part of the key: at a month rollover the
+      // cached array would otherwise be a month out of step with its labels.
+      CacheKeys.ordersMonthly(businessId, {
+        months,
+        end: periods[periods.length - 1],
+      }),
+      () => this.computeRecentMonthlySales(businessId, periods),
+      TTL.ORDERS_MONTHLY,
+    );
+  }
+
+  private async computeRecentMonthlySales(
+    businessId: string,
+    periods: string[],
+  ): Promise<{periods: string[]; monthly: number[]}> {
+    // Literal '5 hours' (not a bind param) so the SELECT and GROUP BY texts are
+    // byte-identical — see the same note in report.service.getSales().
+    const bucket = sql<string>`to_char(date_trunc('month', ${orders.createdAt} + interval '5 hours'), 'YYYY-MM')`;
+
+    const rows = await this.dbService.db
+      .select({
+        period: bucket,
+        sum: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          gte(orders.createdAt, businessDayStart(`${periods[0]}-01`)),
+        ),
+      )
+      .groupBy(bucket);
+
+    const byPeriod = new Map(rows.map((r) => [r.period, Number(r.sum)]));
+    return {periods, monthly: periods.map((p) => byPeriod.get(p) ?? 0)};
   }
 
   /**
