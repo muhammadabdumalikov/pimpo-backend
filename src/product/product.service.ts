@@ -240,6 +240,26 @@ export class ProductService {
     }>,
   ): Promise<{
     created: number;
+    /**
+     * The rows that were actually created, each carrying the 1-based index of
+     * the item it came from.
+     *
+     * The count alone is not enough for every caller: the delivery-note scanner
+     * creates products for the lines it could not match and then has to attach
+     * each new id back to its line. Rows drop out on validation, duplicates and
+     * the plan limit, so position in `items` cannot be relied on — `row` is the
+     * only honest link.
+     */
+    products: Array<{
+      row: number;
+      id: string;
+      name: string;
+      code: string | null;
+      barcode: string | null;
+      priceIn: string;
+      priceOut: string;
+      quantityType: string | null;
+    }>;
     skipped: Array<{row: number; reason: string}>;
     errors: Array<{row: number; reason: string}>;
     limitReached: boolean;
@@ -280,6 +300,9 @@ export class ProductService {
     const seenCodes = new Set<string>();
     const seenBarcodes = new Set<string>();
     const toInsert: NewProduct[] = [];
+    // Pushed in lockstep with `toInsert`, so index i of one names index i of
+    // the other. Keeps the limit check (`toInsert.length`) untouched.
+    const insertedRows: number[] = [];
     let limitReached = false;
 
     // Imported products land in the business default branch.
@@ -334,6 +357,7 @@ export class ProductService {
 
       if (code) seenCodes.add(code);
       if (barcode) seenBarcodes.add(barcode);
+      insertedRows.push(row);
 
       // Round to whole grams (3 decimals) rather than flooring, so weighed
       // goods (quantityType 'kg') keep their fractional stock, e.g. 0.25 kg.
@@ -369,7 +393,7 @@ export class ProductService {
     });
 
     if (toInsert.length === 0) {
-      return {created: 0, skipped, errors, limitReached};
+      return {created: 0, products: [], skipped, errors, limitReached};
     }
 
     await this.dbService.db.transaction(async (tx) => {
@@ -431,7 +455,22 @@ export class ProductService {
       }
     });
 
-    return {created: toInsert.length, skipped, errors, limitReached};
+    return {
+      created: toInsert.length,
+      products: toInsert.map((p, i) => ({
+        row: insertedRows[i],
+        id: p.id,
+        name: p.name,
+        code: p.code ?? null,
+        barcode: p.barcode ?? null,
+        priceIn: p.priceIn,
+        priceOut: p.priceOut,
+        quantityType: p.quantityType ?? null,
+      })),
+      skipped,
+      errors,
+      limitReached,
+    };
   }
 
   // A product counts as "low" at or below its own reorder point
