@@ -5,12 +5,7 @@ import {ErrorCode} from '../../common/errors/error-codes';
 import {DatabaseService} from '../../database/database.service';
 import {products} from '../../database/schema';
 import {AiSettingsService} from '../ai-settings.service';
-import {
-  CatalogEntry,
-  CatalogIndex,
-  MatchCandidate,
-  NAME_MATCH_THRESHOLD,
-} from './invoice-match';
+import {CatalogEntry, CatalogIndex, MatchCandidate} from './invoice-match';
 import {
   INVOICE_CONTINUATION_INSTRUCTION,
   INVOICE_INSTRUCTION,
@@ -31,12 +26,11 @@ const PARSE_BUDGET_MS = 120_000;
 const MAX_LINES = 200;
 
 /**
- * Products loaded for name matching.
+ * Products loaded for code matching.
  *
- * The whole (trimmed) catalogue is pulled in one query and matched in memory,
- * rather than one `ILIKE` round trip per invoice row: 60 rows would be 60
- * queries against a remote Postgres, and none of them would cross the
- * Latin/Cyrillic script boundary the way `foldForMatch` does.
+ * The whole (trimmed) catalogue is pulled in one query and indexed in memory
+ * rather than one round trip per invoice row: a 60-line note would otherwise
+ * be 60 queries against a remote Postgres.
  */
 const MAX_CATALOG_ROWS = 20_000;
 
@@ -250,13 +244,10 @@ export class InvoiceService {
     const lineTotal = line.lineTotal > 0 ? round2(line.lineTotal) : null;
     const barcode = blankToNull(line.barcode);
 
-    const candidates = index.find(line.name, barcode);
-    const best = candidates[0];
-    // An exact code hit is trusted as-is; a name hit has to clear the bar.
-    const matched =
-      best && (best.by !== 'name' || best.score >= NAME_MATCH_THRESHOLD)
-        ? best
-        : null;
+    // Exact code only. A row whose note printed no barcode arrives unmatched
+    // and the owner picks the product — see invoice-match for why no name-based
+    // guess is offered here.
+    const matched = index.find(barcode);
 
     return {
       index: i + 1,
@@ -273,9 +264,9 @@ export class InvoiceService {
           ? null
           : Math.abs(quantity * priceIn - lineTotal) <= TOTAL_TOLERANCE,
       match: matched,
-      // When nothing cleared the bar the best guesses are still worth showing —
-      // they are exactly what the owner would have searched for by hand.
-      alternatives: candidates.filter((c) => c !== matched),
+      // Kept on the wire so the review's shape does not change; nothing fills
+      // it now that only exact matches are made.
+      alternatives: [],
     };
   }
 

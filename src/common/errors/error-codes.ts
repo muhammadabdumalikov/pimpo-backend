@@ -110,6 +110,9 @@ export enum ErrorCode {
   RECEIPT_NOTHING_TO_RETURN = 'RECEIPT_NOTHING_TO_RETURN',
   RECEIPT_PRODUCT_NOT_ON_RECEIPT = 'RECEIPT_PRODUCT_NOT_ON_RECEIPT',
   RECEIPT_RETURN_EXCEEDS_STOCK = 'RECEIPT_RETURN_EXCEEDS_STOCK',
+  RECEIPT_PARTLY_SOLD = 'RECEIPT_PARTLY_SOLD',
+  RECEIPT_HAS_RETURNS = 'RECEIPT_HAS_RETURNS',
+  RECEIPT_HAS_PAYMENTS = 'RECEIPT_HAS_PAYMENTS',
 
   // ── Role ───────────────────────────────────────────────────────────────────
   ROLE_NOT_FOUND = 'ROLE_NOT_FOUND',
@@ -519,13 +522,33 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Only a draft receipt can be received',
   },
+  // Raised when a caller edits or deletes an already-received receipt without
+  // saying so outright. Both are possible — they move real stock — and the
+  // screen that means to do it says so; anything else reaching here is a stale
+  // tab or a client that thinks it is still handling a draft.
   [ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Only a draft receipt can be edited; return the goods instead',
+    message: 'This receipt has already been received; open it to edit it',
   },
   [ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Only a draft receipt can be deleted; return the goods instead',
+    message: 'This receipt has already been received; open it to delete it',
+  },
+  // A received receipt can still be taken back, but only while all of it is
+  // still on the shelf. Once a unit is sold its cost came out of this
+  // receipt's batch, and undoing the batch would rewrite a closed sale.
+  [ErrorCode.RECEIPT_PARTLY_SOLD]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Some of these goods have already been sold; record a return instead',
+  },
+  [ErrorCode.RECEIPT_HAS_RETURNS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This receipt already has a return against it',
+  },
+  [ErrorCode.RECEIPT_HAS_PAYMENTS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Remove this receipt\'s payments before deleting it',
   },
   [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {
     status: HttpStatus.BAD_REQUEST,

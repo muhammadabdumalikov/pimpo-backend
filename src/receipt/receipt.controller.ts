@@ -109,10 +109,22 @@ export class ReceiptController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Edit a draft receipt (replaces its header and lines)' })
+  @ApiOperation({
+    summary: 'Edit a receipt (replaces its header and lines)',
+    description:
+      'A draft is edited freely. A received receipt is taken off stock and ' +
+      're-applied in one transaction — that needs `amendReceived: true` in ' +
+      'the body, and is allowed only while none of it has been sold and it ' +
+      'carries no payments or returns.',
+  })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   @ApiResponse({ status: 200, description: 'Receipt updated' })
-  @ApiResponse({ status: 400, description: 'Receipt is not a draft' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Already partly sold, has payments/returns, or received without ' +
+      'amendReceived',
+  })
   @ApiResponse({ status: 404, description: 'Receipt not found' })
   async update(
     @CurrentBusiness() business: IBusiness,
@@ -154,17 +166,33 @@ export class ReceiptController {
 
   @Delete(':id')
   @UseGuards(OwnerGuard)
-  @ApiOperation({ summary: 'Delete a draft receipt (owner only)' })
+  @ApiOperation({
+    summary: 'Delete a receipt (owner only)',
+    description:
+      'A draft is removed outright. A received receipt is taken off stock ' +
+      'first — batches dropped, cost recomputed from what remains — which ' +
+      'needs ?amendReceived=true and is allowed only while none of it has ' +
+      'been sold and it carries no payments or returns.',
+  })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   @ApiResponse({ status: 200, description: 'Receipt deleted' })
-  @ApiResponse({ status: 400, description: 'Receipt is not a draft' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Already partly sold, has payments/returns, or received without ' +
+      '?amendReceived=true',
+  })
   @ApiResponse({ status: 403, description: 'Owner only' })
   @ApiResponse({ status: 404, description: 'Receipt not found' })
   async remove(
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
+    // A query string carries no booleans — it arrives as text.
+    @Query('amendReceived') amendReceived?: string,
   ) {
-    await this.receiptService.remove(business.id, id);
+    await this.receiptService.remove(business.id, id, {
+      amendReceived: amendReceived === 'true',
+    });
     return { message: 'Receipt deleted successfully' };
   }
 

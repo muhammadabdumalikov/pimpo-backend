@@ -14,6 +14,8 @@ const DEFAULTS = {
   vatRate: '12',
   costingMethod: 'AVERAGE',
   priceIncreaseMode: 'KEEP_OLD',
+  // No house markup until someone sets one — selling prices stay hand-typed.
+  defaultMarkupPercent: null as string | null,
 };
 
 @Injectable()
@@ -44,6 +46,7 @@ export class SettingsService {
           vatRate: DEFAULTS.vatRate,
           costingMethod: DEFAULTS.costingMethod,
           priceIncreaseMode: DEFAULTS.priceIncreaseMode,
+          defaultMarkupPercent: DEFAULTS.defaultMarkupPercent,
           updatedAt: new Date(),
         };
       },
@@ -65,6 +68,14 @@ export class SettingsService {
       vatRate: dto.vatRate !== undefined ? String(dto.vatRate) : current.vatRate,
       costingMethod: dto.costingMethod ?? current.costingMethod,
       priceIncreaseMode: dto.priceIncreaseMode ?? current.priceIncreaseMode,
+      // null is a meaningful value here (clears the rule), so only `undefined`
+      // means "leave it alone".
+      defaultMarkupPercent:
+        dto.defaultMarkupPercent === undefined
+          ? current.defaultMarkupPercent
+          : dto.defaultMarkupPercent === null
+            ? null
+            : String(dto.defaultMarkupPercent),
     };
 
     await this.dbService.db

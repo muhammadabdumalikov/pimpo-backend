@@ -672,15 +672,22 @@ export class ReceiptService {
   }
 
   /**
-   * Load a receipt that is still editable. Only a draft qualifies: once
-   * received the document has moved stock, opened batches and may carry
-   * payments/returns, so it is corrected with a return instead of an edit.
+   * Load a receipt that may still be taken back whole.
+   *
+   * A draft qualifies trivially — it holds nothing. A received one qualifies
+   * only while every unit it brought in is still on the shelf: the moment a
+   * sale consumes one, that sale's cost came out of this receipt's batch, and
+   * unwinding the batch would rewrite a closed sale. That is the same line the
+   * returns flow draws, and it is drawn here for the same reason.
+   *
+   * Payments and returns block it too. Both are records of their own, made
+   * against this document; deleting the document under them would leave money
+   * and goods pointing at nothing.
    */
-  private async loadDraft(
+  private async loadReversible(
     businessId: string,
     receiptId: string,
-    onNotDraft: ErrorCode,
-  ): Promise<GoodsReceipt> {
+  ): Promise<{receipt: GoodsReceipt; items: GoodsReceiptItem[]}> {
     const [receipt] = await this.dbService.db
       .select()
       .from(goodsReceipts)
@@ -692,28 +699,240 @@ export class ReceiptService {
       )
       .limit(1);
     if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
-    if (receipt.status !== 'draft') throw new AppException(onNotDraft);
-    return receipt;
+
+    const items = await this.dbService.db
+      .select()
+      .from(goodsReceiptItems)
+      .where(eq(goodsReceiptItems.receiptId, receiptId));
+
+    if (receipt.status === 'draft') return {receipt, items};
+
+    const [ret] = await this.dbService.db
+      .select({id: supplierReturns.id})
+      .from(supplierReturns)
+      .where(
+        and(
+          eq(supplierReturns.businessId, businessId),
+          eq(supplierReturns.receiptId, receiptId),
+        ),
+      )
+      .limit(1);
+    if (ret) throw new AppException(ErrorCode.RECEIPT_HAS_RETURNS);
+
+    const [pay] = await this.dbService.db
+      .select({id: supplierPayments.id})
+      .from(supplierPayments)
+      .where(
+        and(
+          eq(supplierPayments.businessId, businessId),
+          eq(supplierPayments.receiptId, receiptId),
+        ),
+      )
+      .limit(1);
+    if (pay) throw new AppException(ErrorCode.RECEIPT_HAS_PAYMENTS);
+
+    const itemIds = items.map((i) => i.id);
+    if (itemIds.length) {
+      const batches = await this.dbService.db
+        .select({
+          receiptItemId: inventoryBatches.receiptItemId,
+          qtyReceived: inventoryBatches.qtyReceived,
+          qtyRemaining: inventoryBatches.qtyRemaining,
+        })
+        .from(inventoryBatches)
+        .where(
+          and(
+            eq(inventoryBatches.businessId, businessId),
+            inArray(inventoryBatches.receiptItemId, itemIds),
+          ),
+        );
+      // Fractions of a kilo are stored to the gram, so compare with the same
+      // tolerance the rest of the stock maths uses rather than exactly.
+      const consumed = batches.find(
+        (b) => b.qtyReceived - b.qtyRemaining > 0.0005,
+      );
+      if (consumed) {
+        const item = items.find((i) => i.id === consumed.receiptItemId);
+        throw new AppException(ErrorCode.RECEIPT_PARTLY_SOLD, {
+          name: item?.productName ?? '',
+          sold:
+            Math.round((consumed.qtyReceived - consumed.qtyRemaining) * 1000) /
+            1000,
+        });
+      }
+    }
+
+    return {receipt, items};
   }
 
   /**
-   * Edit a draft receipt: the payload replaces the header and every line. A
-   * draft holds no stock, batches, payments or returns, so swapping its lines
-   * needs no reversal — it stays a draft and is applied later by receiving it.
+   * Undo what receiving this document did to stock and cost.
+   *
+   * Only ever called for a receipt `loadReversible` has cleared, so every
+   * batch it opened is still whole and can simply be dropped. Cost is not
+   * un-blended arithmetically — `products.priceIn` is a weighted average
+   * across receipts and subtracting one term back out drifts — it is
+   * RECOMPUTED from the batches that remain, which is exact by construction
+   * and self-healing if anything was ever off.
+   */
+  private async reverseReceiptStockTx(
+    tx: DbTx,
+    businessId: string,
+    receipt: GoodsReceipt,
+    items: GoodsReceiptItem[],
+  ): Promise<void> {
+    const itemIds = items.map((i) => i.id);
+    if (!itemIds.length) return;
+
+    const perProduct = new Map<string, number>();
+    for (const it of items) {
+      if (!it.productId) continue;
+      perProduct.set(
+        it.productId,
+        (perProduct.get(it.productId) ?? 0) + it.quantity,
+      );
+    }
+
+    await tx
+      .delete(inventoryBatches)
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          inArray(inventoryBatches.receiptItemId, itemIds),
+        ),
+      );
+
+    const branchId = receipt.branchId;
+    for (const [productId, qty] of perProduct) {
+      if (branchId) {
+        await tx
+          .update(branchStock)
+          .set({
+            quantity: sql`GREATEST(ROUND((${branchStock.quantity} - ${qty})::numeric, 3), 0)`,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(branchStock.businessId, businessId),
+              eq(branchStock.productId, productId),
+              eq(branchStock.branchId, branchId),
+            ),
+          );
+      }
+
+      // What this product still has in open lots, now that this receipt's are
+      // gone: the quantity is the truth for stock, the value for cost.
+      const [left] = await tx
+        .select({
+          qty: sql<string>`COALESCE(SUM(${inventoryBatches.qtyRemaining}), 0)`,
+          value: sql<string>`COALESCE(SUM(${inventoryBatches.qtyRemaining} * ${inventoryBatches.priceIn}), 0)`,
+        })
+        .from(inventoryBatches)
+        .where(
+          and(
+            eq(inventoryBatches.businessId, businessId),
+            eq(inventoryBatches.productId, productId),
+            gt(inventoryBatches.qtyRemaining, 0),
+          ),
+        );
+      const leftQty = Number(left?.qty ?? 0);
+      const leftValue = Number(left?.value ?? 0);
+
+      await tx
+        .update(products)
+        .set({
+          quantity: sql`GREATEST(ROUND((${products.quantity} - ${qty})::numeric, 3), 0)`,
+          // With nothing left in lots there is no average to take — the last
+          // cost known is better than zeroing a price the shop still quotes.
+          ...(leftQty > 0
+            ? {priceIn: money(leftValue / leftQty)}
+            : {}),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(eq(products.businessId, businessId), eq(products.id, productId)),
+        );
+
+      // Selling price follows the FIFO front of what remains — the same rule
+      // receiving uses when it is not repricing.
+      const [front] = await tx
+        .select({priceOut: inventoryBatches.priceOut})
+        .from(inventoryBatches)
+        .where(
+          and(
+            eq(inventoryBatches.businessId, businessId),
+            eq(inventoryBatches.productId, productId),
+            gt(inventoryBatches.qtyRemaining, 0),
+          ),
+        )
+        .orderBy(asc(inventoryBatches.createdAt))
+        .limit(1);
+      if (front) {
+        await tx
+          .update(products)
+          .set({priceOut: front.priceOut, updatedAt: new Date()})
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.id, productId),
+            ),
+          );
+      }
+    }
+  }
+
+  /**
+   * Edit a receipt: the payload replaces its header and every line.
+   *
+   * A draft holds no stock, batches, payments or returns, so swapping its
+   * lines needs no reversal — it stays a draft and is applied later by
+   * receiving it.
+   *
+   * A RECEIVED receipt is edited by taking the old document back off stock and
+   * putting the new one on, inside one transaction, so it never exists in a
+   * half-applied state. That is only allowed while all of it is still on the
+   * shelf; `loadReversible` is what draws that line and says which product
+   * broke it.
    */
   async update(
     businessId: string,
     receiptId: string,
     dto: UpdateReceiptDto,
   ): Promise<ReceiptWithItems> {
-    const receipt = await this.loadDraft(
+    const {receipt, items: oldItems} = await this.loadReversible(
       businessId,
       receiptId,
-      ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE,
     );
+    const wasReceived = receipt.status !== 'draft';
 
-    const {supplierName, currency, rateToBase, lines, total, itemCount} =
-      await this.prepareReceipt(businessId, dto);
+    // Rewriting a received receipt moves real stock, so it takes the caller's
+    // word for it. Without that word this is the ordinary draft-edit endpoint
+    // and refuses — which is what protects a stale tab still auto-saving a
+    // draft that was received on another device in the meantime.
+    if (wasReceived && dto.amendReceived !== true) {
+      throw new AppException(ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE);
+    }
+
+    const {
+      supplierName,
+      currency,
+      rateToBase,
+      lines,
+      received,
+      productInfo,
+      wholesaleByProduct,
+      bundleByProduct,
+      total,
+      itemCount,
+    } = await this.prepareReceipt(businessId, dto);
+
+    const [settings] = await this.dbService.db
+      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    const repriceExistingDefault =
+      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
 
     // Keep the receipt on its current branch unless the edit moves it.
     const branchId =
@@ -722,6 +941,12 @@ export class ReceiptService {
       (await this.branchService.ensureDefault(businessId)).id;
 
     await this.dbService.db.transaction(async (tx) => {
+      // Off the shelf first: the old lines' batches are dropped and cost is
+      // recomputed from what is left, so the new lines apply to a clean slate.
+      if (wasReceived) {
+        await this.reverseReceiptStockTx(tx, businessId, receipt, oldItems);
+      }
+
       await tx
         .delete(goodsReceiptItems)
         .where(
@@ -747,6 +972,21 @@ export class ReceiptService {
           lineTotal: line.lineTotal,
         })),
       );
+
+      // And back on, exactly as receiving it would have.
+      if (wasReceived) {
+        await this.applyReceiptStockTx(
+          tx,
+          businessId,
+          branchId,
+          lines,
+          received,
+          productInfo,
+          wholesaleByProduct,
+          bundleByProduct,
+          repriceExistingDefault,
+        );
+      }
 
       await tx
         .update(goodsReceipts)
@@ -1041,14 +1281,31 @@ export class ReceiptService {
    * Delete a draft receipt and its lines. Nothing else references a draft —
    * stock, batches, payments and returns only exist once it is received.
    */
-  async remove(businessId: string, receiptId: string): Promise<void> {
-    await this.loadDraft(
-      businessId,
-      receiptId,
-      ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE,
-    );
+  /**
+   * Delete a receipt.
+   *
+   * A draft is just a document and goes quietly. A received one is taken off
+   * stock first — its batches dropped, cost recomputed from what remains —
+   * which is only allowed while none of it has been sold. Owner-only at the
+   * controller, because this removes a document the books refer to.
+   */
+  async remove(
+    businessId: string,
+    receiptId: string,
+    opts: {amendReceived?: boolean} = {},
+  ): Promise<void> {
+    const {receipt, items} = await this.loadReversible(businessId, receiptId);
+
+    // Same consent as an edit, for the same reason: deleting a received
+    // receipt takes its goods off the shelf.
+    if (receipt.status !== 'draft' && opts.amendReceived !== true) {
+      throw new AppException(ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE);
+    }
 
     await this.dbService.db.transaction(async (tx) => {
+      if (receipt.status !== 'draft') {
+        await this.reverseReceiptStockTx(tx, businessId, receipt, items);
+      }
       await tx
         .delete(goodsReceiptItems)
         .where(

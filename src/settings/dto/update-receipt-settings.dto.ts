@@ -62,4 +62,18 @@ export class UpdateReceiptSettingsDto {
   @IsOptional()
   @IsIn(['KEEP_OLD', 'REPRICE_EXISTING'])
   priceIncreaseMode?: 'KEEP_OLD' | 'REPRICE_EXISTING';
+
+  @ApiPropertyOptional({
+    description:
+      'House markup over cost, in percent, pre-filled on new products and ' +
+      'receipt lines. null clears the rule (prices typed by hand).',
+    example: 25,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsNumber()
+  @Min(0)
+  @Max(1000)
+  defaultMarkupPercent?: number | null;
 }

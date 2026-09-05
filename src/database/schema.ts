@@ -767,6 +767,13 @@ export const receiptSettings = pgTable('receipt_settings', {
   priceIncreaseMode: varchar('price_increase_mode', {length: 20})
     .notNull()
     .default('KEEP_OLD'), // 'KEEP_OLD' | 'REPRICE_EXISTING'
+  // House markup over cost, in percent, used to pre-fill the selling price on
+  // every new product and receipt line (25 → cost 12 000 suggests 15 000).
+  // NULL = no house rule, prices are typed by hand as before.
+  defaultMarkupPercent: decimal('default_markup_percent', {
+    precision: 6,
+    scale: 2,
+  }),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
