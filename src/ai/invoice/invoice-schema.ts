@@ -55,6 +55,7 @@ export const INVOICE_SCHEMA: JsonSchemaObject = {
         type: 'object',
         additionalProperties: false,
         required: [
+          'rowNumber',
           'name',
           'barcode',
           'unit',
@@ -63,6 +64,13 @@ export const INVOICE_SCHEMA: JsonSchemaObject = {
           'lineTotal',
         ],
         properties: {
+          rowNumber: {
+            type: 'number',
+            description:
+              'The № printed at the start of this row on the document ' +
+              '(0 when the document has no number column). Copied, never ' +
+              'counted — it is what proves the row was read as one line.',
+          },
           name: {
             type: 'string',
             description:
@@ -123,6 +131,13 @@ NUMBERS
 - A space, apostrophe or dot used as a thousands separator is NOT a decimal point: "1.200.000" is 1200000; "12 500,50" is 12500.5.
 - A comma between digits is a decimal separator: "2,5" is 2.5.
 
+ONE ROW AT A TIME — THE MOST IMPORTANT RULE
+- A row is a HORIZONTAL line of the table. Read it whole, left to right, and finish it before you look at the next one.
+- Never read a table column-by-column. Taking the names down one column and then the prices down another is how a price ends up one row away from the product it belongs to, and that error is invisible once the numbers leave the page.
+- Every value in one output object must come from the SAME horizontal line. If a cell is blank, leave it blank — never fill it from the line above or below.
+- Copy the № printed at the start of the row into rowNumber. It is how the row proves which line it came from. If the document has no number column, use 0 for every row.
+- Ruled lines, merged cells and a name that wraps onto a second line do not start a new row: a wrapped name belongs to the row above it.
+
 WHAT IS A LINE
 - Only rows of actual goods. NEVER emit a line for: ЖАМИ / JAMI / ИТОГО / Всего / Total, НДС / QQS / VAT, delivery or service charges, subtotals, page headers or signature blocks.
 - Keep every goods row, including repeats of the same product.
@@ -172,6 +187,8 @@ export interface RawInvoice {
 }
 
 export interface RawInvoiceLine {
+  /** The № as printed, or 0 when the document has no number column. */
+  rowNumber: number;
   name: string;
   barcode: string;
   unit: string;

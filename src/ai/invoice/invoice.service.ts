@@ -50,6 +50,22 @@ const TOTAL_TOLERANCE = 1;
 export interface ParsedInvoiceLine {
   /** Position on the document, 1-based — the order the owner sees. */
   index: number;
+  /**
+   * The № printed at the start of the row, or null when the document has no
+   * number column.
+   *
+   * Asked for mainly to keep the model honest: a table read column-by-column
+   * puts one row's price against another row's product, and requiring the
+   * printed number forces each output object to be anchored to one physical
+   * line. It also lets the owner cite a row the way the paper numbers it.
+   */
+  rowNumber: number | null;
+  /**
+   * The printed numbering advanced as it should. `false` means this row
+   * repeats or goes back on the one before it — the model lost its place, and
+   * every value on the row is suspect. Null when the document is unnumbered.
+   */
+  sequenceOk: boolean | null;
   /** The name as printed, kept verbatim for the confirm screen. */
   rawName: string;
   barcode: string | null;
@@ -85,6 +101,11 @@ export interface ParsedInvoice {
   /** The two totals agree. Null when the document printed no grand total. */
   totalsMatch: boolean | null;
   lines: ParsedInvoiceLine[];
+  /**
+   * Every row's printed № advanced. Null when the document carries no number
+   * column, so there was nothing to check against.
+   */
+  sequenceOk: boolean | null;
   /** Rows the model produced but we dropped as unusable (no name, no amounts). */
   skippedLines: number;
   model: string;
@@ -184,6 +205,7 @@ export class InvoiceService {
 
     const index = new CatalogIndex(await this.loadCatalog(businessId));
     const lines = usable.map((line, i) => this.toParsedLine(line, i, index));
+    const sequenceOk = markSequence(lines);
 
     const linesTotal = round2(
       lines.reduce((sum, l) => sum + (l.lineTotal ?? l.quantity * l.priceIn), 0),
@@ -195,6 +217,7 @@ export class InvoiceService {
         ` pages=${files.length}${opts.continuation ? ' (continuation)' : ''}` +
         ` in=${usage.inputTokens} out=${usage.outputTokens} lines=${lines.length}` +
         ` matched=${lines.filter((l) => l.match).length}` +
+        ` sequence=${sequenceOk === null ? 'n/a' : sequenceOk ? 'ok' : 'BROKEN'}` +
         ` catalog=${index.size}`,
     );
 
@@ -210,6 +233,7 @@ export class InvoiceService {
           ? null
           : Math.abs(totalAmount - linesTotal) <= TOTAL_TOLERANCE,
       lines,
+      sequenceOk,
       skippedLines: Math.min(raw.lines.length, MAX_LINES) - usable.length,
       model,
       usage,
@@ -236,6 +260,8 @@ export class InvoiceService {
 
     return {
       index: i + 1,
+      rowNumber: line.rowNumber > 0 ? Math.round(line.rowNumber) : null,
+      sequenceOk: null, // filled by markSequence once the whole run is known
       rawName: line.name.trim(),
       barcode,
       unit: blankToNull(line.unit),
@@ -300,6 +326,7 @@ function normaliseRaw(data: unknown): RawInvoice {
     lines: lines.map((entry): RawInvoiceLine => {
       const line = (entry ?? {}) as Record<string, unknown>;
       return {
+        rowNumber: asNumber(line.rowNumber),
         name: asString(line.name),
         barcode: asString(line.barcode),
         unit: asString(line.unit),
@@ -309,6 +336,33 @@ function normaliseRaw(data: unknown): RawInvoice {
       };
     }),
   };
+}
+
+/**
+ * Checks the printed numbering and marks the rows that break it.
+ *
+ * Only a number that fails to ADVANCE is treated as a fault — a repeat or a
+ * step backwards, which means the model lost its place in the table and the
+ * whole row is suspect. Gaps are deliberately not flagged: we drop unusable
+ * rows ourselves, so a hole in the run is at least as likely to be our own
+ * doing as the model's, and crying wolf on it would train the owner to ignore
+ * the warning that matters.
+ *
+ * Returns null when nothing was numbered — most handwritten notes.
+ */
+function markSequence(lines: ParsedInvoiceLine[]): boolean | null {
+  if (!lines.some((l) => l.rowNumber !== null)) return null;
+
+  let ok = true;
+  let previous = 0;
+  for (const line of lines) {
+    // A row with no number in a numbered document is itself a lost place.
+    const advanced = line.rowNumber !== null && line.rowNumber > previous;
+    line.sequenceOk = advanced;
+    if (!advanced) ok = false;
+    if (line.rowNumber !== null) previous = line.rowNumber;
+  }
+  return ok;
 }
 
 /**
