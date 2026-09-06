@@ -1,10 +1,13 @@
 import {
+  CreateBucketCommand,
   DeleteObjectCommand,
+  HeadBucketCommand,
   HeadObjectCommand,
+  PutBucketPolicyCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import {Injectable} from '@nestjs/common';
+import {Injectable, Logger} from '@nestjs/common';
 
 export interface UploadOptions {
   /** S3 key (path) for the object. If not set, a key is generated. */
@@ -26,11 +29,14 @@ const DEFAULT_S3 = {
 
 @Injectable()
 export class StorageService {
+  private readonly logger = new Logger(StorageService.name);
   private readonly client: S3Client | null = null;
   private readonly bucket: string;
   private readonly region: string;
   private readonly publicBaseUrl: string | null;
   private readonly enabled: boolean;
+  /** Cached bucket check so concurrent uploads only probe S3 once. */
+  private bucketReady: Promise<void> | null = null;
 
   constructor() {
     this.bucket = process.env.S3_BUCKET ?? DEFAULT_S3.bucket;
@@ -77,6 +83,8 @@ export class StorageService {
 
     const key =
       options.key ?? this.generateKey(options.prefix, options.contentType);
+
+    await this.ensureBucket();
 
     await this.client.send(
       new PutObjectCommand({
@@ -135,6 +143,55 @@ export class StorageService {
     }
   }
 
+  /**
+   * Create the bucket on first use if it is missing. The check is cached; a
+   * failure clears the cache so the next upload retries instead of being stuck.
+   */
+  private ensureBucket(): Promise<void> {
+    this.bucketReady ??= this.createBucketIfMissing().catch((e) => {
+      this.bucketReady = null;
+      throw e;
+    });
+    return this.bucketReady;
+  }
+
+  private async createBucketIfMissing(): Promise<void> {
+    const client = this.client;
+    if (!client) return;
+
+    try {
+      await client.send(new HeadBucketCommand({Bucket: this.bucket}));
+      return;
+    } catch (e) {
+      if (!isBucketMissing(e)) throw e;
+    }
+
+    try {
+      await client.send(new CreateBucketCommand({Bucket: this.bucket}));
+      this.logger.log(`Created S3 bucket "${this.bucket}"`);
+    } catch (e) {
+      // Another instance may have created it first.
+      if (!isBucketTaken(e)) throw e;
+      return;
+    }
+
+    // Uploads are served straight from <img src> (receipts, storefront), so
+    // objects must be readable without credentials.
+    try {
+      await client.send(
+        new PutBucketPolicyCommand({
+          Bucket: this.bucket,
+          Policy: publicReadPolicy(this.bucket),
+        }),
+      );
+    } catch (e) {
+      this.logger.warn(
+        `Bucket "${this.bucket}" created, but its public-read policy failed ` +
+          `(${errName(e)}). Set it manually or uploaded images will 403.`,
+      );
+    }
+  }
+
   private generateKey(prefix?: string, contentType?: string): string {
     const ext = contentType?.startsWith('image/')
       ? contentType.replace('image/', '')
@@ -144,4 +201,44 @@ export class StorageService {
     const filename = `${name}.${safeExt}`;
     return prefix ? `${prefix}/${filename}` : filename;
   }
+}
+
+function errName(e: unknown): string {
+  const err = e as {name?: string; Code?: string};
+  return err?.name ?? err?.Code ?? 'unknown error';
+}
+
+function httpStatus(e: unknown): number | undefined {
+  return (e as {$metadata?: {httpStatusCode?: number}})?.$metadata
+    ?.httpStatusCode;
+}
+
+/** HeadBucket reports a missing bucket as NotFound/NoSuchBucket (404). */
+function isBucketMissing(e: unknown): boolean {
+  const name = errName(e);
+  return name === 'NotFound' || name === 'NoSuchBucket' || httpStatus(e) === 404;
+}
+
+/** CreateBucket race: another instance already created/owns the bucket. */
+function isBucketTaken(e: unknown): boolean {
+  const name = errName(e);
+  return (
+    name === 'BucketAlreadyOwnedByYou' ||
+    name === 'BucketAlreadyExists' ||
+    httpStatus(e) === 409
+  );
+}
+
+function publicReadPolicy(bucket: string): string {
+  return JSON.stringify({
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: {AWS: ['*']},
+        Action: ['s3:GetObject'],
+        Resource: [`arn:aws:s3:::${bucket}/*`],
+      },
+    ],
+  });
 }

@@ -44,6 +44,12 @@ For **S3 file uploads** (product/category images), set:
 | `S3_PUBLIC_BASE_URL` | Optional base URL for public links (e.g. CDN) |
 | `S3_ENDPOINT` | Optional custom endpoint (e.g. MinIO) |
 
+If `S3_BUCKET` does not exist yet, the first upload creates it and applies a
+public-read (`s3:GetObject`) policy — uploaded images are loaded directly from
+`<img src>` in receipts and the storefront, so they must be readable without
+credentials. If the provider rejects the policy, it is logged as a warning and
+must be set by hand.
+
 Upload endpoint: `POST /storage/upload` (multipart `file` + optional `prefix`), requires JWT.
 
 ## Compile and run the project
