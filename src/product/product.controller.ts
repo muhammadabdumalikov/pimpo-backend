@@ -117,6 +117,13 @@ export class ProductController {
     enum: ['in', 'low', 'out'],
     description: 'Filter by stock status bucket',
   })
+  @ApiQuery({
+    name: 'supplierId',
+    required: false,
+    type: String,
+    description:
+      "Filter by the product's default supplier; 'none' = products with no supplier",
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -129,6 +136,7 @@ export class ProductController {
     @Query('branchId') branchId?: string,
     @Query('stock') stock?: string,
     @Query('categoryId') categoryId?: string,
+    @Query('supplierId') supplierId?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -139,6 +147,7 @@ export class ProductController {
       branchId: branchId || undefined,
       stock: stockFilter,
       categoryId: categoryId || undefined,
+      supplierId: supplierId || undefined,
     });
     return result;
   }
@@ -151,16 +160,19 @@ export class ProductController {
   @ApiQuery({name: 'search', required: false, type: String})
   @ApiQuery({name: 'branchId', required: false, type: String})
   @ApiQuery({name: 'categoryId', required: false, type: String})
+  @ApiQuery({name: 'supplierId', required: false, type: String})
   async getStats(
     @CurrentBusiness() business: IBusiness,
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
     @Query('categoryId') categoryId?: string,
+    @Query('supplierId') supplierId?: string,
   ) {
     return this.productService.getStats(business.id, {
       search,
       branchId: branchId || undefined,
       categoryId: categoryId || undefined,
+      supplierId: supplierId || undefined,
     });
   }
 

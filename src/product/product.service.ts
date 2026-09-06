@@ -502,6 +502,10 @@ export class ProductService {
       stock?: 'in' | 'low' | 'out';
       // Filter to one category.
       categoryId?: string;
+      // Filter to one supplier — the product's default supplier. The literal
+      // 'none' asks for the products that have none, which is how a catalogue
+      // gets tidied up ("which products is nobody supplying?").
+      supplierId?: string;
     },
   ): Promise<{
     products: Product[];
@@ -516,6 +520,7 @@ export class ProductService {
     const branchId = options?.branchId;
     const stock = options?.stock;
     const categoryId = options?.categoryId;
+    const supplierId = options?.supplierId;
 
     // Build where conditions
     const whereConditions = [
@@ -535,6 +540,14 @@ export class ProductService {
 
     if (categoryId) {
       whereConditions.push(eq(products.categoryId, categoryId));
+    }
+
+    if (supplierId) {
+      whereConditions.push(
+        supplierId === 'none'
+          ? isNull(products.supplierId)
+          : eq(products.supplierId, supplierId),
+      );
     }
 
     if (stock) {
@@ -603,11 +616,16 @@ export class ProductService {
   // Whole-catalogue stats for the products-page pulse panel: stock-status
   // counts plus total units on hand and the catalogue's value at supply
   // (priceIn) and retail (priceOut) prices. Respects the same search/branch/
-  // category scoping as findAll, so the numbers always match the (filtered)
-  // list — not just the visible page.
+  // category/supplier scoping as findAll, so the numbers always match the
+  // (filtered) list — not just the visible page.
   async getStats(
     businessId: string,
-    options?: {search?: string; branchId?: string; categoryId?: string},
+    options?: {
+      search?: string;
+      branchId?: string;
+      categoryId?: string;
+      supplierId?: string;
+    },
   ): Promise<{
     total: number;
     inStock: number;
@@ -623,6 +641,7 @@ export class ProductService {
         const search = options?.search;
         const branchId = options?.branchId;
         const categoryId = options?.categoryId;
+        const supplierId = options?.supplierId;
 
         const whereConditions = [
           eq(products.businessId, businessId),
@@ -639,6 +658,13 @@ export class ProductService {
         }
         if (categoryId) {
           whereConditions.push(eq(products.categoryId, categoryId));
+        }
+        if (supplierId) {
+          whereConditions.push(
+            supplierId === 'none'
+              ? isNull(products.supplierId)
+              : eq(products.supplierId, supplierId),
+          );
         }
 
         const qtyCol = branchId ? branchStock.quantity : products.quantity;
