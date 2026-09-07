@@ -15,7 +15,18 @@ import {
   type Unit,
   type MxikClassifier,
 } from '../database/schema';
-import {eq, and, desc, ilike, or, sql, isNull, getTableColumns} from 'drizzle-orm';
+import {
+  eq,
+  and,
+  asc,
+  desc,
+  ilike,
+  or,
+  sql,
+  isNull,
+  isNotNull,
+  getTableColumns,
+} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
@@ -25,6 +36,33 @@ import {CacheKeys, TTL} from '../cache/cache.util';
 import {mxikDisplayName, mxikClassName} from '../common/mxik-name';
 import {latinToCyrillic, escapeRegex} from '../common/uz-translit';
 import {parseScannedCode, type ScannedCode} from '../common/gs1';
+import {
+  ean13CheckDigit,
+  parseWeightBarcode,
+  type ParsedWeightBarcode,
+} from '../common/weight-barcode';
+import {ScaleService} from '../scale/scale.service';
+
+/** What the till gets back for one scan. */
+export interface ScanResolution {
+  product: Product | null;
+  isGs1: boolean;
+  gtin: string | null;
+  /** Per-item serial, for the marking system and the fiscal receipt line. */
+  serial: string | null;
+  /**
+   * Amount to put on the line, when the scan was a scale label that named an
+   * amount. Null for an ordinary scan (the till adds one of whatever it is) and
+   * for a price label the unit price could not resolve.
+   */
+  quantity: number | null;
+  /**
+   * True when the code was read as a scale label. Lets the till tell "unknown
+   * barcode" from "your scale printed a PLU nothing is assigned to" — the same
+   * empty result, but only one of them is a catalogue gap.
+   */
+  isScaleLabel: boolean;
+}
 
 @Injectable()
 export class ProductService {
@@ -34,6 +72,7 @@ export class ProductService {
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
     private readonly branchService: BranchService,
+    private readonly scaleService: ScaleService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -71,6 +110,8 @@ export class ProductService {
       name: string;
       code?: string;
       barcode?: string;
+      /** Scale PLU (see products.plu); null clears it. */
+      plu?: number | null;
       priceIn: string;
       priceOut: string;
       quantity: number;
@@ -118,6 +159,11 @@ export class ProductService {
       }
     }
 
+    // Scale PLU, when the product is meant to be weighed.
+    if (data.plu != null) {
+      await this.assertPluAvailable(businessId, data.plu);
+    }
+
     // A product belongs to one branch (a stock-take counts only its branch's
     // products). Default to the business default branch when none is chosen.
     const branchId =
@@ -138,6 +184,7 @@ export class ProductService {
       name: data.name,
       code: data.code || null,
       barcode: data.barcode || null,
+      plu: data.plu ?? null,
       priceIn: data.priceIn,
       priceOut: data.priceOut,
       quantity: data.quantity,
@@ -506,6 +553,9 @@ export class ProductService {
       // 'none' asks for the products that have none, which is how a catalogue
       // gets tidied up ("which products is nobody supplying?").
       supplierId?: string;
+      // Exact scale PLU. Unlike `search` this cannot drift: a label carries one
+      // PLU and it must resolve to that product or to nothing at all.
+      plu?: number;
     },
   ): Promise<{
     products: Product[];
@@ -521,6 +571,7 @@ export class ProductService {
     const stock = options?.stock;
     const categoryId = options?.categoryId;
     const supplierId = options?.supplierId;
+    const plu = options?.plu;
 
     // Build where conditions
     const whereConditions = [
@@ -529,13 +580,11 @@ export class ProductService {
     ];
 
     if (search) {
-      whereConditions.push(
-        or(
-          ilike(products.name, `%${search}%`),
-          ilike(products.code, `%${search}%`),
-          ilike(products.barcode, `%${search}%`),
-        )!,
-      );
+      whereConditions.push(this.searchClause(search));
+    }
+
+    if (plu !== undefined) {
+      whereConditions.push(eq(products.plu, plu));
     }
 
     if (categoryId) {
@@ -648,13 +697,7 @@ export class ProductService {
           eq(products.isActive, true),
         ];
         if (search) {
-          whereConditions.push(
-            or(
-              ilike(products.name, `%${search}%`),
-              ilike(products.code, `%${search}%`),
-              ilike(products.barcode, `%${search}%`),
-            )!,
-          );
+          whereConditions.push(this.searchClause(search));
         }
         if (categoryId) {
           whereConditions.push(eq(products.categoryId, categoryId));
@@ -768,6 +811,11 @@ export class ProductService {
       if (codeExists.length > 0) {
         throw new AppException(ErrorCode.PRODUCT_CODE_EXISTS);
       }
+    }
+
+    // Clearing a PLU (null) always passes; setting one has to be free.
+    if (data.plu != null && data.plu !== existing.plu) {
+      await this.assertPluAvailable(businessId, data.plu, productId);
     }
 
     // Stock is per-branch, so a quantity edit and a branch reassignment can't be
@@ -1048,10 +1096,19 @@ export class ProductService {
   /**
    * Resolve whatever the till's scanner produced into a product.
    *
-   * Handles both codes a shop meets in practice: a plain retail barcode, and an
-   * "Asl belgi" marking DataMatrix, whose GS1 payload carries the barcode
-   * inside it (see common/gs1.ts). Without the second case every marked bottle
-   * — drinks, tobacco, medicines — fails to scan at the till.
+   * Three kinds of code turn up at a till, and they are tried in this order:
+   *
+   *   1. a plain retail barcode or internal SKU;
+   *   2. an "Asl belgi" marking DataMatrix, whose GS1 payload carries the
+   *      barcode inside it (see common/gs1.ts) — without this every marked
+   *      bottle (drinks, tobacco, medicines) fails to scan;
+   *   3. a label one of the shop's own scales printed, which names a PLU and an
+   *      amount rather than a product (see common/weight-barcode.ts).
+   *
+   * The order is the point, not an accident. Scale labels live in the 20-29
+   * prefix range, and so do the in-store barcodes Pimpo mints itself ("200…"),
+   * so a code that merely looks like a label must lose to a real product that
+   * actually carries it.
    *
    * Resolution goes through `findAll` so the returned product is shaped exactly
    * like the catalogue's, with branch-scoped stock; the checkout relies on that
@@ -1061,18 +1118,20 @@ export class ProductService {
     businessId: string,
     code: string,
     branchId?: string,
-  ): Promise<{
-    product: Product | null;
-    isGs1: boolean;
-    gtin: string | null;
-    /** Per-item serial, for the marking system and the fiscal receipt line. */
-    serial: string | null;
-  }> {
+  ): Promise<ScanResolution> {
     const scan: ScannedCode = parseScannedCode(code);
 
     // A GS1 scan is a barcode and nothing else; a plain scan may equally be an
     // internal SKU, so its raw form is worth trying as a `code` match too.
     const terms = scan.isGs1 ? scan.candidates : [...scan.candidates, scan.raw];
+
+    const base = {
+      isGs1: scan.isGs1,
+      gtin: scan.gtin,
+      serial: scan.serial,
+      quantity: null,
+      isScaleLabel: false,
+    };
 
     for (const term of [...new Set(terms)]) {
       if (!term) continue;
@@ -1088,22 +1147,107 @@ export class ProductService {
           (p.barcode ?? '').toLowerCase() === lower ||
           (p.code ?? '').toLowerCase() === lower,
       );
-      if (match) {
-        return {
-          product: match,
-          isGs1: scan.isGs1,
-          gtin: scan.gtin,
-          serial: scan.serial,
-        };
-      }
+      if (match) return {...base, product: match};
     }
 
-    return {
-      product: null,
-      isGs1: scan.isGs1,
-      gtin: scan.gtin,
-      serial: scan.serial,
-    };
+    // Nothing in the catalogue owns this code, so it may be a label a scale
+    // printed a minute ago. Parsed only HERE, after the catalogue has had its
+    // say: prefixes 20-29 are shared ground, and Pimpo mints its own in-store
+    // barcodes as "200…", so a code that merely looks like a label must lose
+    // to a real product that carries it.
+    const label = await this.resolveScaleLabel(businessId, scan.raw, branchId);
+    if (label) {
+      return {
+        ...base,
+        product: label.product,
+        quantity: label.quantity,
+        isScaleLabel: true,
+      };
+    }
+
+    return {...base, product: null};
+  }
+
+  /**
+   * Free-text product search: name, internal code and barcode — plus an exact
+   * scale PLU when the term is all digits, so typing the number the operator
+   * presses on the scale finds the same product in the catalogue.
+   */
+  private searchClause(search: string) {
+    const clauses = [
+      ilike(products.name, `%${search}%`),
+      ilike(products.code, `%${search}%`),
+      ilike(products.barcode, `%${search}%`),
+    ];
+    if (/^\d{1,8}$/.test(search)) {
+      clauses.push(eq(products.plu, Number(search)));
+    }
+    return or(...clauses)!;
+  }
+
+  /**
+   * Read a scan as a label one of this business's scales printed, and turn the
+   * amount on it into a cart quantity.
+   *
+   * Returns null when the business has no scales, or when the code does not fit
+   * any layout they print — both mean "this was never a label", and the caller
+   * should keep reporting an ordinary not-found. A non-null result with a null
+   * product is different and worth distinguishing: the label was genuinely read
+   * but its PLU is unassigned, which is a catalogue gap the shop can fix.
+   */
+  private async resolveScaleLabel(
+    businessId: string,
+    raw: string,
+    branchId?: string,
+  ): Promise<{product: Product | null; quantity: number | null} | null> {
+    const formats = await this.scaleService.activeFormats(businessId);
+    if (formats.length === 0) return null;
+
+    const parsed = parseWeightBarcode(raw, formats);
+    if (!parsed) return null;
+
+    // By PLU, not by search: a label names exactly one product, and a `search`
+    // for "1234" could bury it under rows whose barcode merely contains those
+    // digits.
+    const {products: found} = await this.findAll(businessId, {
+      page: 1,
+      limit: 1,
+      plu: parsed.plu,
+      branchId,
+    });
+    const product = found[0] ?? null;
+    if (!product) return {product: null, quantity: null};
+
+    return {product, quantity: this.labelQuantity(product, parsed)};
+  }
+
+  /**
+   * How much of the product the label represents.
+   *
+   * A weight label already carries the amount. A price label carries the line
+   * total instead, so the amount has to be recovered by dividing by the unit
+   * price — which means a price label is only as accurate as the price the
+   * scale was programmed with. When that price is missing or zero there is
+   * nothing to divide by and the till is better off asking the cashier than
+   * inventing an amount.
+   *
+   * Rounded to whole grams, the precision the rest of the till keeps weighed
+   * lines at, so a label can never introduce float drift into a total.
+   */
+  private labelQuantity(
+    product: Product,
+    parsed: ParsedWeightBarcode,
+  ): number | null {
+    // A PLU on a product sold by the piece is a mis-assignment — "0.5" of it
+    // means nothing. The product form only offers a PLU on fractional units,
+    // but the till must not depend on that having held.
+    if (product.quantityType !== 'kg') return null;
+
+    if (parsed.weight !== null) return Math.round(parsed.weight * 1000) / 1000;
+
+    const unitPrice = Number(product.priceOut);
+    if (!parsed.price || !unitPrice) return null;
+    return Math.round((parsed.price / unitPrice) * 1000) / 1000;
   }
 
   /**
@@ -1243,6 +1387,67 @@ export class ProductService {
   }
 
   /**
+   * Lowest free scale PLU for this business.
+   *
+   * Unlike a barcode, a PLU is typed into the scale's keypad by hand and
+   * pressed hundreds of times a day, so the pool is walked from 1 upward and
+   * the lowest gap is reused — short numbers are the whole point.
+   *
+   * Deliberately counts inactive products too. Soft-deleted rows keep their
+   * PLU, and the unique index does not exclude them, so skipping them here
+   * would hand out a number the database then refuses.
+   */
+  async generatePlu(businessId: string): Promise<number> {
+    const max = await this.scaleService.maxPlu(businessId);
+
+    const rows = await this.dbService.db
+      .select({plu: products.plu})
+      .from(products)
+      .where(
+        and(eq(products.businessId, businessId), isNotNull(products.plu)),
+      )
+      .orderBy(asc(products.plu));
+
+    let candidate = 1;
+    for (const row of rows) {
+      if (row.plu === null || row.plu > candidate) break;
+      if (row.plu === candidate) candidate++;
+    }
+
+    if (candidate > max) {
+      throw new AppException(ErrorCode.PLU_POOL_EXHAUSTED);
+    }
+    return candidate;
+  }
+
+  /**
+   * Guard a PLU before it is written. The database has the last word (there is
+   * a unique index on business + PLU), but a duplicate caught here reports as
+   * "another product uses this PLU" rather than a raw constraint violation, and
+   * the range check is something only the scale settings know.
+   */
+  private async assertPluAvailable(
+    businessId: string,
+    plu: number,
+    exceptProductId?: string,
+  ): Promise<void> {
+    const max = await this.scaleService.maxPlu(businessId);
+    if (!Number.isInteger(plu) || plu < 1 || plu > max) {
+      throw new AppException(ErrorCode.PRODUCT_PLU_OUT_OF_RANGE, {max});
+    }
+
+    const [taken] = await this.dbService.db
+      .select({id: products.id})
+      .from(products)
+      .where(and(eq(products.businessId, businessId), eq(products.plu, plu)))
+      .limit(1);
+
+    if (taken && taken.id !== exceptProductId) {
+      throw new AppException(ErrorCode.PRODUCT_PLU_EXISTS);
+    }
+  }
+
+  /**
    * Generate a fresh, valid EAN-13 barcode that isn't already used by this
    * business. Uses the "200" prefix reserved for in-store / restricted
    * distribution (never collides with real GS1-assigned manufacturer barcodes),
@@ -1257,7 +1462,7 @@ export class ProductService {
       for (let i = 0; i < 9; i++) {
         body += Math.floor(Math.random() * 10).toString();
       }
-      const barcode = body + this.ean13CheckDigit(body);
+      const barcode = body + ean13CheckDigit(body);
 
       const existing = await this.dbService.db
         .select()
@@ -1278,16 +1483,6 @@ export class ProductService {
 
     // Extremely unlikely to reach here; last resort still returns a valid EAN-13.
     const fallbackBody = ('200' + Date.now().toString().slice(-9)).slice(0, 12);
-    return fallbackBody + this.ean13CheckDigit(fallbackBody);
-  }
-
-  /** Standard EAN-13 check digit for the first 12 digits. */
-  private ean13CheckDigit(twelveDigits: string): string {
-    let sum = 0;
-    for (let i = 0; i < 12; i++) {
-      const digit = twelveDigits.charCodeAt(i) - 48;
-      sum += i % 2 === 0 ? digit : digit * 3;
-    }
-    return ((10 - (sum % 10)) % 10).toString();
+    return fallbackBody + ean13CheckDigit(fallbackBody);
   }
 }

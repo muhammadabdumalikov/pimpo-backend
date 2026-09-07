@@ -11,6 +11,7 @@ import {StoreModule} from './store/store.module';
 import {DebtModule} from './debt/debt.module';
 import {UserModule} from './user/user.module';
 import {StorageModule} from './storage/storage.module';
+import {PermissionModule} from './permission/permission.module';
 import {RoleModule} from './role/role.module';
 import {StaffModule} from './staff/staff.module';
 import {OrderModule} from './order/order.module';
@@ -34,6 +35,7 @@ import {TelegramModule} from './telegram/telegram.module';
 import {BillzModule} from './billz/billz.module';
 import {PlatformModule} from './platform/platform.module';
 import {LoyaltyModule} from './loyalty/loyalty.module';
+import {ScaleModule} from './scale/scale.module';
 import {AiModule} from './ai/ai.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
@@ -89,6 +91,7 @@ class JwtGlobalModule {}
     DebtModule,
     UserModule,
     StorageModule,
+    PermissionModule,
     RoleModule,
     StaffModule,
     OrderModule,
@@ -112,6 +115,7 @@ class JwtGlobalModule {}
     BillzModule,
     PlatformModule,
     LoyaltyModule,
+    ScaleModule,
     AiModule,
   ],
   controllers: [AppController],

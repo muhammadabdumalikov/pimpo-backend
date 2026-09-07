@@ -55,6 +55,7 @@ export class JwtAuthGuard implements CanActivate {
       req.account = {
         type: payload.type || 'business',
         id: payload.sub,
+        businessId,
         roleId: payload.roleId,
       };
     } catch (err) {

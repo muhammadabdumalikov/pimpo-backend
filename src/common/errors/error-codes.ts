@@ -29,6 +29,8 @@ export enum ErrorCode {
   AUTH_BUSINESS_INVALID = 'AUTH_BUSINESS_INVALID',
   INVALID_TOKEN = 'INVALID_TOKEN',
   OWNER_ONLY = 'OWNER_ONLY',
+  PERMISSION_DENIED = 'PERMISSION_DENIED',
+  PERMISSION_GRANT_EXCEEDS_OWN = 'PERMISSION_GRANT_EXCEEDS_OWN',
   PLATFORM_ADMIN_REQUIRED = 'PLATFORM_ADMIN_REQUIRED',
 
   // ── Branch ─────────────────────────────────────────────────────────────────
@@ -93,6 +95,9 @@ export enum ErrorCode {
   BARCODE_QUERY_REQUIRED = 'BARCODE_QUERY_REQUIRED',
   MXIK_QUERY_REQUIRED = 'MXIK_QUERY_REQUIRED',
   SCAN_CODE_REQUIRED = 'SCAN_CODE_REQUIRED',
+  PRODUCT_PLU_EXISTS = 'PRODUCT_PLU_EXISTS',
+  PRODUCT_PLU_OUT_OF_RANGE = 'PRODUCT_PLU_OUT_OF_RANGE',
+  PLU_POOL_EXHAUSTED = 'PLU_POOL_EXHAUSTED',
 
   // ── Receipt template ───────────────────────────────────────────────────────
   RECEIPT_TEMPLATE_NOT_FOUND = 'RECEIPT_TEMPLATE_NOT_FOUND',
@@ -298,6 +303,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.FORBIDDEN,
     message: 'Only the business owner can perform this action',
   },
+  [ErrorCode.PERMISSION_DENIED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Your role is missing the required permission: {required}',
+  },
+  [ErrorCode.PERMISSION_GRANT_EXCEEDS_OWN]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'You cannot grant a permission you do not hold: {excess}',
+  },
   [ErrorCode.PLATFORM_ADMIN_REQUIRED]: {
     status: HttpStatus.FORBIDDEN,
     message: 'Platform admin access required',
@@ -492,6 +505,18 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SCAN_CODE_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'code query parameter is required',
+  },
+  [ErrorCode.PRODUCT_PLU_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Another product already uses this scale PLU',
+  },
+  [ErrorCode.PRODUCT_PLU_OUT_OF_RANGE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Scale PLU must be between 1 and {max}',
+  },
+  [ErrorCode.PLU_POOL_EXHAUSTED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'No free scale PLU left — widen the PLU field in scale settings',
   },
 
   // Receipt template

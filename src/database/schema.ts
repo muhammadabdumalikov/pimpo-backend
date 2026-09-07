@@ -13,6 +13,9 @@ import {
   index,
 } from 'drizzle-orm/pg-core';
 import {relations} from 'drizzle-orm';
+// Type-only: the scale barcode layout lives with its parser (it is used far
+// from the database), and this import is erased at compile time.
+import type {ScaleBarcodeFormat} from '../common/weight-barcode';
 
 export const businesses = pgTable('businesses', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
@@ -46,7 +49,12 @@ export const roles = pgTable(
     name: varchar('name', {length: 255}).notNull(),
     // Array of sidebar menu keys this role is allowed to see, e.g.
     // ["ecommerce.products", "userDebt"]. Matches the frontend menu catalog.
+    // UI-only: nothing on the server refuses a request because of these.
     menuKeys: jsonb('menu_keys').$type<string[]>().notNull().default([]),
+    // Action permissions this role may perform, e.g. ["receipt:receive"].
+    // Unlike menuKeys these ARE enforced server-side — see PermissionService
+    // and the @RequirePermission() decorator. Keys come from PERMISSION_CATALOG.
+    permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
     isActive: boolean('is_active').default(true).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -163,6 +171,12 @@ export const products = pgTable('products', {
   name: varchar('name', {length: 255}).notNull(),
   code: varchar('code', {length: 100}),
   barcode: varchar('barcode', {length: 100}),
+  // Scale PLU: the short number an operator presses on a label-printing scale,
+  // which the scale then embeds in the barcode it prints (see
+  // common/weight-barcode.ts). Distinct from `code` — that is free text and is
+  // generated as "PRD-0001", which no scale can hold. Null on everything that
+  // is not weighed; scales cap out around 10k PLUs, so piece goods stay out.
+  plu: integer('plu'),
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
   priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
   // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
@@ -2345,3 +2359,26 @@ export const aiSettings = pgTable('ai_settings', {
 
 export type AiSettings = typeof aiSettings.$inferSelect;
 export type NewAiSettings = typeof aiSettings.$inferInsert;
+
+// Per-business configuration for label-printing scales. The scale prints its
+// own barcode and the layout of that barcode is redrawn in the scale's own
+// menu, so the till cannot assume a fixed one — it reads whatever the shop says
+// its scales print. `formats` is a list because a shop may run one prefix for
+// weight labels and another for price labels off the same scales.
+//
+// Parsing lives in common/weight-barcode.ts; this table only stores the shapes.
+export const scaleSettings = pgTable('scale_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Master switch. Off → the till never parses a scan as a scale label, so a
+  // shop without scales cannot be surprised by a barcode that happens to fit.
+  enabled: boolean('enabled').notNull().default(false),
+  // Barcode layouts the shop's scales print, tried in order.
+  formats: jsonb('formats').$type<ScaleBarcodeFormat[]>().notNull().default([]),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type ScaleSettings = typeof scaleSettings.$inferSelect;
+export type NewScaleSettings = typeof scaleSettings.$inferInsert;

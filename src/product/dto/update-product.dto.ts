@@ -1,11 +1,13 @@
 import {ApiProperty} from '@nestjs/swagger';
 import {
-  IsString,
+  IsInt,
   IsNumber,
   IsOptional,
+  IsString,
+  MaxLength,
   Min,
   MinLength,
-  MaxLength,
+  ValidateIf,
 } from 'class-validator';
 
 export class UpdateProductDto {
@@ -37,6 +39,19 @@ export class UpdateProductDto {
   @IsOptional()
   @MaxLength(14, {message: 'Barcode must be at most 14 characters'})
   barcode?: string;
+
+  @ApiProperty({
+    description:
+      'Scale PLU — the short number pressed on a label-printing scale, which the scale embeds in the barcode it prints. Null on goods that are not weighed.',
+    example: 1234,
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsInt()
+  @Min(1)
+  plu?: number | null;
 
   @ApiProperty({
     description: 'Purchase price (price in)',

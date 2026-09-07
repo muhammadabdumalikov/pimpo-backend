@@ -26,6 +26,9 @@ import { JwtAuthGuard } from '../business/jwt-auth.guard';
 import { OwnerGuard } from '../business/owner.guard';
 import { PlanTierGuard } from '../subscription/plan-tier.guard';
 import { MinTier } from '../subscription/required-tier.decorator';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
+import { PermissionService } from '../permission/permission.service';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
 import { CurrentAccount } from '../business/decorators/current-account.decorator';
 import { IBusiness, IAccount } from '../business/types';
@@ -37,11 +40,14 @@ import { CreateReturnDto } from './dto/create-return.dto';
 
 @ApiTags('receipts')
 @Controller('receipts')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class ReceiptController {
-  constructor(private readonly receiptService: ReceiptService) {}
+  constructor(
+    private readonly receiptService: ReceiptService,
+    private readonly permissions: PermissionService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -49,8 +55,16 @@ export class ReceiptController {
   @ApiResponse({ status: 201, description: 'Receipt created successfully' })
   async create(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Body() createReceiptDto: CreateReceiptDto,
   ) {
+    // Saving a draft changes no stock and stays open to anyone who can reach
+    // the page. Creating an already-received receipt applies stock in the same
+    // call, so it is the same act as POST /:id/receive and needs the same
+    // right — otherwise the permission would be bypassable by never drafting.
+    if (!createReceiptDto.draft) {
+      await this.permissions.assert(account, 'receipt:receive');
+    }
     const receipt = await this.receiptService.create(
       business.id,
       createReceiptDto,
@@ -128,9 +142,17 @@ export class ReceiptController {
   @ApiResponse({ status: 404, description: 'Receipt not found' })
   async update(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
     @Body() updateReceiptDto: UpdateReceiptDto,
   ) {
+    // Editing a draft is free. `amendReceived` is the caller's consent to take
+    // a received receipt off stock and re-apply it — a stock-moving act, so it
+    // carries the same right as receiving. The flag is only ever sent for a
+    // received receipt (a draft ignores it).
+    if (updateReceiptDto.amendReceived) {
+      await this.permissions.assert(account, 'receipt:receive');
+    }
     const receipt = await this.receiptService.update(
       business.id,
       id,
@@ -226,7 +248,12 @@ export class ReceiptController {
   }
 
   @Post(':id/receive')
+  @RequirePermission('receipt:receive')
   @ApiOperation({ summary: 'Receive a draft receipt (applies stock)' })
+  @ApiResponse({
+    status: 403,
+    description: 'Role lacks the receipt:receive permission',
+  })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   async receive(
     @CurrentBusiness() business: IBusiness,

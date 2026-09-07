@@ -5,9 +5,16 @@ import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from 'src/business/business.module';
 import {SubscriptionModule} from '../subscription/subscription.module';
 import {BranchModule} from '../branch/branch.module';
+import {ScaleModule} from '../scale/scale.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule, SubscriptionModule, BranchModule],
+  imports: [
+    DatabaseModule,
+    BusinessModule,
+    SubscriptionModule,
+    BranchModule,
+    ScaleModule,
+  ],
   controllers: [ProductController],
   providers: [ProductService],
   exports: [ProductService],

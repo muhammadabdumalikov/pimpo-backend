@@ -11,6 +11,8 @@ import { JwtPayload } from './jwt-auth.guard';
 import { IBusiness, IAccount } from './types';
 
 // Sentinel meaning "all menus" — used for the business owner.
+import {ALL_PERMISSIONS} from '../permission/permission.catalog';
+
 const ALL_MENUS = '*';
 
 @Injectable()
@@ -110,6 +112,7 @@ export class AuthService {
           roleId: null,
           roleName: null,
           menuKeys: [ALL_MENUS],
+          permissions: [ALL_PERMISSIONS],
         },
       };
     }
@@ -157,6 +160,7 @@ export class AuthService {
         roleId: role.id,
         roleName: role.name,
         menuKeys: role.menuKeys ?? [],
+        permissions: role.permissions ?? [],
       },
     };
   }
@@ -204,6 +208,7 @@ export class AuthService {
         roleId: null,
         roleName: null,
         menuKeys: [ALL_MENUS],
+        permissions: [ALL_PERMISSIONS],
       },
     };
   }
@@ -261,6 +266,7 @@ export class AuthService {
         roleId: role.id,
         roleName: role.name,
         menuKeys: role.menuKeys ?? [],
+        permissions: role.permissions ?? [],
       },
     };
   }

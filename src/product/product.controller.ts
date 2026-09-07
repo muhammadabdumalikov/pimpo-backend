@@ -210,6 +210,16 @@ export class ProductController {
     return {barcode};
   }
 
+  @Get('generate-plu')
+  @ApiOperation({
+    summary: 'Lowest free scale PLU for the current business',
+  })
+  @ApiResponse({status: 200, description: 'Generated PLU'})
+  async generatePlu(@CurrentBusiness() business: IBusiness) {
+    const plu = await this.productService.generatePlu(business.id);
+    return {plu};
+  }
+
   @Get('lookup')
   @ApiOperation({
     summary: 'Look up a scanned barcode against own + shared community catalog',

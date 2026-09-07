@@ -22,6 +22,9 @@ export const TTL = {
   // Telegram notification toggles — read on every notifiable event (checkout,
   // shift open/close, cash movement), write-invalidated on the settings PUT.
   TELEGRAM_SETTINGS: 15 * 60 * 1000, // 15m
+  // Scale barcode layouts — read on every till scan that misses the catalogue,
+  // written only from the settings page.
+  SCALE_SETTINGS: 15 * 60 * 1000, // 15m
   // Receipt template resolve depends on registerId; short TTL (edits are rare
   // and reflecting within a minute is fine) instead of per-register invalidation.
   RECEIPT_RESOLVE: 60 * 1000, // 60s
@@ -79,10 +82,16 @@ export const CacheKeys = {
   categories: (businessId: string) => `categories:${businessId}`,
   brands: (businessId: string) => `brands:${businessId}`,
   roles: (businessId: string) => `roles:${businessId}`,
+  // Action permissions of ONE role — read on every permission-guarded
+  // request, so it gets its own small key instead of riding the whole
+  // roles list. Invalidated with the list on any role write.
+  rolePermissions: (businessId: string, roleId: string) =>
+    `roles:perms:${businessId}:${roleId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
   loyaltySettings: (businessId: string) => `loyalty:settings:${businessId}`,
   telegramSettings: (businessId: string) => `tg:settings:${businessId}`,
+  scaleSettings: (businessId: string) => `scale:settings:${businessId}`,
   units: (businessId: string) => `units:${businessId}`,
   paymentMethods: (businessId: string) => `paymethods:${businessId}`,
   stockTakeActive: (businessId: string) => `stocktake:active:${businessId}`,

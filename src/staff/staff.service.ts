@@ -19,6 +19,58 @@ export type StaffView = Omit<Staff, 'password'> & {
   branchName: string | null;
 };
 
+/**
+ * What a caller without `staff:read` sees: the roster. Colleague names are not
+ * a secret — the sales and finance screens filter by cashier and every till
+ * needs the list — but a login is half a credential and a wage is nobody
+ * else's business, so neither leaves this shape.
+ */
+export type StaffRosterView = Pick<
+  StaffView,
+  'id' | 'businessId' | 'name' | 'position' | 'branchId' | 'branchName' | 'isActive'
+>;
+
+/** Wage columns, stripped unless the caller holds `staff:payroll:view`. */
+const PAYROLL_FIELDS = [
+  'salaryType',
+  'baseSalary',
+  'salesPercent',
+  'percentBase',
+  // What the business currently OWES this employee — the same class of secret
+  // as the wage itself, and easy to miss because it lives on the staff row
+  // rather than in the payroll module.
+  'salaryBalance',
+] as const;
+
+/**
+ * Cuts a staff record down to what the caller is allowed to see.
+ *  • no `staff:read`          → roster only
+ *  • `staff:read`             → the full record minus wages
+ *  • + `staff:payroll:view`   → everything
+ */
+export function redactStaff(
+  view: StaffView,
+  access: {full: boolean; payroll: boolean},
+): StaffView | StaffRosterView {
+  if (!access.full) {
+    return {
+      id: view.id,
+      businessId: view.businessId,
+      name: view.name,
+      position: view.position,
+      branchId: view.branchId,
+      branchName: view.branchName,
+      isActive: view.isActive,
+    };
+  }
+  if (access.payroll) return view;
+  const copy = {...view};
+  for (const field of PAYROLL_FIELDS) {
+    delete (copy as Record<string, unknown>)[field];
+  }
+  return copy;
+}
+
 /** Salary shapes an employee can be paid on. */
 export type SalaryType = 'none' | 'fixed' | 'percent' | 'mixed';
 
@@ -131,6 +183,23 @@ export class StaffService {
       row.roles?.name ?? null,
       row.branches?.name ?? null,
     );
+  }
+
+  /**
+   * Permissions carried by a role, for the anti-escalation check when someone
+   * other than the owner assigns it. An unknown role returns nothing rather
+   * than throwing — the write path validates existence on its own.
+   */
+  async findRolePermissions(
+    businessId: string,
+    roleId: string,
+  ): Promise<string[]> {
+    const [role] = await this.db
+      .select({permissions: roles.permissions})
+      .from(roles)
+      .where(and(eq(roles.businessId, businessId), eq(roles.id, roleId)))
+      .limit(1);
+    return role?.permissions ?? [];
   }
 
   private async assertRoleBelongsToBusiness(businessId: string, roleId: string) {

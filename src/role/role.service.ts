@@ -10,13 +10,29 @@ import { DatabaseService } from '../database/database.service';
 import { roles, staff, type Role, type NewRole } from '../database/schema';
 import { generateId } from '../utils/uuid';
 import { CacheKeys, TTL } from '../cache/cache.util';
+import { PermissionService } from '../permission/permission.service';
 
 @Injectable()
 export class RoleService {
   constructor(
     private readonly dbService: DatabaseService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    private readonly permissionService: PermissionService,
   ) {}
+
+  /**
+   * Drops every cached view of a role: the business's role list (L2), the
+   * per-role permission entry (L2) and the in-process permission cache (L1).
+   * A permission edit must be visible on the very next request — that is the
+   * whole reason permissions are not carried in the JWT.
+   */
+  private async invalidate(businessId: string, roleId?: string): Promise<void> {
+    await this.cache.del(CacheKeys.roles(businessId));
+    if (roleId) {
+      await this.cache.del(CacheKeys.rolePermissions(businessId, roleId));
+    }
+    this.permissionService.invalidate(businessId);
+  }
 
   async findAll(businessId: string): Promise<Role[]> {
     return this.cache.wrap(
@@ -42,7 +58,7 @@ export class RoleService {
 
   async create(
     businessId: string,
-    data: { name: string; menuKeys: string[] },
+    data: { name: string; menuKeys: string[]; permissions?: string[] },
   ): Promise<Role> {
     const [existing] = await this.dbService.db
       .select()
@@ -58,20 +74,26 @@ export class RoleService {
       businessId,
       name: data.name,
       menuKeys: data.menuKeys ?? [],
+      permissions: data.permissions ?? [],
       isActive: true,
     };
     const [role] = await this.dbService.db
       .insert(roles)
       .values(newRole)
       .returning();
-    await this.cache.del(CacheKeys.roles(businessId));
+    await this.invalidate(businessId, role.id);
     return role;
   }
 
   async update(
     businessId: string,
     id: string,
-    data: { name?: string; menuKeys?: string[]; isActive?: boolean },
+    data: {
+      name?: string;
+      menuKeys?: string[];
+      permissions?: string[];
+      isActive?: boolean;
+    },
   ): Promise<Role> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
@@ -94,12 +116,15 @@ export class RoleService {
       .set({
         ...(data.name !== undefined && { name: data.name }),
         ...(data.menuKeys !== undefined && { menuKeys: data.menuKeys }),
+        ...(data.permissions !== undefined && {
+          permissions: data.permissions,
+        }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         updatedAt: new Date(),
       })
       .where(and(eq(roles.businessId, businessId), eq(roles.id, id)))
       .returning();
-    await this.cache.del(CacheKeys.roles(businessId));
+    await this.invalidate(businessId, id);
     return role;
   }
 
@@ -121,6 +146,6 @@ export class RoleService {
     await this.dbService.db
       .delete(roles)
       .where(and(eq(roles.businessId, businessId), eq(roles.id, id)));
-    await this.cache.del(CacheKeys.roles(businessId));
+    await this.invalidate(businessId, id);
   }
 }

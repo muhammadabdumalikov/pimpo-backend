@@ -26,6 +26,15 @@ export class AccountDto {
     type: [String],
   })
   menuKeys: string[];
+
+  @ApiProperty({
+    description:
+      'Action permissions this account may perform. ["*"] means the owner, ' +
+      'who holds every permission including ones added later.',
+    example: ['receipt:receive'],
+    type: [String],
+  })
+  permissions: string[];
 }
 
 export class LoginResponseDto {

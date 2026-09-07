@@ -13,7 +13,15 @@ export interface IBusiness extends Omit<Business, 'password'> {}
 export interface IAccount {
   type: 'business' | 'staff';
   id: string; // business.id for owner, staff.id for staff
+  businessId: string; // owning business — the scope every permission is read in
   roleId?: string;
+  /**
+   * Action permissions of this account, filled in lazily by PermissionService
+   * on the first check of a request and reused for the rest of it (a request
+   * may hit the guard and then a service-level assert). Never read from the
+   * token — see PermissionService for why.
+   */
+  permissions?: string[];
 }
 
 export interface AuthenticatedRequest extends Request {
