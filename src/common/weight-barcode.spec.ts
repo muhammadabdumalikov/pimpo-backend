@@ -7,15 +7,26 @@ import {
   type ScaleBarcodeFormat,
 } from './weight-barcode';
 
-const DEFAULTS = [DEFAULT_SCALE_FORMAT];
+// A weight-mode layout, declared here rather than taken from the shipped
+// default: these tests are about how a weight label is read, and must keep
+// meaning that even when the default changes to match real hardware.
+const WEIGHT_FORMAT: ScaleBarcodeFormat = {
+  prefix: '22',
+  pluDigits: 5,
+  valueDigits: 5,
+  mode: 'weight',
+  divisor: 1000,
+  checkDigit: true,
+};
+const DEFAULTS = [WEIGHT_FORMAT];
 
-// Builds a well-formed label for the default layout, so a test can say what it
-// means ("PLU 1234, 500 g") instead of spelling out digits.
+// Builds a well-formed label for that layout, so a test can say what it means
+// ("PLU 1234, 500 g") instead of spelling out digits.
 function label(plu: number, grams: number): string {
   const body =
-    DEFAULT_SCALE_FORMAT.prefix +
-    String(plu).padStart(DEFAULT_SCALE_FORMAT.pluDigits, '0') +
-    String(grams).padStart(DEFAULT_SCALE_FORMAT.valueDigits, '0');
+    WEIGHT_FORMAT.prefix +
+    String(plu).padStart(WEIGHT_FORMAT.pluDigits, '0') +
+    String(grams).padStart(WEIGHT_FORMAT.valueDigits, '0');
   return body + ean13CheckDigit(body);
 }
 
@@ -62,7 +73,7 @@ describe('parseWeightBarcode', () => {
 
   it('reads a price-mode label as a line total, not an amount', () => {
     const priceFormat: ScaleBarcodeFormat = {
-      ...DEFAULT_SCALE_FORMAT,
+      ...WEIGHT_FORMAT,
       prefix: '23',
       mode: 'price',
       divisor: 1,
@@ -94,15 +105,12 @@ describe('parseWeightBarcode', () => {
 
   it('takes the first matching format when several are configured', () => {
     const price: ScaleBarcodeFormat = {
-      ...DEFAULT_SCALE_FORMAT,
+      ...WEIGHT_FORMAT,
       prefix: '23',
       mode: 'price',
       divisor: 1,
     };
-    const parsed = parseWeightBarcode(label(1234, 500), [
-      price,
-      DEFAULT_SCALE_FORMAT,
-    ]);
+    const parsed = parseWeightBarcode(label(1234, 500), [price, WEIGHT_FORMAT]);
     expect(parsed?.weight).toBe(0.5);
   });
 
@@ -111,7 +119,7 @@ describe('parseWeightBarcode', () => {
   // therefore makes every internally generated barcode readable as a label —
   // the reason the scan resolver matches the catalogue before it parses.
   it('cannot tell a "20"-prefixed in-store barcode from a label', () => {
-    const twenty: ScaleBarcodeFormat = {...DEFAULT_SCALE_FORMAT, prefix: '20'};
+    const twenty: ScaleBarcodeFormat = {...WEIGHT_FORMAT, prefix: '20'};
     const generated = '200' + '123456789';
     const parsed = parseWeightBarcode(
       generated + ean13CheckDigit(generated),
@@ -132,5 +140,41 @@ describe('looksLikeScaleLabel', () => {
   it('rejects other codes', () => {
     expect(looksLikeScaleLabel('4780051070066', DEFAULTS)).toBe(false);
     expect(looksLikeScaleLabel('PRD-0042', DEFAULTS)).toBe(false);
+  });
+});
+
+// The shipped default is not a guess — it was read off a Rongta RLS1100C in a
+// shop, from labels whose check digits verify. These two are that evidence,
+// kept as a test so the default can never drift away from the machine it
+// describes.
+describe('DEFAULT_SCALE_FORMAT (real Rongta RLS1100C labels)', () => {
+  const DEFAULTS_REAL = [DEFAULT_SCALE_FORMAT];
+  const PRICE_PER_KG = 1800;
+
+  it.each([
+    ['1000089004868', 89, 486, 0.27],
+    ['1000096004776', 96, 477, 0.265],
+    // A heavy weigh-out: proves the value field really is five digits wide
+    // (09801 keeps its leading zero) and that PLU 89 lands in the same place
+    // whatever the total.
+    ['1000089098010', 89, 9801, 5.445],
+  ])('reads %s as PLU %i for %i so\'m', (code, plu, price, kg) => {
+    const parsed = parseWeightBarcode(code as string, DEFAULTS_REAL);
+    expect(parsed).toMatchObject({plu, price, weight: null});
+    // The till recovers the amount by dividing; these labels must land exactly
+    // on the weight the scale showed, with no rounding drift.
+    expect(Math.round(((parsed!.price as number) / PRICE_PER_KG) * 1000) / 1000).toBe(kg);
+  });
+
+  it('is 13 digits, so the check digit is actually enforced', () => {
+    expect(scaleFormatLength(DEFAULT_SCALE_FORMAT)).toBe(13);
+    // Same label, last digit nudged: a misread must not reach the cart.
+    expect(parseWeightBarcode('1000089004860', DEFAULTS_REAL)).toBeNull();
+  });
+
+  it('leaves ordinary barcodes alone', () => {
+    for (const code of ['4780051070066', '2001234567890', '1000089004868'.slice(1)]) {
+      expect(parseWeightBarcode(code, DEFAULTS_REAL)).toBeNull();
+    }
   });
 });

@@ -42,15 +42,26 @@ export interface ScaleBarcodeFormat {
 }
 
 /**
- * What a scale prints out of the box in this region: EAN-13, a "22" prefix,
- * a 5-digit PLU and the weight in grams. Used until a business saves its own.
+ * The layout used until a business describes its own.
+ *
+ * Not a textbook guess: read off a real Rongta RLS1100C in a shop here, from
+ * two labels whose EAN-13 check digits both verify —
+ *
+ *     1000089004868  → PLU 89, 486 so'm  (0.270 kg at 1800/kg)
+ *     1000096004776  → PLU 96, 477 so'm  (0.265 kg at 1800/kg)
+ *
+ * Note it carries the LINE TOTAL, not the weight, which is why `mode` is
+ * 'price'. That makes the amount only as good as the price agreement between
+ * scale and catalogue (see `labelQuantity` in product.service.ts), so a shop
+ * whose scale can print weight instead is better off switching and saying so
+ * on the settings page. The page's live tester is the authority either way.
  */
 export const DEFAULT_SCALE_FORMAT: ScaleBarcodeFormat = {
-  prefix: '22',
+  prefix: '10',
   pluDigits: 5,
   valueDigits: 5,
-  mode: 'weight',
-  divisor: 1000,
+  mode: 'price',
+  divisor: 1,
   checkDigit: true,
 };
 
