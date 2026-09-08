@@ -124,35 +124,24 @@ export class ReceiptController {
 
   @Patch(':id')
   @ApiOperation({
-    summary: 'Edit a receipt (replaces its header and lines)',
+    summary: 'Edit a DRAFT receipt (replaces its header and lines)',
     description:
-      'A draft is edited freely. A received receipt is taken off stock and ' +
-      're-applied in one transaction — that needs `amendReceived: true` in ' +
-      'the body, and is allowed only while none of it has been sold and it ' +
-      'carries no payments or returns.',
+      'Only a draft can be edited — it holds no stock. A received receipt is ' +
+      'final and is refused here: correct it with a supplier return, or ' +
+      'delete it (which takes its own explicit consent).',
   })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   @ApiResponse({ status: 200, description: 'Receipt updated' })
   @ApiResponse({
     status: 400,
-    description:
-      'Already partly sold, has payments/returns, or received without ' +
-      'amendReceived',
+    description: 'Receipt is not a draft',
   })
   @ApiResponse({ status: 404, description: 'Receipt not found' })
   async update(
     @CurrentBusiness() business: IBusiness,
-    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
     @Body() updateReceiptDto: UpdateReceiptDto,
   ) {
-    // Editing a draft is free. `amendReceived` is the caller's consent to take
-    // a received receipt off stock and re-apply it — a stock-moving act, so it
-    // carries the same right as receiving. The flag is only ever sent for a
-    // received receipt (a draft ignores it).
-    if (updateReceiptDto.amendReceived) {
-      await this.permissions.assert(account, 'receipt:receive');
-    }
     const receipt = await this.receiptService.update(
       business.id,
       id,

@@ -882,57 +882,45 @@ export class ReceiptService {
   }
 
   /**
-   * Edit a receipt: the payload replaces its header and every line.
+   * Edit a DRAFT receipt: the payload replaces its header and every line.
    *
    * A draft holds no stock, batches, payments or returns, so swapping its
    * lines needs no reversal — it stays a draft and is applied later by
    * receiving it.
    *
-   * A RECEIVED receipt is edited by taking the old document back off stock and
-   * putting the new one on, inside one transaction, so it never exists in a
-   * half-applied state. That is only allowed while all of it is still on the
-   * shelf; `loadReversible` is what draws that line and says which product
-   * broke it.
+   * A RECEIVED receipt is never edited. Its goods are on the shelf and its
+   * cost is already blended into the products, so rewriting the document would
+   * move real inventory behind what reads like a document change — and a
+   * client that merely retried a save (a stale tab, a mobile app, an
+   * integration) would move it without anyone deciding to. A mistake on a
+   * received receipt is corrected by a supplier return, or by deleting the
+   * receipt outright, which asks for that consent explicitly.
    */
   async update(
     businessId: string,
     receiptId: string,
     dto: UpdateReceiptDto,
   ): Promise<ReceiptWithItems> {
-    const {receipt, items: oldItems} = await this.loadReversible(
-      businessId,
-      receiptId,
-    );
-    const wasReceived = receipt.status !== 'draft';
-
-    // Rewriting a received receipt moves real stock, so it takes the caller's
-    // word for it. Without that word this is the ordinary draft-edit endpoint
-    // and refuses — which is what protects a stale tab still auto-saving a
-    // draft that was received on another device in the meantime.
-    if (wasReceived && dto.amendReceived !== true) {
+    const [receipt] = await this.dbService.db
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    if (receipt.status !== 'draft') {
       throw new AppException(ErrorCode.RECEIPT_ONLY_DRAFT_EDITABLE);
     }
 
-    const {
-      supplierName,
-      currency,
-      rateToBase,
-      lines,
-      received,
-      productInfo,
-      wholesaleByProduct,
-      bundleByProduct,
-      total,
-      itemCount,
-    } = await this.prepareReceipt(businessId, dto);
-
-    const [settings] = await this.dbService.db
-      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
-      .from(receiptSettings)
-      .where(eq(receiptSettings.businessId, businessId))
-      .limit(1);
-    const repriceExistingDefault =
-      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
+    // Stock, cost and price tiers are not touched here — a draft applies none
+    // of that until it is received — so only the document's own fields are
+    // taken off the prepared payload.
+    const {supplierName, currency, rateToBase, lines, total, itemCount} =
+      await this.prepareReceipt(businessId, dto);
 
     // Keep the receipt on its current branch unless the edit moves it.
     const branchId =
@@ -941,12 +929,7 @@ export class ReceiptService {
       (await this.branchService.ensureDefault(businessId)).id;
 
     await this.dbService.db.transaction(async (tx) => {
-      // Off the shelf first: the old lines' batches are dropped and cost is
-      // recomputed from what is left, so the new lines apply to a clean slate.
-      if (wasReceived) {
-        await this.reverseReceiptStockTx(tx, businessId, receipt, oldItems);
-      }
-
+      // A draft holds no batches and no stock — its lines are just swapped.
       await tx
         .delete(goodsReceiptItems)
         .where(
@@ -972,21 +955,6 @@ export class ReceiptService {
           lineTotal: line.lineTotal,
         })),
       );
-
-      // And back on, exactly as receiving it would have.
-      if (wasReceived) {
-        await this.applyReceiptStockTx(
-          tx,
-          businessId,
-          branchId,
-          lines,
-          received,
-          productInfo,
-          wholesaleByProduct,
-          bundleByProduct,
-          repriceExistingDefault,
-        );
-      }
 
       await tx
         .update(goodsReceipts)
