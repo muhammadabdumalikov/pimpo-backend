@@ -124,6 +124,13 @@ export class ProductController {
     description:
       "Filter by the product's default supplier; 'none' = products with no supplier",
   })
+  @ApiQuery({
+    name: 'unitId',
+    required: false,
+    type: String,
+    description:
+      "Filter by unit of measure (o'lchov birligi); 'none' = products with no unit",
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -137,6 +144,7 @@ export class ProductController {
     @Query('stock') stock?: string,
     @Query('categoryId') categoryId?: string,
     @Query('supplierId') supplierId?: string,
+    @Query('unitId') unitId?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -148,6 +156,7 @@ export class ProductController {
       stock: stockFilter,
       categoryId: categoryId || undefined,
       supplierId: supplierId || undefined,
+      unitId: unitId || undefined,
     });
     return result;
   }
@@ -161,18 +170,21 @@ export class ProductController {
   @ApiQuery({name: 'branchId', required: false, type: String})
   @ApiQuery({name: 'categoryId', required: false, type: String})
   @ApiQuery({name: 'supplierId', required: false, type: String})
+  @ApiQuery({name: 'unitId', required: false, type: String})
   async getStats(
     @CurrentBusiness() business: IBusiness,
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
     @Query('categoryId') categoryId?: string,
     @Query('supplierId') supplierId?: string,
+    @Query('unitId') unitId?: string,
   ) {
     return this.productService.getStats(business.id, {
       search,
       branchId: branchId || undefined,
       categoryId: categoryId || undefined,
       supplierId: supplierId || undefined,
+      unitId: unitId || undefined,
     });
   }
 

@@ -553,6 +553,10 @@ export class ProductService {
       // 'none' asks for the products that have none, which is how a catalogue
       // gets tidied up ("which products is nobody supplying?").
       supplierId?: string;
+      // Filter to one unit of measure (units table). The literal 'none' asks
+      // for the rows that carry no unit yet — legacy products imported before
+      // the unit catalogue existed, which is how they get found and fixed.
+      unitId?: string;
       // Exact scale PLU. Unlike `search` this cannot drift: a label carries one
       // PLU and it must resolve to that product or to nothing at all.
       plu?: number;
@@ -571,6 +575,7 @@ export class ProductService {
     const stock = options?.stock;
     const categoryId = options?.categoryId;
     const supplierId = options?.supplierId;
+    const unitId = options?.unitId;
     const plu = options?.plu;
 
     // Build where conditions
@@ -596,6 +601,14 @@ export class ProductService {
         supplierId === 'none'
           ? isNull(products.supplierId)
           : eq(products.supplierId, supplierId),
+      );
+    }
+
+    if (unitId) {
+      whereConditions.push(
+        unitId === 'none'
+          ? isNull(products.unitId)
+          : eq(products.unitId, unitId),
       );
     }
 
@@ -665,7 +678,7 @@ export class ProductService {
   // Whole-catalogue stats for the products-page pulse panel: stock-status
   // counts plus total units on hand and the catalogue's value at supply
   // (priceIn) and retail (priceOut) prices. Respects the same search/branch/
-  // category/supplier scoping as findAll, so the numbers always match the
+  // category/supplier/unit scoping as findAll, so the numbers always match the
   // (filtered) list — not just the visible page.
   async getStats(
     businessId: string,
@@ -674,6 +687,7 @@ export class ProductService {
       branchId?: string;
       categoryId?: string;
       supplierId?: string;
+      unitId?: string;
     },
   ): Promise<{
     total: number;
@@ -691,6 +705,7 @@ export class ProductService {
         const branchId = options?.branchId;
         const categoryId = options?.categoryId;
         const supplierId = options?.supplierId;
+        const unitId = options?.unitId;
 
         const whereConditions = [
           eq(products.businessId, businessId),
@@ -707,6 +722,13 @@ export class ProductService {
             supplierId === 'none'
               ? isNull(products.supplierId)
               : eq(products.supplierId, supplierId),
+          );
+        }
+        if (unitId) {
+          whereConditions.push(
+            unitId === 'none'
+              ? isNull(products.unitId)
+              : eq(products.unitId, unitId),
           );
         }
 
