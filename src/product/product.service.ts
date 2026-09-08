@@ -1412,15 +1412,17 @@ export class ProductService {
    * Lowest free scale PLU for this business.
    *
    * Unlike a barcode, a PLU is typed into the scale's keypad by hand and
-   * pressed hundreds of times a day, so the pool is walked from 1 upward and
-   * the lowest gap is reused — short numbers are the whole point.
+   * pressed hundreds of times a day, so the pool is walked from the window's
+   * start upward and the lowest gap is reused — short numbers are the whole
+   * point. The window itself is the shop's (Sozlamalar -> Etiketka), capped by
+   * what the scale barcode layouts can carry.
    *
    * Deliberately counts inactive products too. Soft-deleted rows keep their
    * PLU, and the unique index does not exclude them, so skipping them here
    * would hand out a number the database then refuses.
    */
   async generatePlu(businessId: string): Promise<number> {
-    const max = await this.scaleService.maxPlu(businessId);
+    const {min, max} = await this.scaleService.pluRange(businessId);
 
     const rows = await this.dbService.db
       .select({plu: products.plu})
@@ -1430,9 +1432,12 @@ export class ProductService {
       )
       .orderBy(asc(products.plu));
 
-    let candidate = 1;
+    let candidate = min;
     for (const row of rows) {
-      if (row.plu === null || row.plu > candidate) break;
+      // Numbers below the window (assigned before it was narrowed) are not
+      // gaps to fill — they are simply outside it.
+      if (row.plu === null || row.plu < min) continue;
+      if (row.plu > candidate) break;
       if (row.plu === candidate) candidate++;
     }
 
@@ -1446,16 +1451,16 @@ export class ProductService {
    * Guard a PLU before it is written. The database has the last word (there is
    * a unique index on business + PLU), but a duplicate caught here reports as
    * "another product uses this PLU" rather than a raw constraint violation, and
-   * the range check is something only the scale settings know.
+   * the range check is something only the scale/label settings know.
    */
   private async assertPluAvailable(
     businessId: string,
     plu: number,
     exceptProductId?: string,
   ): Promise<void> {
-    const max = await this.scaleService.maxPlu(businessId);
-    if (!Number.isInteger(plu) || plu < 1 || plu > max) {
-      throw new AppException(ErrorCode.PRODUCT_PLU_OUT_OF_RANGE, {max});
+    const {min, max} = await this.scaleService.pluRange(businessId);
+    if (!Number.isInteger(plu) || plu < min || plu > max) {
+      throw new AppException(ErrorCode.PRODUCT_PLU_OUT_OF_RANGE, {min, max});
     }
 
     const [taken] = await this.dbService.db

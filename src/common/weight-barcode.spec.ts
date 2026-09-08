@@ -143,12 +143,21 @@ describe('looksLikeScaleLabel', () => {
   });
 });
 
-// The shipped default is not a guess — it was read off a Rongta RLS1100C in a
-// shop, from labels whose check digits verify. These two are that evidence,
-// kept as a test so the default can never drift away from the machine it
-// describes.
-describe('DEFAULT_SCALE_FORMAT (real Rongta RLS1100C labels)', () => {
-  const DEFAULTS_REAL = [DEFAULT_SCALE_FORMAT];
+// The field widths are not a guess — they were read off a Rongta RLS1100C in a
+// shop, from labels whose check digits verify. These are that evidence, kept as
+// a test so the layout can never drift away from the machine it describes.
+//
+// Declared with the prefix the machine actually shipped on (10) rather than
+// taken from DEFAULT_SCALE_FORMAT: the default deliberately moved to a GS1
+// in-store prefix (see the constant), and these labels are about whether the
+// parser reads real hardware, not about which prefix we ship.
+const OBSERVED_FORMAT: ScaleBarcodeFormat = {
+  ...DEFAULT_SCALE_FORMAT,
+  prefix: '10',
+};
+
+describe('real Rongta RLS1100C labels', () => {
+  const DEFAULTS_REAL = [OBSERVED_FORMAT];
   const PRICE_PER_KG = 1800;
 
   it.each([
@@ -167,7 +176,7 @@ describe('DEFAULT_SCALE_FORMAT (real Rongta RLS1100C labels)', () => {
   });
 
   it('is 13 digits, so the check digit is actually enforced', () => {
-    expect(scaleFormatLength(DEFAULT_SCALE_FORMAT)).toBe(13);
+    expect(scaleFormatLength(OBSERVED_FORMAT)).toBe(13);
     // Same label, last digit nudged: a misread must not reach the cart.
     expect(parseWeightBarcode('1000089004860', DEFAULTS_REAL)).toBeNull();
   });
@@ -176,5 +185,37 @@ describe('DEFAULT_SCALE_FORMAT (real Rongta RLS1100C labels)', () => {
     for (const code of ['4780051070066', '2001234567890', '1000089004868'.slice(1)]) {
       expect(parseWeightBarcode(code, DEFAULTS_REAL)).toBeNull();
     }
+  });
+});
+
+describe('DEFAULT_SCALE_FORMAT', () => {
+  it('keeps the widths read off the real machine', () => {
+    // Only the prefix was allowed to move; a shop adopting the default still
+    // gets the layout its hardware prints.
+    expect(DEFAULT_SCALE_FORMAT).toMatchObject({
+      pluDigits: OBSERVED_FORMAT.pluDigits,
+      valueDigits: OBSERVED_FORMAT.valueDigits,
+      mode: OBSERVED_FORMAT.mode,
+      divisor: OBSERVED_FORMAT.divisor,
+      checkDigit: OBSERVED_FORMAT.checkDigit,
+    });
+    expect(scaleFormatLength(DEFAULT_SCALE_FORMAT)).toBe(13);
+  });
+
+  it('sits in a GS1 restricted-circulation range', () => {
+    // The whole point of the prefix change. 200-299 is reserved for in-store
+    // codes, so a default label can never be some manufacturer's real GTIN —
+    // which, on a catalogue miss, would resolve to the wrong product.
+    const first3 = Number(DEFAULT_SCALE_FORMAT.prefix.padEnd(3, '0'));
+    const last3 = Number(DEFAULT_SCALE_FORMAT.prefix.padEnd(3, '9'));
+    expect(first3).toBeGreaterThanOrEqual(200);
+    expect(last3).toBeLessThanOrEqual(299);
+  });
+
+  it('does not shadow the "200" barcodes Pimpo mints itself', () => {
+    // Both live in 20-29; overlapping heads would make an in-store barcode and
+    // a scale label indistinguishable by shape.
+    expect(DEFAULT_SCALE_FORMAT.prefix.startsWith('200')).toBe(false);
+    expect('200'.startsWith(DEFAULT_SCALE_FORMAT.prefix)).toBe(false);
   });
 });

@@ -44,20 +44,30 @@ export interface ScaleBarcodeFormat {
 /**
  * The layout used until a business describes its own.
  *
- * Not a textbook guess: read off a real Rongta RLS1100C in a shop here, from
- * two labels whose EAN-13 check digits both verify —
+ * The field widths are not a textbook guess: they were read off a real Rongta
+ * RLS1100C in a shop here, from labels whose EAN-13 check digits verify —
  *
  *     1000089004868  → PLU 89, 486 so'm  (0.270 kg at 1800/kg)
  *     1000096004776  → PLU 96, 477 so'm  (0.265 kg at 1800/kg)
  *
- * Note it carries the LINE TOTAL, not the weight, which is why `mode` is
+ * The PREFIX deliberately does not match those labels. That scale was shipped
+ * on department 10, which puts its labels at GS1 prefixes 100-109 — the range
+ * GS1 assigns to real US manufacturers, not an in-store range. A code like
+ * that is a valid GTIN somebody else may already own, and since the till falls
+ * back to label parsing whenever the catalogue has no match, an unrecognised
+ * US-made product would resolve to whatever PLU sat in those digits — silently,
+ * with a check digit that verifies. So the shipped default moves to 22, inside
+ * the 200-299 restricted-circulation range GS1 reserves for exactly this, and
+ * the settings page flags any prefix that leaves it.
+ *
+ * Note the label carries the LINE TOTAL, not the weight, which is why `mode` is
  * 'price'. That makes the amount only as good as the price agreement between
  * scale and catalogue (see `labelQuantity` in product.service.ts), so a shop
  * whose scale can print weight instead is better off switching and saying so
  * on the settings page. The page's live tester is the authority either way.
  */
 export const DEFAULT_SCALE_FORMAT: ScaleBarcodeFormat = {
-  prefix: '10',
+  prefix: '22',
   pluDigits: 5,
   valueDigits: 5,
   mode: 'price',

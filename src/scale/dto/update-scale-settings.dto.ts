@@ -81,4 +81,26 @@ export class UpdateScaleSettingsDto {
   @ValidateNested({each: true})
   @Type(() => ScaleBarcodeFormatDto)
   formats?: ScaleBarcodeFormatDto[];
+
+  @ApiPropertyOptional({
+    description: 'Lowest PLU handed out and accepted (Sozlamalar -> Etiketka)',
+    example: 1,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(99999999)
+  pluStart?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Highest PLU handed out; null = as high as the barcode layout allows',
+    example: 999,
+    nullable: true,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(99999999)
+  pluEnd?: number | null;
 }

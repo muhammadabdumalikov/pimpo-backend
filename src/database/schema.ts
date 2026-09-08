@@ -2412,6 +2412,14 @@ export const scaleSettings = pgTable('scale_settings', {
   enabled: boolean('enabled').notNull().default(false),
   // Barcode layouts the shop's scales print, tried in order.
   formats: jsonb('formats').$type<ScaleBarcodeFormat[]>().notNull().default([]),
+  // The window PLU numbers are handed out from ("Avtomatik" on the product form)
+  // and validated against. A shop that already keeps 1-999 for its old scale
+  // list, or numbers its departments in blocks, sets its own window here
+  // (Sozlamalar -> Etiketka).
+  pluStart: integer('plu_start').notNull().default(1),
+  // Upper bound; null = as high as the narrowest barcode layout can carry
+  // (maxPlu). Never allowed above that cap, whatever is stored here.
+  pluEnd: integer('plu_end'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

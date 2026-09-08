@@ -98,6 +98,9 @@ export enum ErrorCode {
   PRODUCT_PLU_EXISTS = 'PRODUCT_PLU_EXISTS',
   PRODUCT_PLU_OUT_OF_RANGE = 'PRODUCT_PLU_OUT_OF_RANGE',
   PLU_POOL_EXHAUSTED = 'PLU_POOL_EXHAUSTED',
+  PLU_RANGE_INVALID = 'PLU_RANGE_INVALID',
+  PLU_EXPORT_FORMAT_UNSUPPORTED = 'PLU_EXPORT_FORMAT_UNSUPPORTED',
+  PLU_EXPORT_EMPTY = 'PLU_EXPORT_EMPTY',
 
   // ── Receipt template ───────────────────────────────────────────────────────
   RECEIPT_TEMPLATE_NOT_FOUND = 'RECEIPT_TEMPLATE_NOT_FOUND',
@@ -512,11 +515,24 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.PRODUCT_PLU_OUT_OF_RANGE]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Scale PLU must be between 1 and {max}',
+    message: 'Scale PLU must be between {min} and {max}',
   },
   [ErrorCode.PLU_POOL_EXHAUSTED]: {
     status: HttpStatus.CONFLICT,
-    message: 'No free scale PLU left — widen the PLU field in scale settings',
+    message: 'No free scale PLU left — widen the PLU range in label settings',
+  },
+  [ErrorCode.PLU_RANGE_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The PLU range must end at or above where it starts',
+  },
+  [ErrorCode.PLU_EXPORT_FORMAT_UNSUPPORTED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'This barcode layout has no equivalent in the scale software — export needs a 1- or 2-digit prefix',
+  },
+  [ErrorCode.PLU_EXPORT_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No weighed product has a PLU yet, so there is nothing to export',
   },
 
   // Receipt template
