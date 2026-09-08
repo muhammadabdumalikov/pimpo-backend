@@ -130,9 +130,10 @@ async function ensureDemoBilling(
 }
 
 async function seed() {
-  const connectionString =
-    process.env.DATABASE_URL ||
-    'postgresql://postgres:oLCvicppN1ALpQDNyCpORztaAT22jUtcyBE5mJYrS47ujmsZ19mkYf1clU4TEpka@116.202.26.85:5454/KPOS';
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL is not set');
+  }
 
   const client = postgres(connectionString, {max: 1});
   const db = drizzle(client, {schema});

@@ -11,9 +11,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   public db: ReturnType<typeof drizzle>;
 
   constructor(private readonly configService: ConfigService) {
-    this.connectionString =
-      this.configService.get<string>('DATABASE_URL') ||
-      'postgresql://postgres:oLCvicppN1ALpQDNyCpORztaAT22jUtcyBE5mJYrS47ujmsZ19mkYf1clU4TEpka@116.202.26.85:5454/KPOS';
+    // No fallback: a missing DATABASE_URL must stop the boot, not quietly
+    // connect somewhere. Nest surfaces this as a DI failure at startup.
+    const url = this.configService.get<string>('DATABASE_URL');
+    if (!url) {
+      throw new Error('DATABASE_URL is not set');
+    }
+    this.connectionString = url;
   }
 
   async onModuleInit() {
