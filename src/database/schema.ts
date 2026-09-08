@@ -796,6 +796,39 @@ export const receiptSettings = pgTable('receipt_settings', {
 // these, each optionally bound to a specific register (kassa). The field
 // selection, ordering, footer links and note live in jsonb so the layout is
 // fully data-driven — the frontend editor + live preview render from it.
+// Price-tag / barcode label layout ("Etiketka"), one row per business.
+//
+// A shop prints its shelf labels on a thermal label printer (Xprinter 365B and
+// the like), and the roll it loaded is what decides the layout: the millimetres
+// are the label stock, the toggles are what fits on it. The frontend renders
+// both the live preview and the actual printout from this row, so what the
+// settings page shows is what comes out of the printer.
+export const labelSettings = pgTable('label_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // The label stock in the printer, in whole millimetres (58x40 by default).
+  widthMm: integer('width_mm').notNull().default(58),
+  heightMm: integer('height_mm').notNull().default(40),
+  // Quiet zone inside the label's edge — thermal printers drift a little.
+  paddingMm: integer('padding_mm').notNull().default(2),
+  showStoreName: boolean('show_store_name').notNull().default(false),
+  showName: boolean('show_name').notNull().default(true),
+  // How many lines the product name may take before it is clipped.
+  nameLines: integer('name_lines').notNull().default(2),
+  showPrice: boolean('show_price').notNull().default(true),
+  showCode: boolean('show_code').notNull().default(false),
+  // The digits printed under the bars.
+  showBarcodeText: boolean('show_barcode_text').notNull().default(true),
+  barcodeHeightMm: integer('barcode_height_mm').notNull().default(12),
+  // Type scale for the whole label, in percent (80–140).
+  fontScale: integer('font_scale').notNull().default(100),
+  // How many copies one print sends by default.
+  copies: integer('copies').notNull().default(1),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const receiptTemplates = pgTable('receipt_templates', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
@@ -1513,6 +1546,8 @@ export type OrderItem = typeof orderItems.$inferSelect;
 export type NewOrderItem = typeof orderItems.$inferInsert;
 export type ReceiptSettings = typeof receiptSettings.$inferSelect;
 export type NewReceiptSettings = typeof receiptSettings.$inferInsert;
+export type LabelSettings = typeof labelSettings.$inferSelect;
+export type NewLabelSettings = typeof labelSettings.$inferInsert;
 export type ReceiptTemplate = typeof receiptTemplates.$inferSelect;
 export type NewReceiptTemplate = typeof receiptTemplates.$inferInsert;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;

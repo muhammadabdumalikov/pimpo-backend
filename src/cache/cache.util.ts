@@ -89,6 +89,7 @@ export const CacheKeys = {
     `roles:perms:${businessId}:${roleId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
+  settingsLabel: (businessId: string) => `settings:label:${businessId}`,
   loyaltySettings: (businessId: string) => `loyalty:settings:${businessId}`,
   telegramSettings: (businessId: string) => `tg:settings:${businessId}`,
   scaleSettings: (businessId: string) => `scale:settings:${businessId}`,
