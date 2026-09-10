@@ -7,17 +7,20 @@ import {TargetService} from './target.service';
 import {SetTargetDto} from './dto/set-target.dto';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 // Monthly targets are an extended-analytics feature — Business (pro) and up.
 @ApiTags('targets')
 @Controller('targets')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('pro')
 @ApiBearerAuth('JWT-auth')
 export class TargetController {
   constructor(private readonly targetService: TargetService) {}
 
   @Get()
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Oylik reja vs fakt (progress)'})
   @ApiQuery({name: 'month', required: false, description: 'YYYY-MM (default: joriy oy)'})
   async getProgress(
@@ -28,6 +31,7 @@ export class TargetController {
   }
 
   @Put()
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Oylik rejani belgilash (upsert)'})
   async setTarget(
     @CurrentBusiness() business: IBusiness,

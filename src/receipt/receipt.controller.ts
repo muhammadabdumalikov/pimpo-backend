@@ -23,7 +23,6 @@ import {
 } from '@nestjs/swagger';
 import { ReceiptService } from './receipt.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
-import { OwnerGuard } from '../business/owner.guard';
 import { PlanTierGuard } from '../subscription/plan-tier.guard';
 import { MinTier } from '../subscription/required-tier.decorator';
 import { PermissionsGuard } from '../permission/permissions.guard';
@@ -50,6 +49,7 @@ export class ReceiptController {
   ) {}
 
   @Post()
+  @RequirePermission('receipt:create')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a goods receipt (adds stock)' })
   @ApiResponse({ status: 201, description: 'Receipt created successfully' })
@@ -73,6 +73,7 @@ export class ReceiptController {
   }
 
   @Get()
+  @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Get all goods receipts for current business' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
@@ -107,6 +108,7 @@ export class ReceiptController {
   }
 
   @Get(':id')
+  @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Get a goods receipt by ID (with items)' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   @ApiResponse({ status: 200, description: 'Receipt details' })
@@ -123,6 +125,7 @@ export class ReceiptController {
   }
 
   @Patch(':id')
+  @RequirePermission('receipt:create')
   @ApiOperation({
     summary: 'Edit a DRAFT receipt (replaces its header and lines)',
     description:
@@ -151,6 +154,7 @@ export class ReceiptController {
   }
 
   @Patch(':id/header')
+  @RequirePermission('receipt:create')
   @ApiOperation({
     summary:
       "Change a receipt's supplier and/or branch — allowed at any status. " +
@@ -176,7 +180,7 @@ export class ReceiptController {
   }
 
   @Delete(':id')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('receipt:delete')
   @ApiOperation({
     summary: 'Delete a receipt (owner only)',
     description:
@@ -208,6 +212,7 @@ export class ReceiptController {
   }
 
   @Get(':id/payments')
+  @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Payment history for a receipt' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   async getPayments(
@@ -218,6 +223,7 @@ export class ReceiptController {
   }
 
   @Post(':id/payments')
+  @RequirePermission('receipt:pay')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Record a payment to the supplier (books a finance expense)' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
@@ -253,6 +259,7 @@ export class ReceiptController {
   }
 
   @Get(':id/returns')
+  @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Return history for a receipt' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   async getReturns(
@@ -263,6 +270,7 @@ export class ReceiptController {
   }
 
   @Post(':id/returns')
+  @RequirePermission('receipt:return')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Return goods to the supplier (reverses stock + debt)' })
   @ApiParam({ name: 'id', description: 'Receipt ID' })

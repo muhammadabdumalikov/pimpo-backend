@@ -33,6 +33,8 @@ import {
   CreateDiscountDto,
 } from './dto/billing.dto';
 import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 export class UpdateSubscriptionDto {
   @IsString()
@@ -150,7 +152,8 @@ export class SubscriptionController {
 
   // Business endpoints for managing their own subscription
   @Post('subscribe')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Subscribe to a plan (business)' })
@@ -180,7 +183,8 @@ export class SubscriptionController {
   }
 
   @Put('current')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Change subscription plan (business)' })
@@ -210,7 +214,8 @@ export class SubscriptionController {
   }
 
   @Delete('current')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Cancel current subscription (business)' })

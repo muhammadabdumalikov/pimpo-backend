@@ -44,6 +44,8 @@ import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramNotifyService} from './telegram-notify.service';
 import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
 import {UpdateStoreBotDto} from './dto/update-store-bot.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const XLSX_MIME =
@@ -58,7 +60,7 @@ const FALLBACK_MIMES = ['application/octet-stream', 'application/zip'];
 // flowing through TelegramNotifyService regardless of tier.
 @ApiTags('telegram')
 @Controller('telegram')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class TelegramController {
@@ -87,6 +89,7 @@ export class TelegramController {
   }
 
   @Put('notification-settings')
+  @RequirePermission('settings:manage')
   @ApiOperation({summary: 'Toggle which bot notifications get sent'})
   async updateNotificationSettings(
     @CurrentBusiness() business: IBusiness,
@@ -119,6 +122,7 @@ export class TelegramController {
   }
 
   @Put('store-bot')
+  @RequirePermission('settings:manage')
   @MinTier('pro')
   @ApiOperation({
     summary: "Connect or disconnect the shop's own storefront bot",
@@ -198,6 +202,7 @@ export class TelegramController {
   }
 
   @Delete('links/:id')
+  @RequirePermission('settings:manage')
   @ApiOperation({summary: 'Deactivate a Telegram link owned by the business'})
   @ApiParam({name: 'id', description: 'Telegram link ID'})
   async removeLink(

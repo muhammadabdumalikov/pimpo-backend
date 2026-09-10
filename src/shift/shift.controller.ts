@@ -29,10 +29,12 @@ import {UpdateCashCategoryDto} from './dto/update-cash-category.dto';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('shifts')
 @Controller()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class ShiftController {
   constructor(private readonly shiftService: ShiftService) {}
@@ -45,6 +47,7 @@ export class ShiftController {
   }
 
   @Post('registers')
+  @RequirePermission('register:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a cash register (kassa)'})
   async createRegister(
@@ -56,6 +59,7 @@ export class ShiftController {
   }
 
   @Patch('registers/:id')
+  @RequirePermission('register:manage')
   @ApiOperation({summary: 'Update a cash register (name / active)'})
   @ApiParam({name: 'id', description: 'Register ID'})
   async updateRegister(
@@ -79,6 +83,7 @@ export class ShiftController {
   }
 
   @Post('cash-categories')
+  @RequirePermission('register:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a cash operation category'})
   async createCashCategory(
@@ -93,6 +98,7 @@ export class ShiftController {
   }
 
   @Patch('cash-categories/:id')
+  @RequirePermission('register:manage')
   @ApiOperation({summary: 'Update / soft-delete a cash operation category'})
   @ApiParam({name: 'id', description: 'Category ID'})
   async updateCashCategory(
@@ -129,6 +135,7 @@ export class ShiftController {
   }
 
   @Post('shifts/open')
+  @RequirePermission('shift:open')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Open a shift on a register (with opening float)'})
   async openShift(
@@ -159,6 +166,7 @@ export class ShiftController {
   }
 
   @Post('shifts/:id/movements')
+  @RequirePermission('cash:movement')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Add a cash movement (kirim/chiqim) to a shift'})
   @ApiParam({name: 'id', description: 'Shift ID'})
@@ -198,6 +206,7 @@ export class ShiftController {
   }
 
   @Post('shifts/:id/close')
+  @RequirePermission('shift:close')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Close a shift → Z-report (per method × currency)'})
   @ApiParam({name: 'id', description: 'Shift ID'})

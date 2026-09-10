@@ -32,15 +32,18 @@ import {UpdateOrderDto} from './dto/update-order.dto';
 import {BatchCreateOrderDto} from './dto/batch-create-order.dto';
 import {UpdateOrderStatusDto} from './dto/update-order-status.dto';
 import {OrderService} from './order.service';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('orders')
 @Controller('orders')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
   @Post()
+  @RequirePermission('sale:create')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create an order (decrements product stock)'})
   @ApiResponse({status: 201, description: 'Order created'})
@@ -53,6 +56,7 @@ export class OrderController {
   }
 
   @Post('hold')
+  @RequirePermission('sale:create')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Park the cart as a held sale (stock is not decremented)',
@@ -67,6 +71,7 @@ export class OrderController {
   }
 
   @Post('batch')
+  @RequirePermission('sale:create')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Bulk-create queued offline orders (idempotent per clientId)',
@@ -81,6 +86,7 @@ export class OrderController {
   }
 
   @Get()
+  @RequirePermission('sale:read')
   @ApiOperation({summary: 'List orders for current business'})
   @ApiQuery({name: 'page', required: false})
   @ApiQuery({name: 'limit', required: false})
@@ -128,6 +134,7 @@ export class OrderController {
   }
 
   @Get('summary')
+  @RequirePermission('sale:read')
   @ApiOperation({
     summary: 'Sales summary (count/units/revenue + payment split) for a range',
   })
@@ -142,6 +149,7 @@ export class OrderController {
   }
 
   @Get('count')
+  @RequirePermission('sale:read')
   @ApiOperation({summary: 'Get total order count'})
   @ApiQuery({name: 'status', required: false})
   @ApiQuery({name: 'source', required: false, description: "'admin' | 'store'"})
@@ -154,12 +162,14 @@ export class OrderController {
   }
 
   @Get('revenue')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Get total revenue from completed orders'})
   async getRevenue(@CurrentBusiness() business: IBusiness) {
     return {revenue: await this.orderService.getRevenue(business.id)};
   }
 
   @Get('monthly-sales')
+  @RequirePermission('report:view')
   @ApiOperation({
     summary:
       'Completed-order revenue per month — a trailing window (`months`) or a full calendar year (12 values)',
@@ -195,6 +205,7 @@ export class OrderController {
   }
 
   @Get('product-performance')
+  @RequirePermission('report:view')
   @ApiOperation({
     summary: 'Per-product sales/revenue/profit from completed orders',
   })
@@ -215,6 +226,7 @@ export class OrderController {
   }
 
   @Get('sales-by-employee')
+  @RequirePermission('staff:sales:view')
   @ApiOperation({
     summary: 'Completed-order sales grouped by cashier (employee)',
   })
@@ -233,6 +245,7 @@ export class OrderController {
   }
 
   @Get('user/:userId')
+  @RequirePermission('sale:read')
   @ApiOperation({summary: 'Get orders for a specific customer'})
   @ApiParam({name: 'userId', description: 'Customer ID'})
   async findByUser(
@@ -243,6 +256,7 @@ export class OrderController {
   }
 
   @Get(':id')
+  @RequirePermission('sale:read')
   @ApiOperation({summary: 'Get order by id (with items)'})
   @ApiParam({name: 'id', description: 'Order ID'})
   @ApiResponse({status: 404, description: 'Not found'})
@@ -256,6 +270,7 @@ export class OrderController {
   }
 
   @Patch(':id')
+  @RequirePermission('sale:update')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Edit sale metadata (date, customer, cashier, note)',
@@ -270,6 +285,7 @@ export class OrderController {
   }
 
   @Put(':id/status')
+  @RequirePermission('sale:update')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update order status'})
   @ApiParam({name: 'id', description: 'Order ID'})
@@ -282,6 +298,7 @@ export class OrderController {
   }
 
   @Delete(':id')
+  @RequirePermission('sale:delete')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

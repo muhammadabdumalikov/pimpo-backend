@@ -31,10 +31,12 @@ import {UpdateFinanceCategoryDto} from './dto/update-finance-category.dto';
 import {CreateTransactionDto} from './dto/create-transaction.dto';
 import {CreateTransferDto} from './dto/create-transfer.dto';
 import {QueryTransactionsDto} from './dto/query-transactions.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('finance')
 @Controller()
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class FinanceController {
@@ -42,12 +44,14 @@ export class FinanceController {
 
   // ─── Accounts (Hisoblar) ──────────────────────────────────────────────────
   @Get('accounts')
+  @RequirePermission('finance:read')
   @ApiOperation({summary: 'List accounts with balances (Hisoblar holati)'})
   async getAccounts(@CurrentBusiness() business: IBusiness) {
     return this.financeService.getAccounts(business.id);
   }
 
   @Post('accounts')
+  @RequirePermission('finance:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a financial account'})
   async createAccount(
@@ -59,6 +63,7 @@ export class FinanceController {
   }
 
   @Patch('accounts/:id')
+  @RequirePermission('finance:manage')
   @ApiOperation({summary: 'Update an account (name / active)'})
   @ApiParam({name: 'id', description: 'Account ID'})
   async updateAccount(
@@ -72,6 +77,7 @@ export class FinanceController {
 
   // ─── Categories (Toifalar) ────────────────────────────────────────────────
   @Get('finance/categories')
+  @RequirePermission('finance:read')
   @ApiOperation({summary: 'List finance categories'})
   @ApiQuery({name: 'kind', required: false, enum: ['income', 'expense']})
   @ApiQuery({name: 'includeInactive', required: false, type: Boolean})
@@ -88,6 +94,7 @@ export class FinanceController {
   }
 
   @Post('finance/categories')
+  @RequirePermission('finance:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a finance category'})
   async createCategory(
@@ -99,6 +106,7 @@ export class FinanceController {
   }
 
   @Patch('finance/categories/:id')
+  @RequirePermission('finance:manage')
   @ApiOperation({summary: 'Update a category (name / soft-delete)'})
   @ApiParam({name: 'id', description: 'Category ID'})
   async updateCategory(
@@ -116,6 +124,7 @@ export class FinanceController {
 
   // ─── Transactions (Tranzaksiyalar) ────────────────────────────────────────
   @Get('finance/transactions')
+  @RequirePermission('finance:read')
   @ApiOperation({summary: 'List transactions + summary (filters, paging)'})
   async getTransactions(
     @CurrentBusiness() business: IBusiness,
@@ -125,6 +134,7 @@ export class FinanceController {
   }
 
   @Post('finance/transactions/income')
+  @RequirePermission('finance:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Record an income transaction'})
   async createIncome(
@@ -141,6 +151,7 @@ export class FinanceController {
   }
 
   @Post('finance/transactions/expense')
+  @RequirePermission('finance:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Record an expense transaction'})
   async createExpense(
@@ -157,6 +168,7 @@ export class FinanceController {
   }
 
   @Post('finance/transactions/transfer')
+  @RequirePermission('finance:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Transfer between accounts (same currency)'})
   async createTransfer(

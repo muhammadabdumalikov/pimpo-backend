@@ -16,12 +16,14 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {IBusiness} from '../business/types';
 import {ScaleService} from './scale.service';
 import {UpdateScaleSettingsDto} from './dto/update-scale-settings.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 // Label-scale support is plain retail plumbing, not a paid differentiator, so
 // it ships on every plan.
 @ApiTags('scale')
 @Controller('scale')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class ScaleController {
   constructor(private readonly scaleService: ScaleService) {}
@@ -68,6 +70,7 @@ export class ScaleController {
   }
 
   @Put('settings')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update scale barcode settings'})
   async updateSettings(

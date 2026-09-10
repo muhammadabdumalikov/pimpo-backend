@@ -28,15 +28,18 @@ import { IBusiness } from '../business/types';
 import { CreateDebtDto } from './dto/create-debt.dto';
 import { UpdateDebtDto } from './dto/update-debt.dto';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('debts')
 @Controller('debts')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class DebtController {
     constructor(private readonly debtService: DebtService) { }
 
     @Post()
+  @RequirePermission('debt:manage')
     @HttpCode(HttpStatus.CREATED)
     @ApiOperation({ summary: 'Create a new debt' })
     @ApiResponse({
@@ -56,6 +59,7 @@ export class DebtController {
     }
 
     @Get()
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'Get all debts for current business' })
     @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
     @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
@@ -88,6 +92,7 @@ export class DebtController {
     }
 
     @Get('count')
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'Get total debt count for current business' })
     @ApiResponse({
         status: 200,
@@ -99,6 +104,7 @@ export class DebtController {
     }
 
     @Get('grouped')
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'Debts grouped by customer (sorted + paginated server-side)' })
     @ApiQuery({ name: 'page', required: false, type: Number })
     @ApiQuery({ name: 'limit', required: false, type: Number })
@@ -132,6 +138,7 @@ export class DebtController {
     }
 
     @Get('user/:userId')
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'Get all debts for a specific user' })
     @ApiParam({ name: 'userId', description: 'User ID' })
     @ApiResponse({
@@ -147,6 +154,7 @@ export class DebtController {
     }
 
     @Get(':id')
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'Get a debt by ID' })
     @ApiParam({ name: 'id', description: 'Debt ID' })
     @ApiResponse({
@@ -166,6 +174,7 @@ export class DebtController {
     }
 
     @Put(':id')
+  @RequirePermission('debt:manage')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Update a debt' })
     @ApiParam({ name: 'id', description: 'Debt ID' })
@@ -187,6 +196,7 @@ export class DebtController {
     }
 
     @Delete(':id')
+  @RequirePermission('debt:manage')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Delete a debt' })
     @ApiParam({ name: 'id', description: 'Debt ID' })
@@ -208,6 +218,7 @@ export class DebtController {
     // ─── Installment payments (Pro tier) ─────────────────────────────────────
 
     @Post(':id/payments')
+  @RequirePermission('debt:manage')
     @HttpCode(HttpStatus.CREATED)
     @ApiOperation({ summary: 'Record an installment payment against a debt (Pro)' })
     @ApiParam({ name: 'id', description: 'Debt ID' })
@@ -228,6 +239,7 @@ export class DebtController {
     }
 
     @Get(':id/payments')
+  @RequirePermission('debt:read')
     @ApiOperation({ summary: 'List installment payments for a debt (Pro)' })
     @ApiParam({ name: 'id', description: 'Debt ID' })
     @ApiResponse({ status: 200, description: 'Payment history' })
@@ -241,6 +253,7 @@ export class DebtController {
     }
 
     @Delete(':id/payments/:paymentId')
+  @RequirePermission('debt:manage')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Delete an installment payment (Pro)' })
     @ApiParam({ name: 'id', description: 'Debt ID' })

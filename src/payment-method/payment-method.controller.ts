@@ -25,10 +25,12 @@ import {
   CreatePaymentMethodDto,
   UpdatePaymentMethodDto,
 } from './dto/payment-method.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('payment-methods')
 @Controller('payment-methods')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class PaymentMethodController {
   constructor(private readonly paymentMethodService: PaymentMethodService) {}
@@ -42,6 +44,7 @@ export class PaymentMethodController {
   }
 
   @Post()
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a custom payment method' })
   @ApiResponse({ status: 201, description: 'Payment method created' })
@@ -54,6 +57,7 @@ export class PaymentMethodController {
   }
 
   @Put(':id')
+  @RequirePermission('settings:manage')
   @ApiOperation({
     summary:
       'Update a payment method (system rows: visibility/order only)',
@@ -69,6 +73,7 @@ export class PaymentMethodController {
   }
 
   @Delete(':id')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a custom payment method' })
   @ApiParam({ name: 'id', description: 'Payment method id' })

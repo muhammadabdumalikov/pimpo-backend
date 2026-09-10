@@ -22,6 +22,8 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { LoyaltyService } from './loyalty.service';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 // Loyalty (keshbek/bonus) is a Business-plan feature: it is one of the paid
 // differentiators the tiers are priced on, so it sits behind `pro` rather than
@@ -30,19 +32,21 @@ import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 // gated here.
 @ApiTags('loyalty')
 @Controller('loyalty')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('pro')
 @ApiBearerAuth('JWT-auth')
 export class LoyaltyController {
   constructor(private readonly loyaltyService: LoyaltyService) {}
 
   @Get('settings')
+  @RequirePermission('customer:read')
   @ApiOperation({ summary: 'Get loyalty program settings for the current business' })
   async getSettings(@CurrentBusiness() business: IBusiness) {
     return this.loyaltyService.getSettings(business.id);
   }
 
   @Put('settings')
+  @RequirePermission('loyalty:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update loyalty program settings for the current business' })
   async updateSettings(
@@ -53,6 +57,7 @@ export class LoyaltyController {
   }
 
   @Get('customers')
+  @RequirePermission('customer:read')
   @ApiOperation({ summary: 'Customers with their loyalty balance, tier and last visit' })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
@@ -71,6 +76,7 @@ export class LoyaltyController {
   }
 
   @Get('customers/:id/history')
+  @RequirePermission('customer:read')
   @ApiOperation({ summary: "One customer's loyalty ledger (earn/redeem history)" })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })

@@ -29,10 +29,12 @@ import {CountItemsDto} from './dto/count-items.dto';
 import {CheckItemsDto} from './dto/check-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
 import {CreateWriteOffDto} from './dto/create-write-off.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('stock-takes')
 @Controller('stock-takes')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class StockTakeController {
@@ -64,6 +66,7 @@ export class StockTakeController {
   }
 
   @Post()
+  @RequirePermission('stocktake:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Start a stock-take (full snapshots the catalog)'})
   async start(
@@ -80,6 +83,7 @@ export class StockTakeController {
   }
 
   @Patch(':id/count')
+  @RequirePermission('stocktake:manage')
   @ApiOperation({summary: 'Upsert counted quantities for scanned products'})
   @ApiParam({name: 'id', description: 'Stock-take ID'})
   async count(
@@ -91,6 +95,7 @@ export class StockTakeController {
   }
 
   @Patch(':id/check')
+  @RequirePermission('stocktake:manage')
   @ApiOperation({
     summary: 'Toggle the reviewed ("tekshirildi") flag on counted rows',
   })
@@ -104,6 +109,7 @@ export class StockTakeController {
   }
 
   @Post(':id/complete')
+  @RequirePermission('stocktake:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Finalize: adjust stock + batches (FIFO), write finance diff',
@@ -125,6 +131,7 @@ export class StockTakeController {
   }
 
   @Post(':id/cancel')
+  @RequirePermission('stocktake:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Cancel an in-progress count: drop its rows, release the freeze',
@@ -144,8 +151,9 @@ export class StockTakeController {
 // which records it as a completed stock_take of type 'writeoff'.
 @ApiTags('write-offs')
 @Controller('write-offs')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
+@RequirePermission('stocktake:manage')
 @ApiBearerAuth('JWT-auth')
 export class WriteOffController {
   constructor(private readonly stockTakeService: StockTakeService) {}

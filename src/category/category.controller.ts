@@ -25,15 +25,18 @@ import { IBusiness } from '../business/types';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CategoryService } from './category.service';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('categories')
 @Controller('categories')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class CategoryController {
   constructor(private readonly categoryService: CategoryService) { }
 
   @Post()
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a category' })
   @ApiResponse({ status: 201, description: 'Category created' })
@@ -61,6 +64,7 @@ export class CategoryController {
   }
 
   @Put(':id')
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update category' })
   @ApiParam({ name: 'id', description: 'Category ID' })
@@ -75,6 +79,7 @@ export class CategoryController {
   }
 
   @Delete(':id')
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delete category' })
   @ApiParam({ name: 'id', description: 'Category ID' })

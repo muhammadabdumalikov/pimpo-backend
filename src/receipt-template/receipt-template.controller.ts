@@ -18,10 +18,12 @@ import {IBusiness} from '../business/types';
 import {ReceiptTemplateService} from './receipt-template.service';
 import {CreateReceiptTemplateDto} from './dto/create-receipt-template.dto';
 import {UpdateReceiptTemplateDto} from './dto/update-receipt-template.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('receipt-templates')
 @Controller('receipt-templates')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class ReceiptTemplateController {
   constructor(private readonly service: ReceiptTemplateService) {}
@@ -50,6 +52,7 @@ export class ReceiptTemplateController {
   }
 
   @Post()
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a receipt template'})
   create(
@@ -60,6 +63,7 @@ export class ReceiptTemplateController {
   }
 
   @Patch(':id')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update a receipt template'})
   update(
@@ -71,6 +75,7 @@ export class ReceiptTemplateController {
   }
 
   @Delete(':id')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Delete a receipt template (not the default)'})
   async remove(

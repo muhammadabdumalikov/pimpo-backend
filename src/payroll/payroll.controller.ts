@@ -19,7 +19,6 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
-import {OwnerGuard} from '../business/owner.guard';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
@@ -30,6 +29,8 @@ import {AccruePeriodDto} from './dto/accrue-period.dto';
 import {CreatePaymentDto} from './dto/create-payment.dto';
 import {CreateAdjustmentDto} from './dto/create-adjustment.dto';
 import {UpdatePayrollSettingsDto} from './dto/update-settings.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 /**
  * Payroll ("Ish haqi") lives under Moliya. Every write is owner-only: salaries
@@ -37,14 +38,14 @@ import {UpdatePayrollSettingsDto} from './dto/update-settings.dto';
  */
 @ApiTags('payroll')
 @Controller('payroll')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class PayrollController {
   constructor(private readonly payrollService: PayrollService) {}
 
   @Get('summary')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:view')
   @ApiOperation({
     summary: 'Per-employee salary setup, running balance and period totals',
   })
@@ -57,14 +58,14 @@ export class PayrollController {
   }
 
   @Get('settings')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:view')
   @ApiOperation({summary: 'Payroll preferences (auto-accrual switch)'})
   async settings(@CurrentBusiness() business: IBusiness) {
     return this.payrollService.getSettings(business.id);
   }
 
   @Put('settings')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:manage')
   @ApiOperation({summary: 'Update payroll preferences'})
   async updateSettings(
     @CurrentBusiness() business: IBusiness,
@@ -74,7 +75,7 @@ export class PayrollController {
   }
 
   @Get('periods/:period/preview')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:view')
   @ApiOperation({
     summary: 'Dry-run the monthly accrual — computes wages without writing',
   })
@@ -87,7 +88,7 @@ export class PayrollController {
   }
 
   @Post('periods/:period/accrue')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Commit the monthly accrual (idempotent per employee + month)',
@@ -108,7 +109,7 @@ export class PayrollController {
   }
 
   @Get('staff/:id/entries')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:view')
   @ApiOperation({summary: 'Ledger history for one employee'})
   @ApiParam({name: 'id', description: 'Staff ID'})
   @ApiQuery({name: 'limit', required: false})
@@ -125,7 +126,7 @@ export class PayrollController {
   }
 
   @Post('staff/:id/payments')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Pay wages or an advance — also posts a finance expense',
@@ -151,7 +152,7 @@ export class PayrollController {
   }
 
   @Post('staff/:id/adjustments')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Record a bonus (mukofot) or withholding (jarima)'})
   @ApiParam({name: 'id', description: 'Staff ID'})
@@ -165,7 +166,7 @@ export class PayrollController {
   }
 
   @Delete('entries/:id')
-  @UseGuards(OwnerGuard)
+  @RequirePermission('payroll:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Undo a ledger entry (reverses the balance and any money moved)',

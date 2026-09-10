@@ -27,15 +27,18 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreateBrandDto } from './dto/create-brand.dto';
 import { UpdateBrandDto } from './dto/update-brand.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('brands')
 @Controller('brands')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class BrandController {
   constructor(private readonly brandService: BrandService) {}
 
   @Post()
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a new brand' })
   @ApiResponse({ status: 201, description: 'Brand created successfully' })
@@ -83,6 +86,7 @@ export class BrandController {
   }
 
   @Put(':id')
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update a brand' })
   @ApiParam({ name: 'id', description: 'Brand ID' })
@@ -98,6 +102,7 @@ export class BrandController {
   }
 
   @Delete(':id')
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Delete a brand' })
   @ApiParam({ name: 'id', description: 'Brand ID' })

@@ -23,10 +23,12 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreateUnitDto } from './dto/create-unit.dto';
 import { UpdateUnitDto } from './dto/update-unit.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('units')
 @Controller('units')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class UnitController {
   constructor(private readonly unitService: UnitService) {}
@@ -40,6 +42,7 @@ export class UnitController {
   }
 
   @Post()
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a unit' })
   @ApiResponse({ status: 201, description: 'Unit created' })
@@ -52,6 +55,7 @@ export class UnitController {
   }
 
   @Put(':id')
+  @RequirePermission('catalog:manage')
   @ApiOperation({ summary: 'Update a unit' })
   @ApiParam({ name: 'id', description: 'Unit id' })
   @ApiResponse({ status: 200, description: 'Unit updated' })
@@ -64,6 +68,7 @@ export class UnitController {
   }
 
   @Delete(':id')
+  @RequirePermission('catalog:manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Deactivate a unit' })
   @ApiParam({ name: 'id', description: 'Unit id' })

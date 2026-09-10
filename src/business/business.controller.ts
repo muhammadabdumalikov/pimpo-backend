@@ -24,6 +24,8 @@ import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { CurrentBusiness } from './decorators/current-business.decorator';
 import { CurrentAccount } from './decorators/current-account.decorator';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 import { IBusiness, IAccount } from './types';
 import { CreateBusinessDto } from './dto/create-business.dto';
 import { LoginDto } from './dto/login.dto';
@@ -126,7 +128,8 @@ export class BusinessController {
   // otherwise Nest would match "me" as an :id param.
 
   @Put('me/profile')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({

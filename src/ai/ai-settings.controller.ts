@@ -12,7 +12,8 @@ import {
 import {ApiBearerAuth, ApiOperation, ApiTags} from '@nestjs/swagger';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
-import {OwnerGuard} from '../business/owner.guard';
+import {PermissionsGuard} from '../permission/permissions.guard';
+import {RequirePermission} from '../permission/permission.decorator';
 import {IBusiness} from '../business/types';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -37,7 +38,8 @@ import {TestAiConnectionDto} from './dto/test-ai-connection.dto';
  */
 @ApiTags('ai')
 @Controller('ai/settings')
-@UseGuards(JwtAuthGuard, PlanTierGuard, OwnerGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
+@RequirePermission('settings:manage')
 @MinTier('pro')
 @ApiBearerAuth('JWT-auth')
 export class AiSettingsController {

@@ -14,10 +14,12 @@ import {IBusiness} from '../business/types';
 import {SettingsService} from './settings.service';
 import {UpdateReceiptSettingsDto} from './dto/update-receipt-settings.dto';
 import {UpdateLabelSettingsDto} from './dto/update-label-settings.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('settings')
 @Controller('settings')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
@@ -29,6 +31,7 @@ export class SettingsController {
   }
 
   @Put('receipt')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update receipt settings for the current business'})
   async updateReceiptSettings(
@@ -45,6 +48,7 @@ export class SettingsController {
   }
 
   @Put('label')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update the label (etiketka) layout'})
   async updateLabelSettings(

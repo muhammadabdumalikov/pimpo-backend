@@ -24,10 +24,12 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IBusiness, IAccount} from '../business/types';
 import {CreateStockTransferDto} from './dto/create-stock-transfer.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('stock-transfers')
 @Controller('stock-transfers')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class StockTransferController {
@@ -59,6 +61,7 @@ export class StockTransferController {
   }
 
   @Post()
+  @RequirePermission('transfer:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Move stock (and its batches) from one branch to another',

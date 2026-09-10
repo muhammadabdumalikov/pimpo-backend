@@ -29,16 +29,19 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {IBusiness} from '../business/types';
 import {CreateSupplierDto} from './dto/create-supplier.dto';
 import {UpdateSupplierDto} from './dto/update-supplier.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('suppliers')
 @Controller('suppliers')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class SupplierController {
   constructor(private readonly supplierService: SupplierService) {}
 
   @Post()
+  @RequirePermission('supplier:manage')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a new supplier'})
   @ApiResponse({status: 201, description: 'Supplier created successfully'})
@@ -164,6 +167,7 @@ export class SupplierController {
   }
 
   @Put(':id')
+  @RequirePermission('supplier:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update a supplier'})
   @ApiParam({name: 'id', description: 'Supplier ID'})
@@ -183,6 +187,7 @@ export class SupplierController {
   }
 
   @Delete(':id')
+  @RequirePermission('supplier:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Delete a supplier'})
   @ApiParam({name: 'id', description: 'Supplier ID'})

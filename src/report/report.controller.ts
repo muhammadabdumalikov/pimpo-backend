@@ -6,6 +6,8 @@ import {IBusiness} from '../business/types';
 import {ReportService} from './report.service';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 // Reports split by plan (see NARX-DRAFT / pricing tiers):
 //   • basic  — operational reports (the class-level default below)
@@ -17,13 +19,14 @@ import {MinTier} from '../subscription/required-tier.decorator';
 // scale ceiling (unlimited branches / 50 users), not a separate report set.
 @ApiTags('reports')
 @Controller('reports')
-@UseGuards(JwtAuthGuard, PlanTierGuard)
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class ReportController {
   constructor(private readonly reportService: ReportService) {}
 
   @Get('pnl')
+  @RequirePermission('report:profit:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Foyda va zararlar (P&L) for a date range'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -39,6 +42,7 @@ export class ReportController {
   }
 
   @Get('stock')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Qoldiqlar bo\'yicha hisobot (stock valuation as of a date)'})
   @ApiQuery({name: 'date', required: false, description: 'ISO date; defaults to now'})
   async getStock(
@@ -49,6 +53,7 @@ export class ReportController {
   }
 
   @Get('product-movement')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Tovarlar samaradorligi (kelim→sotuv→qoldiq)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -63,6 +68,7 @@ export class ReportController {
   }
 
   @Get('sellers')
+  @RequirePermission('staff:sales:view')
   @ApiOperation({summary: 'Sotuvchilar hisoboti (per-cashier KPIs)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -77,6 +83,7 @@ export class ReportController {
   }
 
   @Get('customers')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Mijozlar hisoboti (new/returning, avg check, top)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -92,6 +99,7 @@ export class ReportController {
   }
 
   @Get('imports')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Importlar (prixod) hisoboti'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -106,6 +114,7 @@ export class ReportController {
   }
 
   @Get('supplier-returns')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Ta\'minotchiga qaytarishlar hisoboti'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -120,6 +129,7 @@ export class ReportController {
   }
 
   @Get('stock-takes')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Inventarizatsiya natijalari hisoboti'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -134,6 +144,7 @@ export class ReportController {
   // ═══ Level-1 reports (HISOBOTLAR.md §6) ═══════════════════════════════════
 
   @Get('sales')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Sotuvlar dinamikasi (kun/hafta/oy bo\'yicha)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -151,6 +162,7 @@ export class ReportController {
   }
 
   @Get('traffic')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Soat × hafta kuni yuklama (heatmap)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -166,6 +178,7 @@ export class ReportController {
   }
 
   @Get('shifts')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Kassa smenalari yig\'masi (Z-hisobot)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -178,6 +191,7 @@ export class ReportController {
   }
 
   @Get('payment-methods')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'To\'lov usullari bo\'yicha'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -192,6 +206,7 @@ export class ReportController {
   }
 
   @Get('discounts')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Chegirmalar (kassir kesimida)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -206,6 +221,7 @@ export class ReportController {
   }
 
   @Get('cancelled')
+  @RequirePermission('report:view')
   @ApiOperation({summary: 'Bekor qilingan cheklar'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -222,6 +238,7 @@ export class ReportController {
   // ═══ Level-2 reports (HISOBOTLAR.md §6, 2-daraja) ═════════════════════════
 
   @Get('debt-aging')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Nasiya (qarzlar) aging — as-of-now snapshot'})
   async getDebtAging(@CurrentBusiness() business: IBusiness) {
@@ -229,6 +246,7 @@ export class ReportController {
   }
 
   @Get('dead-stock')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: "O'lik va sekin zaxira (N kun sotilmagan)"})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
@@ -247,6 +265,7 @@ export class ReportController {
   }
 
   @Get('reorder')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Qayta buyurtma / tugash prognozi'})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
@@ -269,6 +288,7 @@ export class ReportController {
   }
 
   @Get('transfer-suggestions')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Filiallararo transfer tavsiyasi (rebalans)'})
   @ApiQuery({name: 'days', required: false, description: 'Velocity window (default 30)'})
@@ -288,6 +308,7 @@ export class ReportController {
   }
 
   @Get('suppliers')
+  @RequirePermission('report:view')
   @ApiOperation({summary: "Ta'minotchilar hisoboti (xarid, to'langan, qarz)"})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
@@ -302,6 +323,7 @@ export class ReportController {
   }
 
   @Get('assortment')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Kategoriya / brend kesimida sotuv va marja'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -320,6 +342,7 @@ export class ReportController {
   }
 
   @Get('branch-comparison')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Filiallar taqqoslash'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -333,6 +356,7 @@ export class ReportController {
   }
 
   @Get('transfers')
+  @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: "Transferlar (filiallararo ko'chirishlar)"})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})

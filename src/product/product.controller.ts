@@ -28,15 +28,18 @@ import {IBusiness} from '../business/types';
 import {CreateProductDto} from './dto/create-product.dto';
 import {UpdateProductDto} from './dto/update-product.dto';
 import {BulkCreateProductDto} from './dto/bulk-create-product.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('products')
 @Controller('products')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class ProductController {
   constructor(private readonly productService: ProductService) {}
 
   @Post()
+  @RequirePermission('product:create')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({summary: 'Create a new product'})
   @ApiResponse({
@@ -59,6 +62,7 @@ export class ProductController {
   }
 
   @Post('bulk')
+  @RequirePermission('product:create')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Bulk-import products from a spreadsheet (Excel/CSV)',
@@ -342,6 +346,7 @@ export class ProductController {
   }
 
   @Put(':id')
+  @RequirePermission('product:update')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Update a product'})
   @ApiParam({name: 'id', description: 'Product ID'})
@@ -368,6 +373,7 @@ export class ProductController {
   }
 
   @Delete(':id')
+  @RequirePermission('product:delete')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Delete a product'})
   @ApiParam({name: 'id', description: 'Product ID'})

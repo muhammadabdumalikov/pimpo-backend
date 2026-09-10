@@ -19,10 +19,12 @@ import {StartImportDto} from './dto/start-import.dto';
 import {ImportItemsQueryDto} from './dto/import-items-query.dto';
 import {ProbeBillzDto} from './dto/probe-billz.dto';
 import type {ItemDto, JobDto, ProbeResponse} from './billz-import.types';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('billz')
 @Controller('billz')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class BillzController {
   constructor(
@@ -31,6 +33,7 @@ export class BillzController {
   ) {}
 
   @Post('verify')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
@@ -74,6 +77,7 @@ export class BillzController {
   // ── Import job queue (MG3/MG4/MG5) ─────────────────────────────────────────
 
   @Post('import/start')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Queue a BiLLZ import for the chosen entities'})
   async startImport(
@@ -102,6 +106,7 @@ export class BillzController {
   }
 
   @Post('import/pause')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Pause the active import (queued/running → paused)'})
   async pauseImport(
@@ -111,6 +116,7 @@ export class BillzController {
   }
 
   @Post('import/resume')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Resume a paused import (paused → queued)'})
   async resumeImport(
@@ -120,6 +126,7 @@ export class BillzController {
   }
 
   @Post('import/cancel')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({summary: 'Cancel the active import (queued/running/paused)'})
   async cancelImport(
@@ -129,6 +136,7 @@ export class BillzController {
   }
 
   @Post('import/reset')
+  @RequirePermission('settings:manage')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:

@@ -27,15 +27,18 @@ import { CurrentBusiness } from '../business/decorators/current-business.decorat
 import { IBusiness } from '../business/types';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { PermissionsGuard } from '../permission/permissions.guard';
+import { RequirePermission } from '../permission/permission.decorator';
 
 @ApiTags('users')
 @Controller('users')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class UserController {
     constructor(private readonly userService: UserService) { }
 
     @Post()
+  @RequirePermission('customer:manage')
     @HttpCode(HttpStatus.CREATED)
     @ApiOperation({ summary: 'Create a new user' })
     @ApiResponse({
@@ -55,6 +58,7 @@ export class UserController {
     }
 
     @Get()
+  @RequirePermission('customer:read')
     @ApiOperation({ summary: 'Get all users for current business' })
     @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
     @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
@@ -78,6 +82,7 @@ export class UserController {
     }
 
     @Get('count')
+  @RequirePermission('customer:read')
     @ApiOperation({ summary: 'Get total user count for current business' })
     @ApiResponse({
         status: 200,
@@ -89,6 +94,7 @@ export class UserController {
     }
 
     @Get('phone/:phone')
+  @RequirePermission('customer:read')
     @ApiOperation({ summary: 'Get user by phone number' })
     @ApiParam({ name: 'phone', description: 'Phone number' })
     @ApiResponse({
@@ -108,6 +114,7 @@ export class UserController {
     }
 
     @Get(':id')
+  @RequirePermission('customer:read')
     @ApiOperation({ summary: 'Get a user by ID' })
     @ApiParam({ name: 'id', description: 'User ID' })
     @ApiResponse({
@@ -127,6 +134,7 @@ export class UserController {
     }
 
     @Put(':id')
+  @RequirePermission('customer:manage')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Update a user' })
     @ApiParam({ name: 'id', description: 'User ID' })
@@ -149,6 +157,7 @@ export class UserController {
     }
 
     @Delete(':id')
+  @RequirePermission('customer:manage')
     @HttpCode(HttpStatus.OK)
     @ApiOperation({ summary: 'Delete (soft) a user' })
     @ApiParam({ name: 'id', description: 'User ID' })
