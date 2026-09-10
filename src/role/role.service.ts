@@ -11,6 +11,7 @@ import { roles, staff, type Role, type NewRole } from '../database/schema';
 import { generateId } from '../utils/uuid';
 import { CacheKeys, TTL } from '../cache/cache.util';
 import { PermissionService } from '../permission/permission.service';
+import { deriveMenuKeys } from '../permission/menu-derivation';
 
 @Injectable()
 export class RoleService {
@@ -58,7 +59,7 @@ export class RoleService {
 
   async create(
     businessId: string,
-    data: { name: string; menuKeys: string[]; permissions?: string[] },
+    data: { name: string; permissions?: string[] },
   ): Promise<Role> {
     const [existing] = await this.dbService.db
       .select()
@@ -73,8 +74,9 @@ export class RoleService {
       id: generateId(),
       businessId,
       name: data.name,
-      menuKeys: data.menuKeys ?? [],
+      // menuKeys is computed, never taken from the client — see menu-derivation.
       permissions: data.permissions ?? [],
+      menuKeys: deriveMenuKeys(data.permissions ?? []),
       isActive: true,
     };
     const [role] = await this.dbService.db
@@ -90,7 +92,6 @@ export class RoleService {
     id: string,
     data: {
       name?: string;
-      menuKeys?: string[];
       permissions?: string[];
       isActive?: boolean;
     },
@@ -115,9 +116,9 @@ export class RoleService {
       .update(roles)
       .set({
         ...(data.name !== undefined && { name: data.name }),
-        ...(data.menuKeys !== undefined && { menuKeys: data.menuKeys }),
         ...(data.permissions !== undefined && {
           permissions: data.permissions,
+          menuKeys: deriveMenuKeys(data.permissions),
         }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         updatedAt: new Date(),

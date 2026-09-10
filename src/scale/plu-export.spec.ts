@@ -211,9 +211,82 @@ describe('buildPluExport', () => {
     expect(lines[1].split('\t')[1]).toHaveLength(PLU_NAME_MAX);
   });
 
+  it('gives .txt the same bytes as .xls — only the name differs', () => {
+    // The two are one file under two names: .xls is what Excel opens on a
+    // double click, .txt is for reading it. A divergence here would mean the
+    // shop imported something different from what they inspected.
+    expect(buildPluExport(rows, CODING, 'txt')).toEqual(
+      buildPluExport(rows, CODING, 'xls'),
+    );
+  });
+
   it('terminates every record with CRLF, including the last', () => {
     const text = buildPluExport(rows, CODING).subarray(2).toString('utf16le');
     expect(text.endsWith('\r\n')).toBe(true);
     expect(text.split('\r\n')).toHaveLength(rows.length + 2); // header + tail
+  });
+});
+
+describe('buildPluExport — TXP', () => {
+  const rows = [
+    {plu: 89, name: 'Kartoshka', price: 1800},
+    {plu: 96, name: 'Piyoz', price: 1800},
+  ];
+
+  /** TXP is plain bytes, not UTF-16 — read it back as the records it is. */
+  const records = (file: Buffer) => {
+    const text = file.toString('utf8');
+    expect(text.endsWith('\r\n')).toBe(true);
+    return text.slice(0, -2).split('\r\n');
+  };
+
+  it('writes one fixed-width 119-byte record per product', () => {
+    // 101 bytes of columns plus one space after each of the 18 of them.
+    const lines = records(buildPluExport(rows, CODING, 'txp'));
+    expect(lines).toHaveLength(rows.length);
+    for (const line of lines) expect(Buffer.byteLength(line)).toBe(119);
+  });
+
+  it('right-aligns every column and closes each with a space', () => {
+    const [first] = records(buildPluExport(rows, CODING, 'txp'));
+    expect(first.startsWith('   1 ')).toBe(true); // PLU No., width 4
+    expect(first.endsWith(' ')).toBe(true);
+    // Name occupies bytes 5-40, right-aligned inside its 36.
+    expect(first.slice(5, 41)).toBe('Kartoshka'.padStart(36, ' '));
+  });
+
+  it('writes the price as an integer, not the spreadsheet’s decimals', () => {
+    // TXP stores implied decimals ("12.34" → 1234); with the software's
+    // decimal position at 0 a so'm price goes in as itself.
+    const [first] = records(buildPluExport(rows, CODING, 'txp'));
+    expect(first.slice(63, 71)).toBe('1800'.padStart(8, ' '));
+  });
+
+  it('keeps columns aligned when a name is not plain ASCII', () => {
+    // A fixed-width reader counts bytes. Padding by characters would let "go'sht"
+    // in Cyrillic push the price into the unit-weight column.
+    const lines = records(
+      buildPluExport([{plu: 1, name: 'Гўшт', price: 20000}], CODING, 'txp'),
+    );
+    expect(Buffer.byteLength(lines[0])).toBe(119);
+  });
+
+  it('truncates an over-long name on a byte boundary', () => {
+    const lines = records(
+      buildPluExport(
+        [{plu: 1, name: 'Я'.repeat(40), price: 5}], CODING, 'txp',
+      ),
+    );
+    // Never a half-encoded character, and never past the column.
+    expect(Buffer.byteLength(lines[0])).toBe(119);
+    expect(lines[0]).not.toContain('�');
+  });
+
+  it('carries the same PLU and barcode coding as the spreadsheet', () => {
+    const [first] = records(buildPluExport(rows, CODING, 'txp'));
+    expect(first.slice(49, 59)).toBe('89'.padStart(10, ' ')); // Code
+    expect(first.slice(60, 62)).toBe(' 2'); // Barcode Type
+    expect(first.slice(72, 73)).toBe('4'); // Weight Unit — kg
+    expect(first.slice(74, 76)).toBe('10'); // Department
   });
 });

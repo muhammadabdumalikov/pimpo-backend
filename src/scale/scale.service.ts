@@ -11,7 +11,12 @@ import {
   scaleFormatLength,
   type ScaleBarcodeFormat,
 } from '../common/weight-barcode';
-import {buildPluExport, pluBarcodeCoding} from './plu-export';
+import {
+  PLU_EXPORT_FILES,
+  buildPluExport,
+  pluBarcodeCoding,
+  type PluExportFormat,
+} from './plu-export';
 import {UpdateScaleSettingsDto} from './dto/update-scale-settings.dto';
 
 // Before a business has ever saved: no scales, no layouts. Turning the feature
@@ -150,8 +155,13 @@ export class ScaleService {
    * `Barcode Type` — exporting the second layout is a separate download, not a
    * silent merge.
    */
-  async buildPluExport(businessId: string): Promise<{
+  async buildPluExport(
+    businessId: string,
+    format: PluExportFormat = 'xls',
+  ): Promise<{
     file: Buffer;
+    filename: string;
+    contentType: string;
     exported: number;
     skippedNoPlu: number;
   }> {
@@ -191,10 +201,12 @@ export class ScaleService {
         price: Number(r.priceOut),
       })),
       coding,
+      format,
     );
 
     return {
       file,
+      ...PLU_EXPORT_FILES[format],
       exported: withPlu.length,
       skippedNoPlu: rows.length - withPlu.length,
     };

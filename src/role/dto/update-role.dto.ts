@@ -19,7 +19,9 @@ export class UpdateRoleDto {
   name?: string;
 
   @ApiProperty({
-    description: 'Allowed sidebar menu keys',
+    description:
+      'DEPRECATED and ignored — menu keys are derived from `permissions` on ' +
+      'the server (see menu-derivation.ts).',
     type: [String],
     required: false,
   })

@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Put,
+  Query,
   Res,
   StreamableFile,
   UseGuards,
@@ -16,6 +17,7 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {IBusiness} from '../business/types';
 import {ScaleService} from './scale.service';
 import {UpdateScaleSettingsDto} from './dto/update-scale-settings.dto';
+import {type PluExportFormat} from './plu-export';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 
@@ -49,16 +51,19 @@ export class ScaleController {
   async pluExport(
     @CurrentBusiness() business: IBusiness,
     @Res({passthrough: true}) res: Response,
+    @Query('format') format?: string,
   ): Promise<StreamableFile> {
-    const {file, exported, skippedNoPlu} =
-      await this.scaleService.buildPluExport(business.id);
+    // Unknown values fall back to the vendor's spreadsheet rather than 400 —
+    // this is a download link, and the safe shape is the verified one.
+    const picked: PluExportFormat =
+      format === 'txt' || format === 'txp' ? format : 'xls';
 
-    // `.xls` is the vendor's own naming for what is really a UTF-16 TSV; Excel
-    // sniffs the BOM and opens it, which is the path PLU Manager's "Import from
-    // Excel" takes. Renaming it .txt would break that flow.
+    const {file, filename, contentType, exported, skippedNoPlu} =
+      await this.scaleService.buildPluExport(business.id, picked);
+
     res.set({
-      'Content-Type': 'application/vnd.ms-excel',
-      'Content-Disposition': 'attachment; filename="pimpo-plu.xls"',
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
       // The browser can't read the body it's downloading, so the counts ride
       // along in headers the settings page reads off the response.
       'X-Plu-Exported': String(exported),

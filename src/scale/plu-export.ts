@@ -157,17 +157,46 @@ function cleanName(name: string): string {
   return name.replace(/[\t\r\n]+/g, ' ').trim().slice(0, PLU_NAME_MAX);
 }
 
+/** The shapes this catalogue can be handed to the shop in. */
+export type PluExportFormat = 'xls' | 'txt' | 'txp';
+
+/** Download name and content type per format. */
+export const PLU_EXPORT_FILES: Record<
+  PluExportFormat,
+  {filename: string; contentType: string}
+> = {
+  xls: {filename: 'pimpo-plu.xls', contentType: 'application/vnd.ms-excel'},
+  txt: {filename: 'pimpo-plu.txt', contentType: 'text/plain; charset=utf-16le'},
+  txp: {filename: 'pimpo-plu.txp', contentType: 'text/plain; charset=utf-8'},
+};
+
 /**
- * Build the file PLU Manager imports.
+ * Build the catalogue file, in whichever shape the shop's workflow needs.
+ *
+ * `xls` and `txt` are the SAME bytes under different names — the vendor's own
+ * tab-separated export. The name is not cosmetic: only `.xls` opens in Excel on
+ * a double click, which is the one thing PLU Manager's "Import from Excel"
+ * requires. `.txt` is for reading the file, or for feeding it somewhere else.
+ *
+ * `txp` is a different format entirely — the fixed-width record PLU Manager
+ * opens directly through File → Open PLU file, no Excel in the loop.
+ */
+export function buildPluExport(
+  rows: PluExportRow[],
+  coding: PluBarcodeCoding,
+  format: PluExportFormat = 'xls',
+): Buffer {
+  return format === 'txp' ? buildTxp(rows, coding) : buildTsv(rows, coding);
+}
+
+/**
+ * The vendor's tab-separated export.
  *
  * Returns UTF-16LE bytes with a BOM, which is what makes the `.xls` name work:
  * Excel sniffs the BOM, opens it as a tab-delimited sheet, and the import
  * wizard reads it from there.
  */
-export function buildPluExport(
-  rows: PluExportRow[],
-  coding: PluBarcodeCoding,
-): Buffer {
+function buildTsv(rows: PluExportRow[], coding: PluBarcodeCoding): Buffer {
   const barcodeType = String(coding.barcodeType);
 
   const lines = rows.map((row) => {
@@ -207,4 +236,102 @@ export function buildPluExport(
     Buffer.from([0xff, 0xfe]), // UTF-16LE BOM
     Buffer.from(text, 'utf16le'),
   ]);
+}
+
+/**
+ * Column widths of one TXP record, in the order Appendix I lists them. Every
+ * field is right-aligned in its width with a single space after it, and the
+ * record closes with CRLF — 101 bytes of columns plus their 18 spaces, so 119
+ * bytes a line.
+ */
+const TXP_WIDTHS = {
+  pluNo: 4,
+  name: 36,
+  lfCode: 6,
+  code: 10,
+  barcodeType: 2,
+  unitPrice: 8,
+  weightUnit: 1,
+  department: 2,
+  tare: 6,
+  shelfTime: 3,
+  packageType: 1,
+  packageWeight: 6,
+  tolerance: 2,
+  message1: 3,
+  message2: 3,
+  multiLabel: 3,
+  rebate: 3,
+  pcsType: 2,
+} as const;
+
+/** Longest prefix of `value` that still fits `max` UTF-8 bytes. */
+function truncateToBytes(value: string, max: number): string {
+  if (Buffer.byteLength(value) <= max) return value;
+  let out = '';
+  for (const ch of value) {
+    if (Buffer.byteLength(out + ch) > max) break;
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Right-align into a fixed column, measured in BYTES rather than characters.
+ * A fixed-width reader counts bytes, so a name carrying anything outside ASCII
+ * would otherwise push every later field along and the record would be read as
+ * a different product entirely.
+ */
+function padBytes(value: string, width: number): string {
+  const text = truncateToBytes(value, width);
+  return ' '.repeat(width - Buffer.byteLength(text)) + text;
+}
+
+/**
+ * The fixed-width PLU record PLU Manager opens directly (File → Open PLU file).
+ *
+ * ⚠️ Unlike the tab-separated export, this layout comes from the vendor's
+ * manual rather than from a file the software itself wrote, so it has not been
+ * round-tripped against real output. Check it against the `demo.txp` shipped in
+ * the software's own Demos folder before loading a full catalogue.
+ *
+ * Note the price is written differently here: an integer with implied decimals
+ * ("12.34" is stored as 1234), not the three-decimal field the spreadsheet
+ * uses. That means it depends on the software's "System decimal position"
+ * being 0 — which is what a so'm catalogue wants anyway.
+ */
+function buildTxp(rows: PluExportRow[], coding: PluBarcodeCoding): Buffer {
+  const w = TXP_WIDTHS;
+
+  const lines = rows.map((row, i) =>
+    (
+      [
+        // "It is reserved to be compatible with old version and has no real
+        // meaning" — the operator presses Code, not this.
+        [String(i + 1), w.pluNo],
+        [cleanName(row.name), w.name],
+        ['0', w.lfCode],
+        [String(row.plu), w.code], // what the printed label carries
+        [String(coding.barcodeType), w.barcodeType],
+        [String(Math.round(row.price)), w.unitPrice],
+        [UNIT_WEIGHT_KG, w.weightUnit],
+        [coding.department, w.department],
+        ['0', w.tare], // the scale's own tare key handles containers
+        ['15', w.shelfTime], // days, vendor default
+        ['0', w.packageType], // normal weighing
+        ['0', w.packageWeight],
+        ['5', w.tolerance], // vendor default
+        ['0', w.message1],
+        ['0', w.message2],
+        ['0', w.multiLabel],
+        ['0', w.rebate],
+        ['0', w.pcsType],
+      ] as [string, number][]
+    )
+      .map(([value, width]) => padBytes(value, width))
+      // A space after EVERY column, the last one included.
+      .join(' ') + ' ',
+  );
+
+  return Buffer.from(lines.join('\r\n') + '\r\n', 'utf8');
 }
