@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Post,
   Put,
   Query,
   Res,
@@ -42,6 +43,24 @@ export class ScaleController {
     // and the product form can bound a PLU input without re-deriving either
     // from the format widths and the saved range.
     return {...settings, maxPlu, pluMin: pluRange.min, pluMax: pluRange.max};
+  }
+
+  @Get('plu-coverage')
+  @ApiOperation({
+    summary: 'How many weighed products can reach a scale, and how many cannot',
+  })
+  async pluCoverage(@CurrentBusiness() business: IBusiness) {
+    return this.scaleService.pluCoverage(business.id);
+  }
+
+  @Post('assign-plu')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('product:update')
+  @ApiOperation({
+    summary: 'Give every weighed product without a PLU the next free number',
+  })
+  async assignPlu(@CurrentBusiness() business: IBusiness) {
+    return this.scaleService.assignMissingPlus(business.id);
   }
 
   @Get('plu-export')

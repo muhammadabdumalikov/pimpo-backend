@@ -1,6 +1,6 @@
 import {Inject, Injectable} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
-import {and, asc, eq} from 'drizzle-orm';
+import {and, asc, eq, isNull, isNotNull, sql} from 'drizzle-orm';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
@@ -138,6 +138,125 @@ export class ScaleService {
     // the floor to 1 in that case so the pool degrades to "the whole range".
     const min = Math.min(Math.max(settings.pluStart, 1), max);
     return {min, max};
+  }
+
+  /**
+   * How much of the weighed catalogue can actually reach a scale.
+   *
+   * A shop discovers the gap at the counter otherwise: the export quietly
+   * carries only the numbered rows, and the unnumbered ones are invisible until
+   * an operator cannot find the item. This is what the settings page reads to
+   * offer the bulk assignment.
+   */
+  async pluCoverage(businessId: string): Promise<{
+    weighed: number;
+    withPlu: number;
+    missing: number;
+    /** PLU numbers still free inside the configured window. */
+    free: number;
+    min: number;
+    max: number;
+  }> {
+    const [{min, max}, rows] = await Promise.all([
+      this.pluRange(businessId),
+      this.dbService.db
+        .select({plu: products.plu})
+        .from(products)
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.isActive, true),
+            eq(products.quantityType, 'kg'),
+          ),
+        ),
+    ]);
+
+    const withPlu = rows.filter((r) => r.plu !== null).length;
+    // Numbers assigned outside the window still occupy nothing inside it, so
+    // the free count is measured against the window alone.
+    const takenInWindow = rows.filter(
+      (r) => r.plu !== null && r.plu >= min && r.plu <= max,
+    ).length;
+
+    return {
+      weighed: rows.length,
+      withPlu,
+      missing: rows.length - withPlu,
+      free: Math.max(max - min + 1 - takenInWindow, 0),
+      min,
+      max,
+    };
+  }
+
+  /**
+   * Hand a PLU to every weighed product that has none, filling the gaps in the
+   * configured window from the bottom up — the same numbering the product form
+   * does one at a time, just not one at a time.
+   *
+   * Runs out gracefully: when the window is too small it numbers what it can
+   * and reports the rest, rather than failing the whole batch and leaving the
+   * shop to guess how far it got. Products are taken in name order so a repeat
+   * run is predictable.
+   */
+  async assignMissingPlus(businessId: string): Promise<{
+    assigned: number;
+    /** Still without a PLU afterwards — the window ran out. */
+    remaining: number;
+  }> {
+    const {min, max} = await this.pluRange(businessId);
+
+    const [taken, candidates] = await Promise.all([
+      this.dbService.db
+        .select({plu: products.plu})
+        .from(products)
+        .where(
+          and(eq(products.businessId, businessId), isNotNull(products.plu)),
+        ),
+      this.dbService.db
+        .select({id: products.id})
+        .from(products)
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.isActive, true),
+            eq(products.quantityType, 'kg'),
+            isNull(products.plu),
+          ),
+        )
+        .orderBy(asc(products.name)),
+    ]);
+
+    const used = new Set(taken.map((r) => r.plu as number));
+    const pairs: {id: string; plu: number}[] = [];
+    let next = min;
+    for (const product of candidates) {
+      while (next <= max && used.has(next)) next++;
+      if (next > max) break;
+      pairs.push({id: product.id, plu: next});
+      next++;
+    }
+
+    if (pairs.length) {
+      // One statement instead of a round trip per product: the catalogue can
+      // hold thousands of weighed rows and the database is remote.
+      const values = sql.join(
+        pairs.map((p) => sql`(${p.id}, ${p.plu})`),
+        sql`, `,
+      );
+      await this.dbService.db.execute(sql`
+        UPDATE ${products} AS p
+        SET plu = v.plu::int, updated_at = now()
+        FROM (VALUES ${values}) AS v(id, plu)
+        WHERE p.id = v.id::varchar
+          AND p.business_id = ${businessId}
+          AND p.plu IS NULL
+      `);
+    }
+
+    return {
+      assigned: pairs.length,
+      remaining: candidates.length - pairs.length,
+    };
   }
 
   /**
