@@ -58,6 +58,11 @@ export class UpdateLabelSettingsDto {
   @IsBoolean()
   showCode?: boolean;
 
+  @ApiPropertyOptional({description: 'Print the barcode bars themselves'})
+  @IsOptional()
+  @IsBoolean()
+  showBarcode?: boolean;
+
   @ApiPropertyOptional({description: 'Print the digits under the bars'})
   @IsOptional()
   @IsBoolean()

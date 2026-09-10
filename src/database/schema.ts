@@ -820,6 +820,9 @@ export const labelSettings = pgTable('label_settings', {
   showPrice: boolean('show_price').notNull().default(true),
   showCode: boolean('show_code').notNull().default(false),
   // The digits printed under the bars.
+  // The bars themselves. Off is for shops printing plain price tags — goods
+  // they never scan at the till, where the bars only eat millimetres.
+  showBarcode: boolean('show_barcode').notNull().default(true),
   showBarcodeText: boolean('show_barcode_text').notNull().default(true),
   barcodeHeightMm: integer('barcode_height_mm').notNull().default(12),
   // Type scale for the whole label, in percent (80–140).
