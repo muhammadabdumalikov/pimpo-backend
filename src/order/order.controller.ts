@@ -97,6 +97,7 @@ export class OrderController {
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'paymentMethod', required: false})
   @ApiQuery({name: 'cashierId', required: false})
+  @ApiQuery({name: 'sellerId', required: false})
   @ApiQuery({name: 'minAmount', required: false})
   @ApiQuery({name: 'maxAmount', required: false})
   async findAll(
@@ -110,6 +111,7 @@ export class OrderController {
     @Query('to') to?: string,
     @Query('paymentMethod') paymentMethod?: string,
     @Query('cashierId') cashierId?: string,
+    @Query('sellerId') sellerId?: string,
     @Query('minAmount') minAmount?: string,
     @Query('maxAmount') maxAmount?: string,
   ) {
@@ -128,6 +130,7 @@ export class OrderController {
       to,
       paymentMethod,
       cashierId,
+      sellerId,
       minAmount: num(minAmount),
       maxAmount: num(maxAmount),
     });

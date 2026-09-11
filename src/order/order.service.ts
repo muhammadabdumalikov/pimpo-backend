@@ -44,6 +44,7 @@ import {
   type OrderItem,
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
+import {creditedStaffId, creditedStaffName} from './seller-attribution';
 import {UserService} from '../user/user.service';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {BranchService} from '../branch/branch.service';
@@ -148,6 +149,35 @@ export class OrderService {
       .where(eq(businesses.id, account.id))
       .limit(1);
     return {id: account.id, name: row?.name ?? null};
+  }
+
+  // Resolve the salesperson picked at the register into an id + name snapshot.
+  // A seller is a staff record of this business (login not required — floor
+  // consultants often have none) or the owner, whose account id is the
+  // business id. `activeOnly` gates new sales; editing an old sale may keep
+  // crediting someone who has since left.
+  private async resolveSeller(
+    businessId: string,
+    sellerId: string,
+    activeOnly: boolean,
+  ): Promise<{id: string; name: string | null}> {
+    const [st] = await this.dbService.db
+      .select({name: staff.name, isActive: staff.isActive})
+      .from(staff)
+      .where(and(eq(staff.id, sellerId), eq(staff.businessId, businessId)))
+      .limit(1);
+    if (st && (st.isActive || !activeOnly)) {
+      return {id: sellerId, name: st.name};
+    }
+    if (!st && sellerId === businessId) {
+      const [biz] = await this.dbService.db
+        .select({name: businesses.name})
+        .from(businesses)
+        .where(eq(businesses.id, businessId))
+        .limit(1);
+      return {id: sellerId, name: biz?.name ?? null};
+    }
+    throw new AppException(ErrorCode.SELLER_NOT_FOUND);
   }
 
   // Resolve which cashier shift an admin sale belongs to, enforcing the "a shift
@@ -257,6 +287,21 @@ export class OrderService {
     const shiftId = isStoreSale
       ? null
       : await this.resolveShiftForSale(businessId, dto);
+    // Storefront orders have no register, so nobody to credit there. An
+    // offline sale (clientId) was already handed to the customer — it syncs
+    // even if its seller was deactivated or deleted meanwhile, just uncredited
+    // if the record is gone, rather than bouncing out of the outbox.
+    let seller: {id: string; name: string | null} | null = null;
+    if (!isStoreSale && dto.sellerId) {
+      seller = dto.clientId
+        ? await this.resolveSeller(businessId, dto.sellerId, false).catch(
+            (err) => {
+              if (err instanceof AppException) return null;
+              throw err;
+            },
+          )
+        : await this.resolveSeller(businessId, dto.sellerId, true);
+    }
 
     // Resolve optional customer.
     let customerName = dto.customerName ?? null;
@@ -569,6 +614,8 @@ export class OrderService {
           source: dto.source ?? 'admin',
           cashierId: cashier.id,
           cashierName: cashier.name,
+          sellerId: seller?.id ?? null,
+          sellerName: seller?.name ?? null,
           shiftId,
           branchId,
         });
@@ -769,6 +816,9 @@ export class OrderService {
     account?: IAccount,
   ): Promise<OrderWithItems> {
     const cashier = await this.resolveCashier(account);
+    const seller = dto.sellerId
+      ? await this.resolveSeller(businessId, dto.sellerId, true)
+      : null;
 
     // Resolve optional customer (same rule as a normal sale).
     let customerName = dto.customerName ?? null;
@@ -871,9 +921,13 @@ export class OrderService {
     const orderId = targetId ?? generateId();
 
     // Cart snapshot + rolled totals shared by both the insert and update paths.
+    // The seller is part of the cart (picked or changed while it is open), so
+    // unlike the cashier it follows every auto-save.
     const snapshot = {
       userId: customerId,
       customerName,
+      sellerId: seller?.id ?? null,
+      sellerName: seller?.name ?? null,
       status: 'Held' as const,
       totalAmount: money(total),
       subtotalAmount: money(subtotal),
@@ -1028,6 +1082,7 @@ export class OrderService {
       to?: string;
       paymentMethod?: string;
       cashierId?: string;
+      sellerId?: string;
       minAmount?: number;
       maxAmount?: number;
     },
@@ -1056,6 +1111,9 @@ export class OrderService {
     if (options?.cashierId) {
       where.push(eq(orders.cashierId, options.cashierId));
     }
+    if (options?.sellerId) {
+      where.push(eq(orders.sellerId, options.sellerId));
+    }
     if (options?.minAmount != null) {
       where.push(gte(orders.totalAmount, money(options.minAmount)));
     }
@@ -1069,6 +1127,7 @@ export class OrderService {
           ilike(orders.customerPhone, `%${options.search}%`),
           ilike(orders.id, `%${options.search}%`),
           ilike(orders.cashierName, `%${options.search}%`),
+          ilike(orders.sellerName, `%${options.search}%`),
         )!,
       );
     }
@@ -1271,6 +1330,18 @@ export class OrderService {
         } else {
           throw new AppException(ErrorCode.CASHIER_NOT_FOUND);
         }
+      }
+    }
+
+    if (dto.sellerId !== undefined) {
+      if (dto.sellerId === null) {
+        patch.sellerId = null;
+        patch.sellerName = null;
+      } else if (dto.sellerId !== existing.sellerId) {
+        // Correcting an old sale may credit someone who has since left.
+        const seller = await this.resolveSeller(businessId, dto.sellerId, false);
+        patch.sellerId = seller.id;
+        patch.sellerName = seller.name;
       }
     }
 
@@ -1797,8 +1868,9 @@ export class OrderService {
   }
 
   /**
-   * Completed-order sales grouped by the cashier (acting account) who rang them
-   * up. `cashierId === null` covers storefront/guest and pre-migration orders.
+   * Completed-order sales grouped by the person credited with them — the seller
+   * picked at the register, else the cashier (acting account) who rang them up.
+   * `cashierId === null` covers storefront/guest and pre-migration orders.
    */
   async getSalesByEmployee(
     businessId: string,
@@ -1835,14 +1907,14 @@ export class OrderService {
 
     const rows = await this.dbService.db
       .select({
-        cashierId: orders.cashierId,
-        cashierName: sql<string | null>`MAX(${orders.cashierName})`,
+        cashierId: creditedStaffId,
+        cashierName: creditedStaffName,
         orderCount: count(),
         revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
       })
       .from(orders)
       .where(and(...where))
-      .groupBy(orders.cashierId)
+      .groupBy(creditedStaffId)
       .orderBy(desc(sql`COALESCE(SUM(${orders.totalAmount}), 0)`));
 
     return rows.map((r) => ({

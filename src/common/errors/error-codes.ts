@@ -84,6 +84,7 @@ export enum ErrorCode {
   PRODUCT_NOT_FOUND_BY_ID = 'PRODUCT_NOT_FOUND_BY_ID',
   ORDER_EMPTY = 'ORDER_EMPTY',
   CASHIER_NOT_FOUND = 'CASHIER_NOT_FOUND',
+  SELLER_NOT_FOUND = 'SELLER_NOT_FOUND',
   HELD_SALE_CHECKOUT_REQUIRED = 'HELD_SALE_CHECKOUT_REQUIRED',
   DEBT_SALE_CUSTOMER_IMMUTABLE = 'DEBT_SALE_CUSTOMER_IMMUTABLE',
 
@@ -470,6 +471,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.CASHIER_NOT_FOUND]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Cashier not found for this business',
+  },
+  [ErrorCode.SELLER_NOT_FOUND]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Seller not found or inactive in this business',
   },
   [ErrorCode.HELD_SALE_CHECKOUT_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,

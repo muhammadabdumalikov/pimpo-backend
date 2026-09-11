@@ -264,6 +264,8 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   source varchar(20) NOT NULL
   cashier_id varchar(36)
   cashier_name varchar(255)
+  seller_id varchar(36)
+  seller_name varchar(255)
   shift_id varchar(36)
   branch_id varchar(36)
   created_at timestamp NOT NULL
@@ -307,6 +309,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   name varchar(255) NOT NULL
   code varchar(100)
   barcode varchar(100)
+  plu integer
   price_in numeric(10, 2) NOT NULL
   price_out numeric(10, 2) NOT NULL
   price_wholesale numeric(10, 2)
@@ -320,6 +323,8 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   brand_id varchar(36)
   supplier_id varchar(36)
   branch_id varchar(36)
+  mxik_code varchar(17)
+  package_code varchar(20)
   is_active boolean NOT NULL
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL

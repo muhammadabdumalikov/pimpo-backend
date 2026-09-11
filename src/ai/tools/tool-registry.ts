@@ -505,7 +505,7 @@ export const TOOLS: ToolDefinition[] = [
     label: 'Sotuvchilar',
     minTier: 'basic',
     description:
-      'Per-cashier KPIs: orders, revenue, average check, items per receipt. Answers "who is my best seller".',
+      'Per-seller KPIs (the salesperson picked at the register, else the cashier): orders, revenue, average check, items per receipt. Answers "who is my best seller".',
     parameters: rangeParams(),
     cacheParams: rangeKey,
     run: (d, c, a) => d.report.getSellers(c.businessId, toRange(a)),

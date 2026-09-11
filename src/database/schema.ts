@@ -107,7 +107,8 @@ export const staff = pgTable('staff', {
   baseSalary: decimal('base_salary', {precision: 14, scale: 2})
     .default('0')
     .notNull(),
-  // Percent of the employee's OWN sales (orders.cashierId = staff.id).
+  // Percent of the employee's OWN sales — orders credited to them:
+  // COALESCE(orders.sellerId, orders.cashierId) = staff.id.
   salesPercent: decimal('sales_percent', {precision: 6, scale: 3})
     .default('0')
     .notNull(),
@@ -436,6 +437,13 @@ export const orders = pgTable(
     // so the report survives staff renames/deletions.
     cashierId: varchar('cashier_id', {length: 36}),
     cashierName: varchar('cashier_name', {length: 255}),
+    // Salesperson ("sotuvchi") the sale is credited to, picked at the register
+    // — a staff id (may hold no login) or the owner (business) id. Separate
+    // from the cashier: the cashier stays accountable for the drawer/shift,
+    // the seller gets the sale in the sellers report and payroll %. Null =
+    // no seller picked; readers fall back to the cashier.
+    sellerId: varchar('seller_id', {length: 36}),
+    sellerName: varchar('seller_name', {length: 255}),
     // Cashier shift this sale belongs to (null for storefront/guest and
     // pre-migration rows). The register is derived from the shift.
     shiftId: varchar('shift_id', {length: 36}),
@@ -824,7 +832,10 @@ export const labelSettings = pgTable('label_settings', {
   // they never scan at the till, where the bars only eat millimetres.
   showBarcode: boolean('show_barcode').notNull().default(true),
   showBarcodeText: boolean('show_barcode_text').notNull().default(true),
-  barcodeHeightMm: integer('barcode_height_mm').notNull().default(12),
+  // 8 mm, not the 12 it started at: on 40 mm stock 12 mm of bars took a third
+  // of the printable height and left the name and the shop squeezed. 8 mm
+  // still scans reliably at the till.
+  barcodeHeightMm: integer('barcode_height_mm').notNull().default(8),
   // Type scale for the whole label, in percent (80–140).
   fontScale: integer('font_scale').notNull().default(100),
   // How many copies one print sends by default.

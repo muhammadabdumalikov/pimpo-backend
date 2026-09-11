@@ -82,6 +82,16 @@ export class CreateOrderDto {
 
   @ApiPropertyOptional({
     description:
+      'Salesperson (sotuvchi) credited with the sale: an active staff id or ' +
+      'the owner (business) id. Omit to credit the cashier. Ignored for ' +
+      'store sales.',
+  })
+  @IsString()
+  @IsOptional()
+  sellerId?: string;
+
+  @ApiPropertyOptional({
+    description:
       "Branch (do'kon) the sale belongs to. Defaults to the business default " +
       'branch when omitted.',
   })

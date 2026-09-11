@@ -19,6 +19,7 @@ import {
 import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
+import {creditedStaffId} from '../order/seller-attribution';
 
 type DbTx = Parameters<
   Parameters<DatabaseService['db']['transaction']>[0]
@@ -111,7 +112,8 @@ export class PayrollService {
   // ─── Personal sales ───────────────────────────────────────────────────────
 
   /**
-   * Revenue and COGS per cashier for a period, keyed by staff id.
+   * Revenue and COGS per credited employee for a period, keyed by staff id —
+   * the seller picked at the register, else the cashier who rang the sale up.
    *
    * Revenue and COGS are two separate queries on purpose: order_items is
    * one-to-many against orders, so a single joined query would repeat each
@@ -132,21 +134,21 @@ export class PayrollService {
     const [revenueRows, cogsRows] = await Promise.all([
       this.db
         .select({
-          cashierId: orders.cashierId,
+          cashierId: creditedStaffId,
           revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
         })
         .from(orders)
         .where(inPeriod)
-        .groupBy(orders.cashierId),
+        .groupBy(creditedStaffId),
       this.db
         .select({
-          cashierId: orders.cashierId,
+          cashierId: creditedStaffId,
           cogs: sql<string>`COALESCE(SUM(${orderItems.costTotal}), 0)`,
         })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.id))
         .where(inPeriod)
-        .groupBy(orders.cashierId),
+        .groupBy(creditedStaffId),
     ]);
 
     const map = new Map<string, {revenue: number; cogs: number}>();

@@ -4,7 +4,7 @@ import {IsString, IsOptional} from 'class-validator';
 /**
  * Editable metadata of a completed sale (BiLLZ-style "edit transaction").
  * Money, items, stock and the sale timestamp are immutable here — only the
- * customer, cashier and note change. `null` clears a field; `undefined`
+ * customer, cashier, seller and note change. `null` clears a field; `undefined`
  * (absent) leaves it untouched.
  */
 export class UpdateOrderDto {
@@ -24,6 +24,15 @@ export class UpdateOrderDto {
   @IsString()
   @IsOptional()
   cashierId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Seller credited with the sale (staff or owner account id; null clears ' +
+      '— the sale is then credited to the cashier)',
+  })
+  @IsString()
+  @IsOptional()
+  sellerId?: string | null;
 
   @ApiPropertyOptional({description: 'Note (null clears)'})
   @IsString()

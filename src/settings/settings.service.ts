@@ -37,7 +37,7 @@ const LABEL_DEFAULTS = {
   showCode: false,
   showBarcode: true,
   showBarcodeText: true,
-  barcodeHeightMm: 12,
+  barcodeHeightMm: 8,
   fontScale: 100,
   copies: 1,
 };

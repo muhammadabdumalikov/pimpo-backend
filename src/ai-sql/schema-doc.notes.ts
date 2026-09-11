@@ -28,6 +28,10 @@ export const SCHEMA_DOC_NOTES = `
     LATERAL jsonb_array_elements(COALESCE(o.payments, '[]'::jsonb)) AS elem
   and read elem->>'method' / (elem->>'amount')::numeric.
   orders.payment_method is a legacy single value; prefer the jsonb array.
+- A sale is credited to orders.seller_id (the salesperson picked at the
+  register), else orders.cashier_id. For "who sold the most" / per-seller
+  figures group by COALESCE(o.seller_id, o.cashier_id). cashier_id alone means
+  who rang it up — use it for discounts and cancellations given at the till.
 - A customer's remaining debt is user_debts.amount minus the sum of that debt's
   debt_payments rows — not user_debts.amount on its own.
 

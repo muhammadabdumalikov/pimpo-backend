@@ -31,12 +31,20 @@ export class HoldOrderDto {
   @ArrayMinSize(1)
   @ValidateNested({each: true})
   @Type(() => OrderItemDto)
-  items: OrderItemDto[];
+  items!: OrderItemDto[];
 
   @ApiPropertyOptional({description: 'Customer id'})
   @IsString()
   @IsOptional()
   userId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Salesperson (sotuvchi) picked so far — restored when the draft resumes',
+  })
+  @IsString()
+  @IsOptional()
+  sellerId?: string;
 
   @ApiPropertyOptional({
     description: "Branch (do'kon); defaults to the default branch",

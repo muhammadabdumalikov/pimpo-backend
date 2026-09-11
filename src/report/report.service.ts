@@ -25,6 +25,7 @@ import {
 } from '../database/schema';
 import {eq, and, or, gte, lte, gt, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
+import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
 
 export interface DateRange {
   from?: string;
@@ -527,12 +528,16 @@ export class ReportService {
   }
 
   // ─── R5: Sotuvchilar hisoboti ─────────────────────────────────────────────
-  /** Per-cashier sales KPIs: orders, revenue, units, avg check, avg items/check. */
+  /**
+   * Per-seller sales KPIs: orders, revenue, units, avg check, avg items/check.
+   * A sale counts for the seller picked at the register, else its cashier.
+   * The `cashierId`/`cashierName` keys are kept for API compatibility.
+   */
   async getSellers(businessId: string, range?: DateRange) {
     const rows = await this.db
       .select({
-        cashierId: orders.cashierId,
-        cashierName: sql<string | null>`MAX(${orders.cashierName})`,
+        cashierId: creditedStaffId,
+        cashierName: creditedStaffName,
         orderCount: sql<string>`COUNT(*)`,
         revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
         units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
@@ -546,7 +551,7 @@ export class ReportService {
           ...this.branchWhere(orders.branchId, range),
         ),
       )
-      .groupBy(orders.cashierId)
+      .groupBy(creditedStaffId)
       .orderBy(desc(sql`SUM(${orders.totalAmount})`));
 
     return rows.map((r) => {
