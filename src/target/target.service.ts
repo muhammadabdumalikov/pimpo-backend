@@ -1,6 +1,6 @@
 import {Injectable} from '@nestjs/common';
 import {DatabaseService} from '../database/database.service';
-import {orders, monthlyTargets} from '../database/schema';
+import {orders, monthlyTargets, saleReturns} from '../database/schema';
 import {eq, and, gte, lte, sql} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {generateId} from '../utils/uuid';
@@ -56,7 +56,20 @@ export class TargetService {
           lte(orders.createdAt, businessDayEnd(lastDay)),
         ),
       );
-    const actual = Number(act?.actual ?? 0);
+    // Returns in the month come off what was achieved.
+    const [ret] = await this.db
+      .select({
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          gte(saleReturns.createdAt, businessDayStart(firstDay)),
+          lte(saleReturns.createdAt, businessDayEnd(lastDay)),
+        ),
+      );
+    const actual = Number(act?.actual ?? 0) - Number(ret?.value ?? 0);
     const orderCount = Number(act?.orderCount ?? 0);
 
     const nowM = this.currentMonth();

@@ -45,6 +45,8 @@ export const ALLOWED_TABLES: ReadonlySet<string> = new Set([
   'payment_methods',
   'payroll_entries',
   'products',
+  'sale_return_items',
+  'sale_returns',
   'staff',
   'stock_take_items',
   'stock_takes',

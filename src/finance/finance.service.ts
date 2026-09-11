@@ -662,7 +662,7 @@ export class FinanceService {
   ): Promise<void> {
     const currency = 'UZS';
 
-    if (saleTotals.cashSales > 0) {
+    if (saleTotals.cashSales !== 0) {
       const cashAccount = await this.getOrCreateCashAccountTx(
         tx,
         businessId,
@@ -691,7 +691,7 @@ export class FinanceService {
       );
     }
 
-    if (saleTotals.cardSales > 0) {
+    if (saleTotals.cardSales !== 0) {
       const bankAccount = await this.getOrCreateNoncashAccountTx(
         tx,
         businessId,

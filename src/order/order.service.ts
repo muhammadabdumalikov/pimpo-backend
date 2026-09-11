@@ -13,6 +13,7 @@ import {
   gte,
   lte,
   inArray,
+  isNull,
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
@@ -40,11 +41,18 @@ import {
   businesses,
   cashShifts,
   cashRegisters,
+  receiptSequences,
+  saleReturns,
+  saleReturnItems,
   type Order,
   type OrderItem,
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
-import {creditedStaffId, creditedStaffName} from './seller-attribution';
+import {
+  creditedStaffId,
+  creditedStaffName,
+  SELLER_NONE,
+} from './seller-attribution';
 import {UserService} from '../user/user.service';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {BranchService} from '../branch/branch.service';
@@ -70,6 +78,26 @@ export interface BatchOrderResult {
 
 function money(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * Issue the next receipt number ("chek raqami") for a business inside the
+ * caller's transaction. The upsert row-locks the counter until the sale
+ * commits, so concurrent tills get distinct, gap-free-on-success numbers.
+ */
+export async function nextReceiptNo(
+  tx: DbTx,
+  businessId: string,
+): Promise<number> {
+  const [row] = await tx
+    .insert(receiptSequences)
+    .values({businessId, lastNo: 1})
+    .onConflictDoUpdate({
+      target: receiptSequences.businessId,
+      set: {lastNo: sql`${receiptSequences.lastNo} + 1`},
+    })
+    .returning({lastNo: receiptSequences.lastNo});
+  return row.lastNo;
 }
 
 // Postgres unique-violation SQLSTATE. Raised when two concurrent retries of the
@@ -107,7 +135,7 @@ export class OrderService {
   // The branch a sale draws stock from: an explicit branch, else the branch of
   // the register the shift is on, else the default branch. This is what makes a
   // sale deplete the right store's stock.
-  private async resolveSaleBranch(
+  async resolveSaleBranch(
     businessId: string,
     explicit: string | undefined,
     shiftId: string | null,
@@ -131,7 +159,7 @@ export class OrderService {
   }
 
   // Resolve the acting account into a snapshotted cashier (id + display name).
-  private async resolveCashier(
+  async resolveCashier(
     account?: IAccount,
   ): Promise<{id: string | null; name: string | null}> {
     if (!account) return {id: null, name: null};
@@ -188,9 +216,9 @@ export class OrderService {
   //   - Otherwise we pick the register (explicit `registerId`, or the business's
   //     sole register) and require it to have an open shift; if none, the sale is
   //     blocked with a clear message.
-  private async resolveShiftForSale(
+  async resolveShiftForSale(
     businessId: string,
-    dto: CreateOrderDto,
+    dto: Pick<CreateOrderDto, 'shiftId' | 'registerId'>,
   ): Promise<string> {
     if (dto.shiftId) {
       const [shift] = await this.dbService.db
@@ -251,7 +279,7 @@ export class OrderService {
   // Blocks a sale when an inventory count is in progress. Cache-aside read
   // (in-memory flag, DB as source of truth) so the hot checkout path avoids a
   // query on every sale; fail-open if the stock_takes table isn't migrated yet.
-  private async assertNoStockTakeInProgress(businessId: string): Promise<void> {
+  async assertNoStockTakeInProgress(businessId: string): Promise<void> {
     if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
       throw new AppException(ErrorCode.SALES_FROZEN_STOCK_TAKE);
     }
@@ -587,10 +615,12 @@ export class OrderService {
         }
 
         const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+        const receiptNo = await nextReceiptNo(tx, businessId);
 
         await tx.insert(orders).values({
           id: orderId,
           businessId,
+          receiptNo,
           clientId: dto.clientId ?? null,
           userId: customerId,
           customerName,
@@ -1111,7 +1141,10 @@ export class OrderService {
     if (options?.cashierId) {
       where.push(eq(orders.cashierId, options.cashierId));
     }
-    if (options?.sellerId) {
+    if (options?.sellerId === SELLER_NONE) {
+      // Sales nobody was picked for — credited to their cashier.
+      where.push(isNull(orders.sellerId));
+    } else if (options?.sellerId) {
       where.push(eq(orders.sellerId, options.sellerId));
     }
     if (options?.minAmount != null) {
@@ -1126,6 +1159,15 @@ export class OrderService {
           ilike(orders.customerName, `%${options.search}%`),
           ilike(orders.customerPhone, `%${options.search}%`),
           ilike(orders.id, `%${options.search}%`),
+          // "1245" / "#1245" — the receipt number printed on the check.
+          ...(/^[#№]?\s*\d{1,9}$/.test(options.search.trim())
+            ? [
+                eq(
+                  orders.receiptNo,
+                  Number(options.search.trim().replace(/^[#№]\s*/, '')),
+                ),
+              ]
+            : []),
           ilike(orders.cashierName, `%${options.search}%`),
           ilike(orders.sellerName, `%${options.search}%`),
         )!,
@@ -1211,6 +1253,11 @@ export class OrderService {
     // sell inventory that was already put back.
     if (existing.status === 'Cancelled') {
       throw new AppException(ErrorCode.ORDER_CANCELLED_IMMUTABLE);
+    }
+    // Goods and money already came back through a return; cancelling the rest
+    // of the receipt would reverse those lines a second time.
+    if (Number(existing.returnedAmount) > 0) {
+      throw new AppException(ErrorCode.ORDER_HAS_RETURNS);
     }
 
     // A storefront order consumed stock when it was placed, so cancelling it
@@ -1459,6 +1506,11 @@ export class OrderService {
     if (account?.type !== 'business') {
       throw new AppException(ErrorCode.OWNER_ONLY);
     }
+    // Its returns are history (refunds already left a closed or open shift);
+    // deleting the sale would cascade them away and restock the lines again.
+    if (Number(existing.returnedAmount) > 0) {
+      throw new AppException(ErrorCode.ORDER_HAS_RETURNS);
+    }
 
     // Deleting a sale moves products.quantity, so it is frozen while a count is
     // open for the same reason ringing one up is.
@@ -1632,13 +1684,48 @@ export class OrderService {
       .from(orders)
       .where(and(whereSql, eq(orders.paymentMethod, 'debt')));
 
+    // Returns in the range come off the day's figures (money handed back per
+    // method, debt written down).
+    const rwhere = [eq(saleReturns.businessId, businessId)];
+    if (options.from) {
+      rwhere.push(gte(saleReturns.createdAt, businessDayStart(options.from)));
+    }
+    if (options.to) {
+      rwhere.push(lte(saleReturns.createdAt, businessDayEnd(options.to)));
+    }
+    const returnRows = await this.dbService.db
+      .select({
+        totalAmount: saleReturns.totalAmount,
+        itemCount: saleReturns.itemCount,
+        debtReduced: saleReturns.debtReduced,
+        refunds: saleReturns.refunds,
+      })
+      .from(saleReturns)
+      .where(and(...rwhere));
+    let retValue = 0;
+    let retUnits = 0;
+    let retDebt = 0;
+    const refundBy = new Map<string, number>();
+    for (const r of returnRows) {
+      retValue += Number(r.totalAmount);
+      retUnits += r.itemCount;
+      retDebt += Number(r.debtReduced);
+      for (const p of (r.refunds as {method: string; amount: number}[] | null) ??
+        []) {
+        refundBy.set(p.method, (refundBy.get(p.method) ?? 0) + p.amount);
+      }
+    }
+
     return {
       count: Number(totals.count),
-      units: Number(totals.units),
-      revenue: Number(totals.revenue),
-      cash: methodTotal('cash'),
-      card: methodTotal('card'),
-      debt: Math.max(0, Number(debtRow.total) - Number(debtRow.paid)),
+      units: Number(totals.units) - retUnits,
+      revenue: Number(totals.revenue) - retValue,
+      cash: methodTotal('cash') - (refundBy.get('cash') ?? 0),
+      card: methodTotal('card') - (refundBy.get('card') ?? 0),
+      debt: Math.max(
+        0,
+        Number(debtRow.total) - Number(debtRow.paid) - retDebt,
+      ),
     };
   }
 
@@ -1741,16 +1828,42 @@ export class OrderService {
       .groupBy(orderItems.productId)
       .orderBy(desc(sql`SUM(${orderItems.lineTotal})`));
 
+    // Returned units/value (at line value) and the restocked cost net off.
+    const rwhere = [eq(saleReturnItems.businessId, businessId)];
+    if (options?.from) {
+      rwhere.push(gte(saleReturns.createdAt, businessDayStart(options.from)));
+    }
+    if (options?.to) {
+      rwhere.push(lte(saleReturns.createdAt, businessDayEnd(options.to)));
+    }
+    if (options?.branchId) {
+      rwhere.push(eq(saleReturns.branchId, options.branchId));
+    }
+    const retRows = await this.dbService.db
+      .select({
+        productId: saleReturnItems.productId,
+        units: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
+        revenue: sql<string>`COALESCE(SUM(${saleReturnItems.lineTotal}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
+      })
+      .from(saleReturnItems)
+      .innerJoin(saleReturns, eq(saleReturnItems.returnId, saleReturns.id))
+      .where(and(...rwhere))
+      .groupBy(saleReturnItems.productId);
+    const retMap = new Map(retRows.map((r) => [r.productId, r]));
+
     return rows.map((r) => {
-      const revenue = Number(r.revenue);
-      const profit = revenue - Number(r.cost);
+      const ret = retMap.get(r.productId);
+      const revenue = Number(r.revenue) - Number(ret?.revenue ?? 0);
+      const profit =
+        revenue - (Number(r.cost) - Number(ret?.restockedCost ?? 0));
       return {
         productId: r.productId,
         name: r.name,
         code: r.code,
         image: r.image,
         category: r.category,
-        unitsSold: Number(r.unitsSold),
+        unitsSold: Number(r.unitsSold) - Number(ret?.units ?? 0),
         revenue,
         profit,
         profitMargin: revenue > 0 ? (profit / revenue) * 100 : 0,
@@ -1775,7 +1888,13 @@ export class OrderService {
       .where(
         and(eq(orders.businessId, businessId), eq(orders.status, 'Completed')),
       );
-    return Number(row?.sum ?? 0);
+    const [ret] = await this.dbService.db
+      .select({
+        sum: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(eq(saleReturns.businessId, businessId));
+    return Number(row?.sum ?? 0) - Number(ret?.sum ?? 0);
   }
 
   /**
@@ -1809,10 +1928,28 @@ export class OrderService {
       )
       .groupBy(sql`EXTRACT(MONTH FROM ${orders.createdAt})`);
 
+    const retRows = await this.dbService.db
+      .select({
+        month: sql<number>`EXTRACT(MONTH FROM ${saleReturns.createdAt})`,
+        sum: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          sql`EXTRACT(YEAR FROM ${saleReturns.createdAt}) = ${year}`,
+        ),
+      )
+      .groupBy(sql`EXTRACT(MONTH FROM ${saleReturns.createdAt})`);
+
     const monthly = new Array<number>(12).fill(0);
     for (const r of rows) {
       const m = Number(r.month);
       if (m >= 1 && m <= 12) monthly[m - 1] = Number(r.sum);
+    }
+    for (const r of retRows) {
+      const m = Number(r.month);
+      if (m >= 1 && m <= 12) monthly[m - 1] -= Number(r.sum);
     }
     return monthly;
   }
@@ -1863,7 +2000,25 @@ export class OrderService {
       )
       .groupBy(bucket);
 
+    const retBucket = sql<string>`to_char(date_trunc('month', ${saleReturns.createdAt} + interval '5 hours'), 'YYYY-MM')`;
+    const retRows = await this.dbService.db
+      .select({
+        period: retBucket,
+        sum: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          gte(saleReturns.createdAt, businessDayStart(`${periods[0]}-01`)),
+        ),
+      )
+      .groupBy(retBucket);
+
     const byPeriod = new Map(rows.map((r) => [r.period, Number(r.sum)]));
+    for (const r of retRows) {
+      byPeriod.set(r.period, (byPeriod.get(r.period) ?? 0) - Number(r.sum));
+    }
     return {periods, monthly: periods.map((p) => byPeriod.get(p) ?? 0)};
   }
 
@@ -1917,11 +2072,43 @@ export class OrderService {
       .groupBy(creditedStaffId)
       .orderBy(desc(sql`COALESCE(SUM(${orders.totalAmount}), 0)`));
 
-    return rows.map((r) => ({
-      cashierId: r.cashierId,
-      cashierName: r.cashierName ?? null,
-      orderCount: Number(r.orderCount),
-      revenue: Number(r.revenue),
-    }));
+    // Returns net off whoever the sale was credited to, on the return date.
+    const rwhere = [eq(saleReturns.businessId, businessId)];
+    if (options.from) {
+      rwhere.push(gte(saleReturns.createdAt, businessDayStart(options.from)));
+    }
+    if (options.to) {
+      rwhere.push(lte(saleReturns.createdAt, businessDayEnd(options.to)));
+    }
+    const retRows = await this.dbService.db
+      .select({
+        staffId: saleReturns.creditedStaffId,
+        staffName: sql<string | null>`MAX(${saleReturns.creditedStaffName})`,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(and(...rwhere))
+      .groupBy(saleReturns.creditedStaffId);
+    const retMap = new Map(retRows.map((r) => [r.staffId, r]));
+
+    const result = rows.map((r) => {
+      const ret = retMap.get(r.cashierId);
+      retMap.delete(r.cashierId);
+      return {
+        cashierId: r.cashierId,
+        cashierName: r.cashierName ?? null,
+        orderCount: Number(r.orderCount),
+        revenue: Number(r.revenue) - Number(ret?.value ?? 0),
+      };
+    });
+    for (const ret of retMap.values()) {
+      result.push({
+        cashierId: ret.staffId,
+        cashierName: ret.staffName ?? null,
+        orderCount: 0,
+        revenue: -Number(ret.value),
+      });
+    }
+    return result.sort((a, b) => b.revenue - a.revenue);
   }
 }

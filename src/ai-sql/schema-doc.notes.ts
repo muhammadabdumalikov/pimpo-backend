@@ -32,6 +32,14 @@ export const SCHEMA_DOC_NOTES = `
   register), else orders.cashier_id. For "who sold the most" / per-seller
   figures group by COALESCE(o.seller_id, o.cashier_id). cashier_id alone means
   who rang it up — use it for discounts and cancellations given at the till.
+- Customer returns live in sale_returns (+ sale_return_items), dated by
+  sale_returns.created_at. The original order is NOT changed by a return, so
+  any revenue figure must subtract returns in the same date range:
+    net revenue = SUM(orders.total_amount) - SUM(sale_returns.total_amount)
+  Per product use sale_return_items.quantity / line_total; COGS drops only by
+  sale_return_items.cost_total where restock = true. Per seller, returns are
+  credited to sale_returns.credited_staff_id. orders.receipt_no is the receipt
+  number people quote ("chek #1245").
 - A customer's remaining debt is user_debts.amount minus the sum of that debt's
   debt_payments rows — not user_debts.amount on its own.
 

@@ -1,7 +1,13 @@
 import {Injectable, Logger} from '@nestjs/common';
 import {Cron} from '@nestjs/schedule';
 import {DatabaseService} from '../database/database.service';
-import {businesses, orders, orderItems, cashShifts} from '../database/schema';
+import {
+  businesses,
+  orders,
+  orderItems,
+  cashShifts,
+  saleReturns,
+} from '../database/schema';
 import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
@@ -12,6 +18,8 @@ export interface DailyDigest {
   orderCount: number;
   avgCheck: number;
   units: number;
+  /** Customer returns handed back that day (already netted off revenue). */
+  returns: number;
   cashDifference: number; // negative = shortage across shifts closed that day
   topProducts: {name: string; qty: number; revenue: number}[];
 }
@@ -61,7 +69,22 @@ export class DigestService {
       })
       .from(orders)
       .where(dayWhere);
-    const revenue = Number(sales?.revenue ?? 0);
+    // Customer returns handed back that day net off the day's takings.
+    const [ret] = await this.db
+      .select({
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        units: sql<string>`COALESCE(SUM(${saleReturns.itemCount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          gte(saleReturns.createdAt, start),
+          lte(saleReturns.createdAt, end),
+        ),
+      );
+    const returns = Number(ret?.value ?? 0);
+    const revenue = Number(sales?.revenue ?? 0) - returns;
     const orderCount = Number(sales?.orderCount ?? 0);
 
     // Kassa reconciliation across shifts closed that day (negative = shortage).
@@ -97,7 +120,8 @@ export class DigestService {
       revenue,
       orderCount,
       avgCheck: orderCount > 0 ? revenue / orderCount : 0,
-      units: Number(sales?.units ?? 0),
+      units: Number(sales?.units ?? 0) - Number(ret?.units ?? 0),
+      returns,
       cashDifference: Number(diffRow?.difference ?? 0),
       topProducts: topRows.map((r) => ({
         name: r.name,
@@ -117,6 +141,9 @@ export class DigestService {
     lines.push('');
     lines.push(`💰 Tushum: ${uz(digest.revenue)} so'm`);
     lines.push(`🧾 Cheklar: ${uz(digest.orderCount)} ta`);
+    if (digest.returns > 0) {
+      lines.push(`↩️ Qaytarildi: ${uz(digest.returns)} so'm`);
+    }
     lines.push(`🎯 O'rtacha chek: ${uz(digest.avgCheck)} so'm`);
     if (digest.cashDifference < 0) {
       lines.push(

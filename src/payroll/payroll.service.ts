@@ -10,6 +10,7 @@ import {
   branches,
   orders,
   orderItems,
+  saleReturns,
   payrollEntries,
   payrollSettings,
   businesses,
@@ -160,6 +161,32 @@ export class PayrollService {
       if (!row.cashierId) continue;
       const entry = map.get(row.cashierId);
       if (entry) entry.cogs = Number(row.cogs);
+    }
+
+    // Customer returns dated in the period net off the person the sale was
+    // credited to: revenue by the returned value, COGS by what went back on
+    // the shelf (a defective item's cost stays against the sale's profit).
+    const returnRows = await this.db
+      .select({
+        staffId: saleReturns.creditedStaffId,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          gte(saleReturns.createdAt, start),
+          lt(saleReturns.createdAt, end),
+        ),
+      )
+      .groupBy(saleReturns.creditedStaffId);
+    for (const row of returnRows) {
+      if (!row.staffId) continue;
+      const entry = map.get(row.staffId) ?? {revenue: 0, cogs: 0};
+      entry.revenue -= Number(row.value);
+      entry.cogs -= Number(row.restockedCost);
+      map.set(row.staffId, entry);
     }
     return map;
   }

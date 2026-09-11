@@ -31,10 +31,21 @@ export interface MovementForRecon {
   amount: number | string;
 }
 
+/**
+ * A customer return settled in the shift: the money refunded per method (cash
+ * leaves the drawer, anything else the card row) and the debt written down.
+ */
+export interface ReturnForRecon {
+  refunds: {method: string; amount: number}[] | null;
+  debtReduced: number | string;
+}
+
 export interface ReconInput {
   openingFloat: number;
   sales: SaleForRecon[];
   movements: MovementForRecon[];
+  /** Returns paid out in this shift (optional for older callers/tests). */
+  returns?: ReturnForRecon[];
   /** Counted amounts keyed `${method}:${currency}` (from close); optional (X-report). */
   counted?: Map<string, number>;
 }
@@ -43,6 +54,10 @@ export interface SaleTotals {
   cashSales: number;
   cardSales: number;
   debtSales: number;
+  /** Money handed back on returns in this shift. */
+  cashRefunds: number;
+  cardRefunds: number;
+  debtReduced: number;
 }
 
 export function computeReconciliation(input: ReconInput): {
@@ -70,6 +85,19 @@ export function computeReconciliation(input: ReconInput): {
     }
     const total = Number(o.totalAmount);
     debtSales += Math.max(0, total - paidNow); // the "В долг" remainder
+  }
+
+  // Returns: refunds leave the drawer / card row like a paid-out; a debt
+  // write-down shows as an "out" on the debt row.
+  let cashRefunds = 0;
+  let cardRefunds = 0;
+  let debtReduced = 0;
+  for (const r of input.returns ?? []) {
+    for (const p of r.refunds ?? []) {
+      if (p.method === 'cash') cashRefunds += p.amount;
+      else cardRefunds += p.amount;
+    }
+    debtReduced += Number(r.debtReduced);
   }
 
   // Manual movements: cash movements adjust the cash row, non-cash the card row.
@@ -117,10 +145,16 @@ export function computeReconciliation(input: ReconInput): {
       'UZS',
       openingFloat,
       cashSales + mv.cash.UZS.in,
-      mv.cash.UZS.out,
+      mv.cash.UZS.out + cashRefunds,
     ),
-    mkRow('card', 'UZS', 0, cardSales + mv.card.UZS.in, mv.card.UZS.out),
-    mkRow('debt', 'UZS', 0, debtSales, 0),
+    mkRow(
+      'card',
+      'UZS',
+      0,
+      cardSales + mv.card.UZS.in,
+      mv.card.UZS.out + cardRefunds,
+    ),
+    mkRow('debt', 'UZS', 0, debtSales, debtReduced),
   ];
   if (hasUsd) {
     rows.push(
@@ -133,6 +167,13 @@ export function computeReconciliation(input: ReconInput): {
     rows,
     orderCount: sales.length,
     hasUsd,
-    saleTotals: {cashSales, cardSales, debtSales},
+    saleTotals: {
+      cashSales,
+      cardSales,
+      debtSales,
+      cashRefunds,
+      cardRefunds,
+      debtReduced,
+    },
   };
 }

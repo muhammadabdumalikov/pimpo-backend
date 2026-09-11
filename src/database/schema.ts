@@ -453,10 +453,26 @@ export const orders = pgTable(
     branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
       onDelete: 'set null',
     }),
+    // Human receipt number ("chek raqami"), sequential per business — what a
+    // cashier types (or scans off the printed receipt) to find a sale for a
+    // return. Issued from receipt_sequences when the order is created; null
+    // only for Held drafts (numbered when they are completed as a new order).
+    receiptNo: integer('receipt_no'),
+    // Running sum of sale_returns.total_amount against this order. The order
+    // itself is never rewritten by a return: reports net returns on the date
+    // they happen, and this is just the "how much came back" badge + guard.
+    returnedAmount: decimal('returned_amount', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
+    // One receipt number per business (NULLs — Held drafts — never collide).
+    uniqueReceiptNo: uniqueIndex('orders_business_receipt_no_uq').on(
+      table.businessId,
+      table.receiptNo,
+    ),
     // Idempotency guard for offline order sync. NULL client_ids are distinct in
     // a Postgres unique index, so online/storefront orders never collide.
     uniqueClientBusiness: uniqueIndex('unique_order_client_business').on(
@@ -501,6 +517,9 @@ export const orderItems = pgTable('order_items', {
   costTotal: decimal('cost_total', {precision: 12, scale: 2})
     .notNull()
     .default('0'),
+  // Quantity already brought back by customers (sum of sale_return_items).
+  // quantity − returnedQuantity is what can still be returned.
+  returnedQuantity: doublePrecision('returned_quantity').notNull().default(0),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -2409,6 +2428,66 @@ export const aiSettings = pgTable('ai_settings', {
 export type AiSettings = typeof aiSettings.$inferSelect;
 export type NewAiSettings = typeof aiSettings.$inferInsert;
 
+// A delivery-note scan still under review ("tugallanmagan skaner"). The review
+// is long, hand-checked work on top of a paid AI read, so it is saved as it goes
+// and picked up again after a closed drawer, a reload, a crash or on another
+// device. A shop keeps a list of them — several suppliers deliver on one day —
+// and they are the shop's, not one person's: anyone who may write a receipt
+// sees them all and can finish one somebody else started.
+//
+// `state` is the review exactly as the drawer holds it — what the AI read plus
+// every correction — opaque to the server. The photos themselves are never
+// kept: the read is what is worth saving. `createdProductIds` are the products
+// made for rows of this scan, so throwing the scan away can offer to take them
+// back out of the catalogue.
+//
+// The row is deleted — pages with it — when the rows reach the receipt or the
+// scan is discarded; abandoned ones are swept after a while.
+export const invoiceScans = pgTable(
+  'invoice_scans',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // Who started it — IAccount.id: business.id for the owner, staff.id for
+    // staff. Caps how many open scans one person can pile up.
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    // Who saved it last, same id space. Null until the first autosave.
+    updatedById: varchar('updated_by_id', {length: 36}),
+    // The note's header as the AI read it, so the list can tell scans apart.
+    supplierName: varchar('supplier_name', {length: 255}),
+    documentNumber: varchar('document_number', {length: 100}),
+    // ISO date (YYYY-MM-DD) as printed, or null when none was legible.
+    documentDate: varchar('document_date', {length: 10}),
+    // The review as the drawer holds it.
+    state: jsonb('state').$type<Record<string, unknown>>(),
+    // How many rows the review holds and sheets were read — what the list shows.
+    rowCount: integer('row_count').notNull().default(0),
+    pageCount: integer('page_count').notNull().default(0),
+    createdProductIds: jsonb('created_product_ids')
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessUpdatedIdx: index('invoice_scans_business_updated_idx').on(
+      table.businessId,
+      table.updatedAt,
+    ),
+    businessAccountIdx: index('invoice_scans_business_account_idx').on(
+      table.businessId,
+      table.accountId,
+    ),
+    updatedIdx: index('invoice_scans_updated_idx').on(table.updatedAt),
+  }),
+);
+
+export type InvoiceScan = typeof invoiceScans.$inferSelect;
+export type NewInvoiceScan = typeof invoiceScans.$inferInsert;
+
 // Per-business configuration for label-printing scales. The scale prints its
 // own barcode and the layout of that barcode is redrawn in the scale's own
 // menu, so the till cannot assume a fixed one — it reads whatever the shop says
@@ -2439,3 +2518,131 @@ export const scaleSettings = pgTable('scale_settings', {
 
 export type ScaleSettings = typeof scaleSettings.$inferSelect;
 export type NewScaleSettings = typeof scaleSettings.$inferInsert;
+
+// ── Customer returns ("qaytarish") ─────────────────────────────────────────
+// Per-business counter behind orders.receipt_no. Bumped with an atomic upsert
+// inside the sale's transaction, so two tills never get the same number.
+export const receiptSequences = pgTable('receipt_sequences', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  lastNo: integer('last_no').notNull().default(0),
+});
+
+// A customer bringing goods back from a completed sale. The original order is
+// left as sold; this document is the history ("tarix") and is what reports net
+// against, on the date it happened (not the sale date). Money is split in a
+// fixed order: first the unpaid debt of a credit sale shrinks, then loyalty
+// points spent on the sale come back to the customer, and whatever remains is
+// refunded through `refunds` out of the current open shift.
+export const saleReturns = pgTable(
+  'sale_returns',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    orderId: varchar('order_id', {length: 36})
+      .notNull()
+      .references(() => orders.id, {onDelete: 'cascade'}),
+    orderReceiptNo: integer('order_receipt_no'), // snapshot for lists
+    // Where the goods came back and which shift paid the refund.
+    branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+      onDelete: 'set null',
+    }),
+    shiftId: varchar('shift_id', {length: 36}),
+    // Who processed the return.
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    // Who the original sale was credited to (COALESCE(seller, cashier) at the
+    // time of the return) — the sellers report and payroll % net it off them.
+    creditedStaffId: varchar('credited_staff_id', {length: 36}),
+    creditedStaffName: varchar('credited_staff_name', {length: 255}),
+    userId: varchar('user_id', {length: 36}).references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    customerName: varchar('customer_name', {length: 255}),
+    reason: varchar('reason', {length: 500}),
+    // Same "pieces, a weighed line counts as one" rule as orders.item_count.
+    itemCount: integer('item_count').notNull().default(0),
+    // Returned lines at their sale price, the share of the order discount
+    // they carried, and the net value credited back (gross − discount).
+    grossAmount: decimal('gross_amount', {precision: 12, scale: 2}).notNull(),
+    discountAmount: decimal('discount_amount', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    totalAmount: decimal('total_amount', {precision: 12, scale: 2}).notNull(),
+    // How totalAmount was settled: debt written down, spent points given back,
+    // and money refunded (= refunds Σ). Earned points taken back are separate.
+    debtReduced: decimal('debt_reduced', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    pointsRestored: decimal('points_restored', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    pointsReversed: decimal('points_reversed', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    refundAmount: decimal('refund_amount', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // [{ method: payment-method code, amount }] — 'cash' leaves the drawer.
+    refunds: jsonb('refunds'),
+    // COGS of all returned lines, and of the part put back on the shelf. Only
+    // the restocked cost leaves COGS; a defective line stays a loss.
+    costTotal: decimal('cost_total', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    restockedCost: decimal('restocked_cost', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('sale_returns_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    orderIdx: index('sale_returns_order_idx').on(table.orderId),
+    shiftIdx: index('sale_returns_shift_idx').on(table.shiftId),
+  }),
+);
+
+export const saleReturnItems = pgTable(
+  'sale_return_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    returnId: varchar('return_id', {length: 36})
+      .notNull()
+      .references(() => saleReturns.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    orderItemId: varchar('order_item_id', {length: 36}).notNull(),
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+    lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
+    // lineTotal less its share of the order-level discount.
+    netAmount: decimal('net_amount', {precision: 12, scale: 2}).notNull(),
+    costIn: decimal('cost_in', {precision: 10, scale: 2}).notNull().default('0'),
+    costTotal: decimal('cost_total', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // true = back on the shelf (stock + a new batch at the sale cost);
+    // false = defective ("yaroqsiz"), not restocked.
+    restock: boolean('restock').notNull().default(true),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    returnIdx: index('sale_return_items_return_idx').on(table.returnId),
+    productIdx: index('sale_return_items_product_idx').on(
+      table.businessId,
+      table.productId,
+    ),
+  }),
+);
+
+export type SaleReturn = typeof saleReturns.$inferSelect;
+export type SaleReturnItem = typeof saleReturnItems.$inferSelect;

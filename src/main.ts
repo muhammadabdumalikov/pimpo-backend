@@ -6,11 +6,25 @@ import 'dotenv/config';
 import {ValidationPipe} from '@nestjs/common';
 import {NestFactory} from '@nestjs/core';
 import {DocumentBuilder, SwaggerModule} from '@nestjs/swagger';
+import {json, NextFunction, Request, Response} from 'express';
 import {AppModule} from './app.module';
 import {AllExceptionsFilter} from './common/filters/all-exceptions.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // An invoice-scan autosave carries the whole review — every row as the AI
+  // read it plus the owner's edits — which a long note takes past express's
+  // 100 KB default. Raised for that route only, and registered before Nest's
+  // own parser so this one reads the body first. Wrapped in a closure on
+  // purpose: Nest skips its global JSON parser when it finds a layer named
+  // `jsonParser`, which would leave every other route unparsed.
+  const scanJson = json({limit: '4mb'});
+  app.use(
+    '/ai/invoice/scans',
+    (req: Request, res: Response, next: NextFunction) =>
+      scanJson(req, res, next),
+  );
 
   // Enable CORS for frontend
   app.enableCors({

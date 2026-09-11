@@ -85,6 +85,17 @@ export enum ErrorCode {
   ORDER_EMPTY = 'ORDER_EMPTY',
   CASHIER_NOT_FOUND = 'CASHIER_NOT_FOUND',
   SELLER_NOT_FOUND = 'SELLER_NOT_FOUND',
+  ORDER_HAS_RETURNS = 'ORDER_HAS_RETURNS',
+
+  // ── Customer returns ───────────────────────────────────────────────────────
+  SALE_RECEIPT_NOT_FOUND = 'SALE_RECEIPT_NOT_FOUND',
+  RETURN_ORDER_NOT_RETURNABLE = 'RETURN_ORDER_NOT_RETURNABLE',
+  RETURN_EMPTY = 'RETURN_EMPTY',
+  RETURN_ITEM_NOT_IN_ORDER = 'RETURN_ITEM_NOT_IN_ORDER',
+  RETURN_QTY_EXCEEDS = 'RETURN_QTY_EXCEEDS',
+  RETURN_QTY_NOT_WHOLE = 'RETURN_QTY_NOT_WHOLE',
+  RETURN_REFUND_MISMATCH = 'RETURN_REFUND_MISMATCH',
+  RETURN_NOT_FOUND = 'RETURN_NOT_FOUND',
   HELD_SALE_CHECKOUT_REQUIRED = 'HELD_SALE_CHECKOUT_REQUIRED',
   DEBT_SALE_CUSTOMER_IMMUTABLE = 'DEBT_SALE_CUSTOMER_IMMUTABLE',
 
@@ -230,6 +241,8 @@ export enum ErrorCode {
   AI_SQL_TOO_EXPENSIVE = 'AI_SQL_TOO_EXPENSIVE',
   AI_SQL_UNAVAILABLE = 'AI_SQL_UNAVAILABLE',
   AI_INVOICE_UNREADABLE = 'AI_INVOICE_UNREADABLE',
+  INVOICE_SCAN_NOT_FOUND = 'INVOICE_SCAN_NOT_FOUND',
+  INVOICE_SCAN_LIMIT = 'INVOICE_SCAN_LIMIT',
 }
 
 export interface ErrorDefinition {
@@ -475,6 +488,42 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SELLER_NOT_FOUND]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Seller not found or inactive in this business',
+  },
+  [ErrorCode.ORDER_HAS_RETURNS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This sale has returns and can no longer be cancelled or deleted',
+  },
+  [ErrorCode.SALE_RECEIPT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'No sale found for receipt {ref}',
+  },
+  [ErrorCode.RETURN_ORDER_NOT_RETURNABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only completed sales can be returned',
+  },
+  [ErrorCode.RETURN_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Choose at least one item to return',
+  },
+  [ErrorCode.RETURN_ITEM_NOT_IN_ORDER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'An item does not belong to this sale',
+  },
+  [ErrorCode.RETURN_QTY_EXCEEDS]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'At most {max} of "{productName}" can still be returned',
+  },
+  [ErrorCode.RETURN_QTY_NOT_WHOLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '"{productName}" is sold by the piece; return a whole number',
+  },
+  [ErrorCode.RETURN_REFUND_MISMATCH]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Refund methods must add up to {expected}',
+  },
+  [ErrorCode.RETURN_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Return not found',
   },
   [ErrorCode.HELD_SALE_CHECKOUT_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,
@@ -943,6 +992,15 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.AI_INVOICE_UNREADABLE]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'No product lines could be read from this document',
+  },
+  [ErrorCode.INVOICE_SCAN_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'This scan was finished or discarded',
+  },
+  [ErrorCode.INVOICE_SCAN_LIMIT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'You already have {max} unfinished scans. Finish or discard one first.',
   },
 };
 

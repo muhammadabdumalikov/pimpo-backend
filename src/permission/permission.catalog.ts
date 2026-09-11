@@ -55,6 +55,9 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'sale:create', group: 'sales'},
   {key: 'sale:update', group: 'sales'},
   {key: 'sale:delete', group: 'sales'},
+  // Customer returns: goods back from a sold receipt, money out of the till.
+  // Not granted to any role by default — the owner delegates it on purpose.
+  {key: 'sale:return', group: 'sales'},
   {key: 'shift:open', group: 'sales'},
   {key: 'shift:close', group: 'sales'},
   // Cash in / cash out on an open shift — money leaving the drawer.

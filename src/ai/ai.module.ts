@@ -11,6 +11,8 @@ import {AiSettingsController} from './ai-settings.controller';
 import {AiSettingsService} from './ai-settings.service';
 import {AiController} from './ai.controller';
 import {AiService} from './ai.service';
+import {InvoiceScanController} from './invoice/invoice-scan.controller';
+import {InvoiceScanService} from './invoice/invoice-scan.service';
 import {InvoiceController} from './invoice/invoice.controller';
 import {InvoiceService} from './invoice/invoice.service';
 import {AiToolsService} from './tools/ai-tools.service';
@@ -38,8 +40,19 @@ import {AiToolsService} from './tools/ai-tools.service';
     // Non-global on purpose: the read-only pool is reachable only from here.
     AiSqlModule,
   ],
-  controllers: [AiSettingsController, AiController, InvoiceController],
-  providers: [AiSettingsService, AiToolsService, AiService, InvoiceService],
+  controllers: [
+    AiSettingsController,
+    AiController,
+    InvoiceController,
+    InvoiceScanController,
+  ],
+  providers: [
+    AiSettingsService,
+    AiToolsService,
+    AiService,
+    InvoiceService,
+    InvoiceScanService,
+  ],
   exports: [AiSettingsService],
 })
 export class AiModule {}

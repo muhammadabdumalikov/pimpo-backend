@@ -97,7 +97,11 @@ export class OrderController {
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'paymentMethod', required: false})
   @ApiQuery({name: 'cashierId', required: false})
-  @ApiQuery({name: 'sellerId', required: false})
+  @ApiQuery({
+    name: 'sellerId',
+    required: false,
+    description: "Seller id, or 'none' for sales with no seller picked",
+  })
   @ApiQuery({name: 'minAmount', required: false})
   @ApiQuery({name: 'maxAmount', required: false})
   async findAll(

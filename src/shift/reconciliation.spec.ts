@@ -214,6 +214,47 @@ describe('computeReconciliation saleTotals (finance ledger source)', () => {
       sales: [],
       movements: [{isCash: true, currency: 'UZS', type: 'in', amount: 20000}],
     });
-    expect(saleTotals).toEqual({cashSales: 0, cardSales: 0, debtSales: 0});
+    expect(saleTotals).toEqual({
+      cashSales: 0,
+      cardSales: 0,
+      debtSales: 0,
+      cashRefunds: 0,
+      cardRefunds: 0,
+      debtReduced: 0,
+    });
+  });
+});
+
+describe('computeReconciliation customer returns', () => {
+  it('takes refunds out of the drawer and card rows and debt write-downs off the debt row', () => {
+    const {rows, saleTotals} = computeReconciliation({
+      openingFloat: 100000,
+      sales: [
+        {totalAmount: 80000, payments: [{method: 'cash', amount: 80000}]},
+        {totalAmount: 50000, payments: [{method: 'card', amount: 50000}]},
+      ],
+      movements: [],
+      returns: [
+        {refunds: [{method: 'cash', amount: 30000}], debtReduced: 0},
+        {
+          refunds: [
+            {method: 'click', amount: 10000},
+            {method: 'cash', amount: 5000},
+          ],
+          debtReduced: 7000,
+        },
+      ],
+    });
+    const cash = rows.find((r) => r.method === 'cash' && r.currency === 'UZS')!;
+    const card = rows.find((r) => r.method === 'card' && r.currency === 'UZS')!;
+    const debt = rows.find((r) => r.method === 'debt')!;
+    expect(cash.out).toBe(35000);
+    expect(cash.expected).toBe(100000 + 80000 - 35000);
+    expect(card.out).toBe(10000);
+    expect(card.expected).toBe(40000);
+    expect(debt.out).toBe(7000);
+    expect(saleTotals.cashRefunds).toBe(35000);
+    expect(saleTotals.cardRefunds).toBe(10000);
+    expect(saleTotals.debtReduced).toBe(7000);
   });
 });

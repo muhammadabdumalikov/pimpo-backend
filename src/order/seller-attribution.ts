@@ -1,6 +1,9 @@
 import {sql} from 'drizzle-orm';
 import {orders} from '../database/schema';
 
+/** `GET /orders?sellerId=none` — sales with no seller picked (seller_id IS NULL). */
+export const SELLER_NONE = 'none';
+
 // Who a sale is credited to: the salesperson picked at the register, else the
 // cashier who rang it up (every sale before sellers existed, and every sale
 // where nobody was picked). Shared by the sellers report, sales-by-employee and

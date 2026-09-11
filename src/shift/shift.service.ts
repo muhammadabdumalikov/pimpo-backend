@@ -13,6 +13,7 @@ import {
   cashMovements,
   financialCategories,
   orders,
+  saleReturns,
   staff,
   businesses,
   type CashRegister,
@@ -26,7 +27,11 @@ import {FinanceService} from '../finance/finance.service';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
-import {computeReconciliation, type ReconRow} from './reconciliation';
+import {
+  computeReconciliation,
+  type ReconRow,
+  type SaleTotals,
+} from './reconciliation';
 
 /** Category shape the kassa UI still expects (direction, not kind). */
 export interface CashCategoryCompat {
@@ -552,7 +557,7 @@ export class ShiftService {
     rows: ReconRow[];
     orderCount: number;
     hasUsd: boolean;
-    saleTotals: {cashSales: number; cardSales: number; debtSales: number};
+    saleTotals: SaleTotals;
   }> {
     // Sales for this shift (exclude cancelled).
     const shiftOrders = await this.dbService.db
@@ -569,8 +574,26 @@ export class ShiftService {
         ),
       );
 
+    // Refunds paid out of this shift by customer returns.
+    const shiftReturns = await this.dbService.db
+      .select({
+        refunds: saleReturns.refunds,
+        debtReduced: saleReturns.debtReduced,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, shift.businessId),
+          eq(saleReturns.shiftId, shift.id),
+        ),
+      );
+
     // Pure math lives in ./reconciliation (unit-tested there).
     return computeReconciliation({
+      returns: shiftReturns.map((r) => ({
+        refunds: r.refunds as {method: string; amount: number}[] | null,
+        debtReduced: r.debtReduced,
+      })),
       openingFloat: Number(shift.openingFloat ?? 0),
       sales: shiftOrders.map((o) => ({
         totalAmount: o.totalAmount,
@@ -672,7 +695,12 @@ export class ShiftService {
           registerId: shift.registerId,
           registerName: shift.registerName,
         },
-        {cashSales: saleTotals.cashSales, cardSales: saleTotals.cardSales},
+        // Net of refunds: a shift that paid out more on returns than it took
+        // in posts a negative close, keeping the account balances true.
+        {
+          cashSales: saleTotals.cashSales - saleTotals.cashRefunds,
+          cardSales: saleTotals.cardSales - saleTotals.cardRefunds,
+        },
         cashier,
       );
 

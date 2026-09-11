@@ -22,6 +22,8 @@ import {
   stockTransfers,
   branches,
   branchStock,
+  saleReturns,
+  saleReturnItems,
 } from '../database/schema';
 import {eq, and, or, gte, lte, gt, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
@@ -101,6 +103,15 @@ export class ReportService {
     return range?.branchId ? [eq(column, range.branchId)] : [];
   }
 
+  /** Customer returns dated (and branched) in the range. */
+  private returnWhere(businessId: string, range?: DateRange) {
+    return and(
+      eq(saleReturns.businessId, businessId),
+      ...this.dateWhere(saleReturns.createdAt, range),
+      ...this.branchWhere(saleReturns.branchId, range),
+    );
+  }
+
   // ─── R1: Foyda va zararlar (P&L) ──────────────────────────────────────────
   /**
    * Profit & Loss for a date range. Mirrors the BiLLZ P&L layout:
@@ -167,6 +178,17 @@ export class ReportService {
       .groupBy(sql`COALESCE(${financialTransactions.categoryName}, 'Boshqa')`)
       .orderBy(desc(sql`SUM(${financialTransactions.amount})`));
 
+    // Customer returns in the range (on the day they happened): their net
+    // value comes off revenue, and the cost of goods put back on the shelf
+    // comes off COGS (a defective line's cost stays a loss).
+    const [retRow] = await this.db
+      .select({
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+      })
+      .from(saleReturns)
+      .where(this.returnWhere(businessId, range));
+
     // Kassa reconciliation difference for shifts closed in the range.
     const [diffRow] = await this.db
       .select({
@@ -183,9 +205,10 @@ export class ReportService {
 
     const gross = Number(rev?.gross ?? 0);
     const discounts = Number(rev?.discounts ?? 0);
-    const returns = 0; // Sales-return module not built yet (HISOBOTLAR.md R7).
-    const net = Number(rev?.net ?? 0);
-    const cogs = Number(cogsRow?.cogs ?? 0);
+    const returns = Number(retRow?.value ?? 0);
+    const net = Number(rev?.net ?? 0) - returns;
+    const cogs =
+      Number(cogsRow?.cogs ?? 0) - Number(retRow?.restockedCost ?? 0);
     const grossProfit = net - cogs;
     const grossMargin = net > 0 ? (grossProfit / net) * 100 : 0;
     const expenses = expenseRows.map((e) => ({
@@ -322,6 +345,24 @@ export class ReportService {
       .groupBy(orderItems.productId);
     sold.forEach((r) => add(r.productId, Number(r.qty)));
 
+    // Customer returns put back on the shelf after cutoff → remove.
+    const custReturned = await this.db
+      .select({
+        productId: saleReturnItems.productId,
+        qty: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
+      })
+      .from(saleReturnItems)
+      .innerJoin(saleReturns, eq(saleReturnItems.returnId, saleReturns.id))
+      .where(
+        and(
+          eq(saleReturnItems.businessId, businessId),
+          eq(saleReturnItems.restock, true),
+          gt(saleReturns.createdAt, cutoff),
+        ),
+      )
+      .groupBy(saleReturnItems.productId);
+    custReturned.forEach((r) => add(r.productId, -Number(r.qty)));
+
     // Received after cutoff → remove.
     const received = await this.db
       .select({
@@ -444,6 +485,28 @@ export class ReportService {
         .groupBy(supplierReturnItems.productId),
     );
 
+    // Customer returns that went back on the shelf in range (a defective
+    // line never re-entered stock, so it doesn't move the balance).
+    const customerReturned = await this.sumByProduct(
+      this.db
+        .select({
+          productId: saleReturnItems.productId,
+          name: sql<string>`MAX(${saleReturnItems.productName})`,
+          qty: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
+        })
+        .from(saleReturnItems)
+        .innerJoin(saleReturns, eq(saleReturnItems.returnId, saleReturns.id))
+        .where(
+          and(
+            eq(saleReturnItems.businessId, businessId),
+            eq(saleReturnItems.restock, true),
+            ...this.dateWhere(saleReturns.createdAt, range),
+            ...this.branchWhere(saleReturns.branchId, range),
+          ),
+        )
+        .groupBy(saleReturnItems.productId),
+    );
+
     // Written-off = stock-take shortages (negative diffQty) completed in range.
     const writtenOff = await this.sumByProduct(
       this.db
@@ -477,7 +540,7 @@ export class ReportService {
 
     const ids = new Set<string>();
     catalog.forEach((c) => ids.add(c.productId));
-    [received, sold, returned, writtenOff].forEach((m) =>
+    [received, sold, returned, writtenOff, customerReturned].forEach((m) =>
       m.forEach((_v, k) => ids.add(k)),
     );
 
@@ -487,6 +550,7 @@ export class ReportService {
       sold.get(id)?.name ??
       returned.get(id)?.name ??
       writtenOff.get(id)?.name ??
+      customerReturned.get(id)?.name ??
       '—';
 
     const items = Array.from(ids).map((id) => {
@@ -495,9 +559,10 @@ export class ReportService {
       const sld = sold.get(id)?.qty ?? 0;
       const ret = returned.get(id)?.qty ?? 0;
       const wof = writtenOff.get(id)?.qty ?? 0;
+      const cret = customerReturned.get(id)?.qty ?? 0;
       const closing = cat?.closing ?? 0;
-      // opening = closing − received + sold + returned + writtenOff
-      const opening = closing - rec + sld + ret + wof;
+      // opening = closing − received + sold + returned + writtenOff − customerReturned
+      const opening = closing - rec + sld + ret + wof - cret;
       return {
         productId: id,
         name: nameOf(id),
@@ -507,6 +572,8 @@ export class ReportService {
         sold: sld,
         returned: ret,
         writtenOff: wof,
+        // Brought back by customers and restocked (supplier returns are `returned`).
+        customerReturned: cret,
         closing,
       };
     });
@@ -554,10 +621,26 @@ export class ReportService {
       .groupBy(creditedStaffId)
       .orderBy(desc(sql`SUM(${orders.totalAmount})`));
 
-    return rows.map((r) => {
+    // Returns come off whoever the sale was credited to, on the return date.
+    const retRows = await this.db
+      .select({
+        staffId: saleReturns.creditedStaffId,
+        staffName: sql<string | null>`MAX(${saleReturns.creditedStaffName})`,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        units: sql<string>`COALESCE(SUM(${saleReturns.itemCount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(this.returnWhere(businessId, range))
+      .groupBy(saleReturns.creditedStaffId);
+    const retMap = new Map(retRows.map((r) => [r.staffId, r]));
+
+    const sellers = rows.map((r) => {
       const orderCount = Number(r.orderCount);
-      const revenue = Number(r.revenue);
-      const units = Number(r.units);
+      const ret = retMap.get(r.cashierId);
+      retMap.delete(r.cashierId);
+      const returns = Number(ret?.value ?? 0);
+      const revenue = Number(r.revenue) - returns;
+      const units = Number(r.units) - Number(ret?.units ?? 0);
       return {
         cashierId: r.cashierId,
         cashierName: r.cashierName ?? '—',
@@ -566,9 +649,24 @@ export class ReportService {
         units,
         avgCheck: orderCount > 0 ? revenue / orderCount : 0,
         avgItemsPerCheck: orderCount > 0 ? units / orderCount : 0,
-        returns: 0, // Sales-return module not built yet.
+        returns,
       };
     });
+    // Someone with returns in the range but no sales of their own in it.
+    for (const ret of retMap.values()) {
+      const returns = Number(ret.value);
+      sellers.push({
+        cashierId: ret.staffId,
+        cashierName: ret.staffName ?? '—',
+        orderCount: 0,
+        revenue: -returns,
+        units: -Number(ret.units),
+        avgCheck: 0,
+        avgItemsPerCheck: 0,
+        returns,
+      });
+    }
+    return sellers;
   }
 
   // ─── R6: Mijozlar hisoboti ────────────────────────────────────────────────
@@ -619,12 +717,28 @@ export class ReportService {
       .groupBy(orders.userId);
     const firstMap = new Map(firstOrders.map((f) => [f.userId, new Date(f.firstEver)]));
 
+    // What each customer brought back in the range comes off their revenue.
+    const retRows = await this.db
+      .select({
+        userId: saleReturns.userId,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          this.returnWhere(businessId, range),
+          sql`${saleReturns.userId} IS NOT NULL`,
+        ),
+      )
+      .groupBy(saleReturns.userId);
+    const retMap = new Map(retRows.map((r) => [r.userId, Number(r.value)]));
+
     const fromDate = range?.from ? businessDayStart(range.from) : null;
     const toDate = range?.to ? businessDayEnd(range.to) : null;
 
     const customers = rows.map((r) => {
       const orderCount = Number(r.orderCount);
-      const revenue = Number(r.revenue);
+      const revenue = Number(r.revenue) - (retMap.get(r.userId) ?? 0);
       const first = firstMap.get(r.userId);
       const isNew =
         !!first &&
@@ -869,17 +983,47 @@ export class ReportService {
 
     const cogsMap = new Map(cogsRows.map((r) => [r.period, Number(r.cogs)]));
 
-    const buckets = salesRows.map((r) => {
-      const orderCount = Number(r.orderCount);
-      const revenue = Number(r.revenue);
-      const cogs = cogsMap.get(r.period) ?? 0;
+    // Returns land in the bucket of the day they happened. Same literal-only
+    // bucket expression, over sale_returns.created_at.
+    const retBucket = sql<string>`to_char(date_trunc('${sql.raw(unit)}', ${saleReturns.createdAt} + interval '5 hours'), '${sql.raw(fmt)}')`;
+    const returnRows = await this.db
+      .select({
+        period: retBucket,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        units: sql<string>`COALESCE(SUM(${saleReturns.itemCount}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+      })
+      .from(saleReturns)
+      .where(this.returnWhere(businessId, range))
+      .groupBy(retBucket);
+    const retMap = new Map(returnRows.map((r) => [r.period, r]));
+
+    // A day with only returns still gets a row.
+    const periods = Array.from(
+      new Set([
+        ...salesRows.map((r) => r.period),
+        ...returnRows.map((r) => r.period),
+      ]),
+    ).sort();
+    const salesMap = new Map(salesRows.map((r) => [r.period, r]));
+
+    const buckets = periods.map((period) => {
+      const r = salesMap.get(period);
+      const ret = retMap.get(period);
+      const orderCount = Number(r?.orderCount ?? 0);
+      const returns = Number(ret?.value ?? 0);
+      // Revenue is net of returns; `returns` shows what came off.
+      const revenue = Number(r?.revenue ?? 0) - returns;
+      const cogs =
+        (cogsMap.get(period) ?? 0) - Number(ret?.restockedCost ?? 0);
       const profit = revenue - cogs;
       return {
-        period: r.period,
+        period,
         orderCount,
         revenue,
-        discounts: Number(r.discounts),
-        units: Number(r.units),
+        returns,
+        discounts: Number(r?.discounts ?? 0),
+        units: Number(r?.units ?? 0) - Number(ret?.units ?? 0),
         cogs,
         profit,
         avgCheck: orderCount > 0 ? revenue / orderCount : 0,
@@ -901,6 +1045,7 @@ export class ReportService {
       totals: {
         orderCount: tOrders,
         revenue: tRevenue,
+        returns: sum((b) => b.returns),
         discounts: sum((b) => b.discounts),
         units: sum((b) => b.units),
         cogs: sum((b) => b.cogs),
@@ -1092,11 +1237,38 @@ export class ReportService {
       orders: string;
     }>;
 
-    const rawMethods = rows.map((r) => ({
-      method: r.method ?? 'other',
-      amount: Number(r.amount),
-      orders: Number(r.orders),
-    }));
+    // Refunds handed back on returns in the range, per method, come off the
+    // method's takings (same raw-SQL/string-date shape as above).
+    const rconds: any[] = [sql`r.business_id = ${businessId}`];
+    if (range?.from) rconds.push(sql`r.created_at >= ${toPg(businessDayStart(range.from))}`);
+    if (range?.to) rconds.push(sql`r.created_at <= ${toPg(businessDayEnd(range.to))}`);
+    if (range?.branchId) rconds.push(sql`r.branch_id = ${range.branchId}`);
+    const refundRows = (await this.db.execute(sql`
+      SELECT elem->>'method' AS method,
+             COALESCE(SUM((elem->>'amount')::numeric), 0) AS amount
+      FROM sale_returns r,
+           LATERAL jsonb_array_elements(COALESCE(r.refunds, '[]'::jsonb)) elem
+      WHERE ${sql.join(rconds, sql` AND `)}
+      GROUP BY elem->>'method'
+    `)) as unknown as Array<{method: string | null; amount: string}>;
+    const refundMap = new Map(
+      refundRows.map((r) => [r.method ?? 'other', Number(r.amount)]),
+    );
+
+    const rawMethods = rows.map((r) => {
+      const method = r.method ?? 'other';
+      const refunds = refundMap.get(method) ?? 0;
+      refundMap.delete(method);
+      return {
+        method,
+        amount: Number(r.amount) - refunds,
+        orders: Number(r.orders),
+        refunds,
+      };
+    });
+    for (const [method, refunds] of refundMap) {
+      rawMethods.push({method, amount: -refunds, orders: 0, refunds});
+    }
     const total = rawMethods.reduce((s, m) => s + m.amount, 0);
     const methods = rawMethods.map((m) => ({
       ...m,
@@ -2031,9 +2203,27 @@ export class ReportService {
             .groupBy(products.categoryId)
             .orderBy(desc(sql`SUM(${orderItems.lineTotal})`));
 
+    // Customer returns in the range, grouped the same way. Revenue here is
+    // line value (pre-discount), so returns net off at their line value too.
+    const retKey = dimension === 'brand' ? products.brandId : products.categoryId;
+    const retRows = await this.db
+      .select({
+        key: retKey,
+        revenue: sql<string>`COALESCE(SUM(${saleReturnItems.lineTotal}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
+        units: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
+      })
+      .from(saleReturnItems)
+      .innerJoin(saleReturns, eq(saleReturnItems.returnId, saleReturns.id))
+      .leftJoin(products, eq(saleReturnItems.productId, products.id))
+      .where(this.returnWhere(businessId, range))
+      .groupBy(retKey);
+    const retMap = new Map(retRows.map((r) => [r.key, r]));
+
     const groups = rows.map((r) => {
-      const revenue = Number(r.revenue);
-      const cogs = Number(r.cogs);
+      const ret = retMap.get(r.key);
+      const revenue = Number(r.revenue) - Number(ret?.revenue ?? 0);
+      const cogs = Number(r.cogs) - Number(ret?.restockedCost ?? 0);
       const profit = revenue - cogs;
       return {
         key: r.key,
@@ -2041,7 +2231,7 @@ export class ReportService {
         revenue,
         cogs,
         profit,
-        units: Number(r.units),
+        units: Number(r.units) - Number(ret?.units ?? 0),
         margin: revenue > 0 ? (profit / revenue) * 100 : 0,
       };
     });
@@ -2109,6 +2299,23 @@ export class ReportService {
       .groupBy(orders.branchId);
     const cogsMap = new Map(cogsRows.map((r) => [r.branchId, Number(r.cogs)]));
 
+    // Returns net off the branch the goods came back to.
+    const retRows = await this.db
+      .select({
+        branchId: saleReturns.branchId,
+        value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          ...this.dateWhere(saleReturns.createdAt, range),
+        ),
+      )
+      .groupBy(saleReturns.branchId);
+    const retMap = new Map(retRows.map((r) => [r.branchId, r]));
+
     // Current stock value per branch (snapshot).
     const stockRows = await this.db
       .select({
@@ -2136,9 +2343,11 @@ export class ReportService {
 
     const rows = [...ids].map((id) => {
       const sales = salesRows.find((r) => r.branchId === id);
-      const revenue = sales ? Number(sales.revenue) : 0;
+      const ret = retMap.get(id);
+      const revenue =
+        (sales ? Number(sales.revenue) : 0) - Number(ret?.value ?? 0);
       const orderCount = sales ? Number(sales.orderCount) : 0;
-      const cogs = cogsMap.get(id) ?? 0;
+      const cogs = (cogsMap.get(id) ?? 0) - Number(ret?.restockedCost ?? 0);
       const profit = revenue - cogs;
       return {
         branchId: id,
