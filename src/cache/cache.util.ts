@@ -89,7 +89,11 @@ export const CacheKeys = {
     `roles:perms:${businessId}:${roleId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
-  settingsLabel: (businessId: string) => `settings:label:${businessId}`,
+  // The whole label-template list. There is no separate key for the legacy
+  // single-layout endpoint: that reads the default template out of this list,
+  // so one entry to drop means the two can never disagree.
+  settingsLabelTemplates: (businessId: string) =>
+    `settings:labelTemplates:${businessId}`,
   loyaltySettings: (businessId: string) => `loyalty:settings:${businessId}`,
   telegramSettings: (businessId: string) => `tg:settings:${businessId}`,
   scaleSettings: (businessId: string) => `scale:settings:${businessId}`,

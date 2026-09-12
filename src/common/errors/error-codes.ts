@@ -118,6 +118,12 @@ export enum ErrorCode {
   RECEIPT_TEMPLATE_NOT_FOUND = 'RECEIPT_TEMPLATE_NOT_FOUND',
   RECEIPT_TEMPLATE_DEFAULT_DELETE_FORBIDDEN = 'RECEIPT_TEMPLATE_DEFAULT_DELETE_FORBIDDEN',
 
+  // ── Label template (Etiketka shabloni) ─────────────────────────────────────
+  LABEL_TEMPLATE_NOT_FOUND = 'LABEL_TEMPLATE_NOT_FOUND',
+  LABEL_TEMPLATE_NAME_EXISTS = 'LABEL_TEMPLATE_NAME_EXISTS',
+  LABEL_TEMPLATE_LIMIT = 'LABEL_TEMPLATE_LIMIT',
+  LABEL_TEMPLATE_LAST = 'LABEL_TEMPLATE_LAST',
+
   // ── Receipt ────────────────────────────────────────────────────────────────
   RECEIPT_NOT_FOUND = 'RECEIPT_NOT_FOUND',
   SUPPLIER_NOT_FOUND_BY_ID = 'SUPPLIER_NOT_FOUND_BY_ID',
@@ -598,6 +604,24 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message:
       'Cannot delete the default template. Set another as default first.',
+  },
+
+  // Label template
+  [ErrorCode.LABEL_TEMPLATE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Label template not found',
+  },
+  [ErrorCode.LABEL_TEMPLATE_NAME_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A label template with this name already exists',
+  },
+  [ErrorCode.LABEL_TEMPLATE_LIMIT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'You already have {max} label templates',
+  },
+  [ErrorCode.LABEL_TEMPLATE_LAST]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The last label template cannot be deleted',
   },
 
   // Receipt

@@ -44,6 +44,17 @@ import {
 } from '../common/weight-barcode';
 import {ScaleService} from '../scale/scale.service';
 
+/**
+ * How the catalogue list comes back: newest first.
+ *
+ * A shop opens this page to see what it just added, not the alphabet. The id
+ * is a tiebreaker, not decoration — without a unique one, two products created
+ * in the same millisecond can trade places between page 1 and page 2 and one
+ * of them is never seen. Ids are UUIDv7, so descending by id is itself
+ * newest-first and agrees with the column above it rather than fighting it.
+ */
+const CATALOGUE_ORDER = [desc(products.createdAt), desc(products.id)] as const;
+
 /** What the till gets back for one scan. */
 export interface ScanResolution {
   product: Product | null;
@@ -653,7 +664,7 @@ export class ProductService {
         .from(products)
         .innerJoin(branchStock, branchJoin)
         .where(and(...whereConditions))
-        .orderBy(desc(products.createdAt))
+        .orderBy(...CATALOGUE_ORDER)
         .limit(limit)
         .offset(offset);
 
@@ -669,7 +680,7 @@ export class ProductService {
       .select(selectFields(getTableColumns(products), options?.fields))
       .from(products)
       .where(and(...whereConditions))
-      .orderBy(desc(products.createdAt))
+      .orderBy(...CATALOGUE_ORDER)
       .limit(limit)
       .offset(offset);
 

@@ -862,6 +862,54 @@ export const labelSettings = pgTable('label_settings', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+/**
+ * Named label layouts a shop can keep side by side — 58x40 shelf tags, 30x20
+ * stickers for small goods, a wider one for the scale. Printing asks which.
+ *
+ * This supersedes `label_settings` (one layout per business): that row was
+ * copied here as "Standart" by 0074 and the old endpoints now read and write
+ * whichever template carries `is_default`, so clients that predate templates
+ * keep printing unchanged.
+ */
+export const labelTemplates = pgTable(
+  'label_templates',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // Unique per business, case-insensitively — enforced by a functional
+    // unique index on lower(name) that only the migration declares (0074).
+    name: varchar('name', {length: 60}).notNull(),
+    // Exactly one per business, held there by a partial unique index (0074) —
+    // a shop that never picks still has something to print with.
+    isDefault: boolean('is_default').notNull().default(false),
+    // Same layout the old single row held; see label_settings for each field.
+    widthMm: integer('width_mm').notNull().default(58),
+    heightMm: integer('height_mm').notNull().default(40),
+    paddingMm: integer('padding_mm').notNull().default(2),
+    showStoreName: boolean('show_store_name').notNull().default(false),
+    showName: boolean('show_name').notNull().default(true),
+    nameLines: integer('name_lines').notNull().default(2),
+    showPrice: boolean('show_price').notNull().default(true),
+    showCode: boolean('show_code').notNull().default(false),
+    showBarcode: boolean('show_barcode').notNull().default(true),
+    showBarcodeText: boolean('show_barcode_text').notNull().default(true),
+    // The scale code (products.plu), for shops whose staff key goods in by
+    // number. Off by default: most shelf labels have no PLU to print.
+    showPlu: boolean('show_plu').notNull().default(false),
+    barcodeHeightMm: integer('barcode_height_mm').notNull().default(8),
+    fontScale: integer('font_scale').notNull().default(100),
+    copies: integer('copies').notNull().default(1),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessIdx: index('label_templates_business_idx').on(table.businessId),
+  }),
+);
+
 export const receiptTemplates = pgTable('receipt_templates', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
@@ -1581,6 +1629,8 @@ export type ReceiptSettings = typeof receiptSettings.$inferSelect;
 export type NewReceiptSettings = typeof receiptSettings.$inferInsert;
 export type LabelSettings = typeof labelSettings.$inferSelect;
 export type NewLabelSettings = typeof labelSettings.$inferInsert;
+export type LabelTemplate = typeof labelTemplates.$inferSelect;
+export type NewLabelTemplate = typeof labelTemplates.$inferInsert;
 export type ReceiptTemplate = typeof receiptTemplates.$inferSelect;
 export type NewReceiptTemplate = typeof receiptTemplates.$inferInsert;
 export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;

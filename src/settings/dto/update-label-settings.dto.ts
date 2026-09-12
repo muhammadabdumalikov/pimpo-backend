@@ -68,6 +68,11 @@ export class UpdateLabelSettingsDto {
   @IsBoolean()
   showBarcodeText?: boolean;
 
+  @ApiPropertyOptional({description: 'Print the scale code (PLU)'})
+  @IsOptional()
+  @IsBoolean()
+  showPlu?: boolean;
+
   @ApiPropertyOptional({description: 'Height of the bars in mm (5–40)'})
   @IsOptional()
   @IsInt()
