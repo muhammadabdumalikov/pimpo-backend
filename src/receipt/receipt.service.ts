@@ -31,8 +31,10 @@ import {
   desc,
   gt,
   gte,
+  ilike,
   lte,
   ne,
+  or,
   inArray,
   sql,
   getTableColumns,
@@ -1304,6 +1306,8 @@ export class ReceiptService {
       status?: string;
       startDate?: string;
       endDate?: string;
+      /** Free text: supplier, note, document id, or a product on the receipt. */
+      search?: string;
     },
   ): Promise<{
     receipts: Array<GoodsReceipt & {branchName: string | null}>;
@@ -1344,11 +1348,35 @@ export class ReceiptService {
       );
     }
 
-    const all = await this.dbService.db
-      .select()
+    // A goods receipt carries no document number, so people look for it by who
+    // supplied it, by what is on it, or by the short id the list shows. The
+    // product match is an EXISTS on the receipt's own lines (their name
+    // snapshot, plus the catalogue's barcode) — that is how procurement asks
+    // the question: "which delivery had this item?".
+    const search = options?.search?.trim();
+    if (search) {
+      const like = `%${search}%`;
+      whereConditions.push(
+        or(
+          ilike(goodsReceipts.supplierName, like),
+          ilike(goodsReceipts.note, like),
+          ilike(goodsReceipts.id, like),
+          sql`exists (
+            select 1 from ${goodsReceiptItems}
+            left join ${products} on ${products.id} = ${goodsReceiptItems.productId}
+            where ${goodsReceiptItems.receiptId} = ${goodsReceipts.id}
+              and (${goodsReceiptItems.productName} ilike ${like}
+                   or ${products.barcode} ilike ${like}
+                   or ${products.code} ilike ${like})
+          )`,
+        )!,
+      );
+    }
+
+    const [{value: total}] = await this.dbService.db
+      .select({value: sql<number>`count(*)::int`})
       .from(goodsReceipts)
       .where(and(...whereConditions));
-    const total = all.length;
 
     const paginated = await this.dbService.db
       .select({...getTableColumns(goodsReceipts), branchName: branches.name})

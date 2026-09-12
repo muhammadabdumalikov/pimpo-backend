@@ -83,6 +83,12 @@ export class ReceiptController {
   @ApiQuery({ name: 'status', required: false, type: String })
   @ApiQuery({ name: 'startDate', required: false, type: String })
   @ApiQuery({ name: 'endDate', required: false, type: String })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description: 'Supplier, note, document id, or a product on the receipt',
+  })
   @ApiResponse({ status: 200, description: 'List of receipts' })
   async findAll(
     @CurrentBusiness() business: IBusiness,
@@ -94,6 +100,7 @@ export class ReceiptController {
     @Query('status') status?: string,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
+    @Query('search') search?: string,
   ) {
     return this.receiptService.findAll(business.id, {
       page: page ? parseInt(page, 10) : undefined,
@@ -104,6 +111,7 @@ export class ReceiptController {
       status,
       startDate,
       endDate,
+      search: search || undefined,
     });
   }
 

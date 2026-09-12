@@ -30,6 +30,7 @@ import {UpdateProductDto} from './dto/update-product.dto';
 import {BulkCreateProductDto} from './dto/bulk-create-product.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {parseFields} from '../common/field-selection';
 
 @ApiTags('products')
 @Controller('products')
@@ -135,6 +136,13 @@ export class ProductController {
     description:
       "Filter by unit of measure (o'lchov birligi); 'none' = products with no unit",
   })
+  @ApiQuery({
+    name: 'fields',
+    required: false,
+    type: String,
+    description:
+      'Comma-separated product fields to return (plus id), e.g. name,priceOut,quantity. Omit for the full row.',
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -149,6 +157,7 @@ export class ProductController {
     @Query('categoryId') categoryId?: string,
     @Query('supplierId') supplierId?: string,
     @Query('unitId') unitId?: string,
+    @Query('fields') fields?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -161,6 +170,7 @@ export class ProductController {
       categoryId: categoryId || undefined,
       supplierId: supplierId || undefined,
       unitId: unitId || undefined,
+      fields: parseFields(fields),
     });
     return result;
   }

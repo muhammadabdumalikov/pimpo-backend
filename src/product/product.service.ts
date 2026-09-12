@@ -32,6 +32,7 @@ import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
+import {selectFields} from '../common/field-selection';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {mxikDisplayName, mxikClassName} from '../common/mxik-name';
 import {latinToCyrillic, escapeRegex} from '../common/uz-translit';
@@ -560,6 +561,9 @@ export class ProductService {
       // Exact scale PLU. Unlike `search` this cannot drift: a label carries one
       // PLU and it must resolve to that product or to nothing at all.
       plu?: number;
+      // Sparse fieldset (common/field-selection.ts): only these columns are
+      // read and returned, plus `id`. Undefined = the full row.
+      fields?: Set<string>;
     },
   ): Promise<{
     products: Product[];
@@ -640,10 +644,12 @@ export class ProductService {
         .where(and(...whereConditions));
 
       const paginatedProducts = await this.dbService.db
-        .select({
-          ...getTableColumns(products),
-          quantity: branchStock.quantity,
-        })
+        .select(
+          selectFields(
+            {...getTableColumns(products), quantity: branchStock.quantity},
+            options?.fields,
+          ),
+        )
         .from(products)
         .innerJoin(branchStock, branchJoin)
         .where(and(...whereConditions))
@@ -660,7 +666,7 @@ export class ProductService {
       .where(and(...whereConditions));
 
     const paginatedProducts = await this.dbService.db
-      .select()
+      .select(selectFields(getTableColumns(products), options?.fields))
       .from(products)
       .where(and(...whereConditions))
       .orderBy(desc(products.createdAt))
