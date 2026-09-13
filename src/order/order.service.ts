@@ -1755,6 +1755,17 @@ export class OrderService {
     businessId: string,
     options?: {status?: string; source?: string},
   ): Promise<number> {
+    return this.cache.wrap(
+      CacheKeys.ordersCount(businessId, options),
+      () => this.computeCount(businessId, options),
+      TTL.ORDERS_COUNT,
+    );
+  }
+
+  private async computeCount(
+    businessId: string,
+    options?: {status?: string; source?: string},
+  ): Promise<number> {
     const where = [eq(orders.businessId, businessId)];
     if (options?.status) {
       where.push(eq(orders.status, options.status));

@@ -1,5 +1,7 @@
-import {Injectable} from '@nestjs/common';
+import {Injectable, Inject} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {DatabaseService} from '../database/database.service';
+import {CacheKeys, TTL} from '../cache/cache.util';
 import {orders, monthlyTargets, saleReturns} from '../database/schema';
 import {eq, and, gte, lte, sql} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
@@ -12,7 +14,10 @@ import {generateId} from '../utils/uuid';
  */
 @Injectable()
 export class TargetService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   private get db() {
     return this.dbService.db;
@@ -26,6 +31,16 @@ export class TargetService {
 
   async getProgress(businessId: string, month?: string) {
     const m = /^\d{4}-\d{2}$/.test(month ?? '') ? (month as string) : this.currentMonth();
+    return this.cache.wrap(
+      // The resolved month is the key, so "no month" and the current month are
+      // one entry — and a month rollover cannot serve the old one.
+      CacheKeys.targetProgress(businessId, m),
+      () => this.computeProgress(businessId, m),
+      TTL.TARGET_PROGRESS,
+    );
+  }
+
+  private async computeProgress(businessId: string, m: string) {
     const [year, mon] = m.split('-').map(Number);
     const daysInMonth = new Date(Date.UTC(year, mon, 0)).getUTCDate();
     const firstDay = `${m}-01`;
@@ -136,6 +151,10 @@ export class TargetService {
       });
     }
 
+    // The goal the person just set IS the number they are looking at — drop the
+    // cached progress before reading it back, or setTarget answers with the old
+    // goal for the rest of the TTL.
+    await this.cache.del(CacheKeys.targetProgress(businessId, m));
     return this.getProgress(businessId, m);
   }
 }

@@ -164,8 +164,9 @@ export const CacheKeys = {
     `report:stockhealth:${businessId}:${paramsKey(p)}`,
 
   // AI assistant tool calls. The model often asks for the same report twice in
-  // one conversation (e.g. "and compare that to last month"), and ReportService
-  // itself is uncached, so this is where those repeats get absorbed.
+  // one conversation (e.g. "and compare that to last month"); this absorbs the
+  // repeat before it reaches ReportService — including the reports that layer
+  // does not cache itself (see the C group above).
   aiTool: (businessId: string, tool: string, p?: Record<string, unknown>) =>
     `ai:tool:${businessId}:${tool}:${paramsKey(p)}`,
   /** Sliding hourly question counter, per business. */
