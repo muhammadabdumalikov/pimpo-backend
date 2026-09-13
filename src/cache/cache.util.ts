@@ -49,6 +49,29 @@ export const TTL = {
   // search keystroke and filter change. Quantity moves on every sale, so
   // write-invalidation would be noisy — short TTL, same reasoning as ORDERS_SUMMARY.
   PRODUCT_STATS: 5 * 60 * 1000, // 5m
+  // Whole-catalogue count (dashboard strip). Products are created in bursts and
+  // read on every dashboard visit.
+  PRODUCT_COUNT: 2 * 60 * 1000, // 2m
+  ORDERS_COUNT: 45 * 1000, // 45s
+  // Reja vs fakt: the goal is edited monthly, the actual moves with every sale.
+  TARGET_PROGRESS: 60 * 1000, // 60s
+
+  // C group — report aggregations. ReportService was uncached: every dashboard
+  // visit re-ran them, and they are the heaviest queries in the app. Each key
+  // carries its full parameter set, so a report page changing a filter is a
+  // different entry, never a stale one.
+  //
+  // The TTL is chosen per report by how fast its answer can actually change:
+  REPORT_SALES: 45 * 1000, // 45s — today's takings; a sale must land quickly
+  REPORT_DEBT_AGING: 3 * 60 * 1000, // 3m  — debts move at human speed
+  REPORT_REORDER: 3 * 60 * 1000, // 3m  — products × order_items × batches
+  // A 90-day shift pattern cannot meaningfully change within an hour, and this
+  // is read on every dashboard visit — the longest TTL in the app outside the
+  // static A group.
+  REPORT_TRAFFIC: 60 * 60 * 1000, // 60m
+  // Half that: stock moves with every sale and every receipt, so a full hour of
+  // "42 tugagan" after a delivery has landed would be wrong for too long.
+  REPORT_STOCK_HEALTH: 30 * 60 * 1000, // 30m
 
   // AI assistant tool results. Short: the owner asking "and today?" right after
   // a sale must see the sale. Long enough that a multi-step answer which reads
@@ -121,6 +144,24 @@ export const CacheKeys = {
     `orders:byemp:${businessId}:${paramsKey(p)}`,
   productStats: (businessId: string, p?: Record<string, unknown>) =>
     `products:stats:${businessId}:${paramsKey(p)}`,
+  productCount: (businessId: string) => `products:count:${businessId}`,
+  ordersCount: (businessId: string, p?: Record<string, unknown>) =>
+    `orders:count:${businessId}:${paramsKey(p)}`,
+  targetProgress: (businessId: string, month: string) =>
+    `target:progress:${businessId}:${month}`,
+
+  // C group — reports. One builder per cached report; the params suffix is the
+  // whole filter set (range, branch, groupBy, window), so two different filters
+  // can never share an entry.
+  reportSales: (businessId: string, p?: Record<string, unknown>) =>
+    `report:sales:${businessId}:${paramsKey(p)}`,
+  reportDebtAging: (businessId: string) => `report:debtaging:${businessId}`,
+  reportReorder: (businessId: string, p?: Record<string, unknown>) =>
+    `report:reorder:${businessId}:${paramsKey(p)}`,
+  reportTraffic: (businessId: string, p?: Record<string, unknown>) =>
+    `report:traffic:${businessId}:${paramsKey(p)}`,
+  reportStockHealth: (businessId: string, p?: Record<string, unknown>) =>
+    `report:stockhealth:${businessId}:${paramsKey(p)}`,
 
   // AI assistant tool calls. The model often asks for the same report twice in
   // one conversation (e.g. "and compare that to last month"), and ReportService

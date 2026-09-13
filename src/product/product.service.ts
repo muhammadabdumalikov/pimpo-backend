@@ -962,14 +962,25 @@ export class ProductService {
   }
 
   async getCount(businessId: string): Promise<number> {
-    const result = await this.dbService.db
-      .select()
+    return this.cache.wrap(
+      CacheKeys.productCount(businessId),
+      () => this.computeCount(businessId),
+      TTL.PRODUCT_COUNT,
+    );
+  }
+
+  private async computeCount(businessId: string): Promise<number> {
+    // COUNT(*), not `select().length`: the old form pulled every column of
+    // every active product back over the wire (tens of thousands of rows on a
+    // real catalogue) to look at an array length.
+    const [row] = await this.dbService.db
+      .select({count: sql<string>`COUNT(*)`})
       .from(products)
       .where(
         and(eq(products.businessId, businessId), eq(products.isActive, true)),
       );
 
-    return result.length;
+    return Number(row?.count ?? 0);
   }
 
   /**

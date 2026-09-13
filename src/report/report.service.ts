@@ -1,5 +1,7 @@
-import {Injectable} from '@nestjs/common';
+import {Injectable, Inject} from '@nestjs/common';
+import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {DatabaseService} from '../database/database.service';
+import {CacheKeys, TTL} from '../cache/cache.util';
 import {
   orders,
   orderItems,
@@ -71,7 +73,10 @@ export interface TransferRoute {
  */
 @Injectable()
 export class ReportService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+  ) {}
 
   private get db() {
     return this.dbService.db;
@@ -935,6 +940,18 @@ export class ReportService {
     range?: DateRange,
     groupBy: 'day' | 'week' | 'month' = 'day',
   ) {
+    return this.cache.wrap(
+      CacheKeys.reportSales(businessId, {...range, groupBy}),
+      () => this.computeSales(businessId, range, groupBy),
+      TTL.REPORT_SALES,
+    );
+  }
+
+  private async computeSales(
+    businessId: string,
+    range?: DateRange,
+    groupBy: 'day' | 'week' | 'month' = 'day',
+  ) {
     const unit =
       groupBy === 'month' ? 'month' : groupBy === 'week' ? 'week' : 'day';
     const fmt = groupBy === 'month' ? 'YYYY-MM' : 'YYYY-MM-DD';
@@ -1063,6 +1080,14 @@ export class ReportService {
    * dow is Postgres EXTRACT(DOW): 0 = Sunday … 6 = Saturday.
    */
   async getTraffic(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportTraffic(businessId, {...range}),
+      () => this.computeTraffic(businessId, range),
+      TTL.REPORT_TRAFFIC,
+    );
+  }
+
+  private async computeTraffic(businessId: string, range?: DateRange) {
     const dow = sql<string>`EXTRACT(DOW FROM ${orders.createdAt} + interval '5 hours')`;
     const hour = sql<string>`EXTRACT(HOUR FROM ${orders.createdAt} + interval '5 hours')`;
 
@@ -1424,6 +1449,14 @@ export class ReportService {
    * has no branch.
    */
   async getDebtAging(businessId: string) {
+    return this.cache.wrap(
+      CacheKeys.reportDebtAging(businessId),
+      () => this.computeDebtAging(businessId),
+      TTL.REPORT_DEBT_AGING,
+    );
+  }
+
+  private async computeDebtAging(businessId: string) {
     const rows = await this.db
       .select({
         debtId: userDebts.id,
@@ -1656,6 +1689,18 @@ export class ReportService {
    * there), else over the business-wide products.quantity.
    */
   async getStockHealth(businessId: string, branchId?: string, days = 90) {
+    return this.cache.wrap(
+      CacheKeys.reportStockHealth(businessId, {branchId, days}),
+      () => this.computeStockHealth(businessId, branchId, days),
+      TTL.REPORT_STOCK_HEALTH,
+    );
+  }
+
+  private async computeStockHealth(
+    businessId: string,
+    branchId?: string,
+    days = 90,
+  ) {
     // Bound as a UTC wall-time string, never a Date: postgres-js rejects a bare
     // Date param inside a raw sql template (same note as getPaymentMethods).
     const cutoff = new Date(Date.now() - days * 86_400_000)
@@ -1742,6 +1787,19 @@ export class ReportService {
    * suggested order quantity tops it back up to a `coverDays` buffer.
    */
   async getReorder(
+    businessId: string,
+    branchId?: string,
+    days = 30,
+    coverDays = 14,
+  ) {
+    return this.cache.wrap(
+      CacheKeys.reportReorder(businessId, {branchId, days, coverDays}),
+      () => this.computeReorder(businessId, branchId, days, coverDays),
+      TTL.REPORT_REORDER,
+    );
+  }
+
+  private async computeReorder(
     businessId: string,
     branchId?: string,
     days = 30,
