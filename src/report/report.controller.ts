@@ -264,6 +264,31 @@ export class ReportController {
     );
   }
 
+  @Get('stock-health')
+  @RequirePermission('report:view')
+  @ApiOperation({
+    summary:
+      "Zaxira sog'lig'i — katalog to'rtta holatga bo'linadi (tugagan / kam qoldiq / o'lik / normal)",
+  })
+  @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
+  @ApiQuery({
+    name: 'days',
+    required: false,
+    description: 'Sotuvsiz kunlar chegarasi — shundan keyin zaxira "dead" (default 90)',
+  })
+  async getStockHealth(
+    @CurrentBusiness() business: IBusiness,
+    @Query('branchId') branchId?: string,
+    @Query('days') days?: string,
+  ) {
+    const d = Number(days);
+    return this.reportService.getStockHealth(
+      business.id,
+      branchId,
+      Number.isFinite(d) && d > 0 && d <= 730 ? d : 90,
+    );
+  }
+
   @Get('reorder')
   @RequirePermission('report:view')
   @MinTier('pro')

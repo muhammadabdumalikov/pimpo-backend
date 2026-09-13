@@ -111,6 +111,10 @@ export const CacheKeys = {
     `orders:revenue:${businessId}:${paramsKey(p)}`,
   ordersMonthly: (businessId: string, p?: Record<string, unknown>) =>
     `orders:monthly:${businessId}:${paramsKey(p)}`,
+  // Per-branch revenue trend (dashboard store comparison). Separate from
+  // ordersMonthly: same window, different shape (one series per branch).
+  ordersBranchTrend: (businessId: string, p?: Record<string, unknown>) =>
+    `orders:branchtrend:${businessId}:${paramsKey(p)}`,
   ordersPerformance: (businessId: string, p?: Record<string, unknown>) =>
     `orders:perf:${businessId}:${paramsKey(p)}`,
   ordersByEmployee: (businessId: string, p?: Record<string, unknown>) =>

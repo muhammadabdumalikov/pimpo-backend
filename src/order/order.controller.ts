@@ -31,7 +31,11 @@ import {HoldOrderDto} from './dto/hold-order.dto';
 import {UpdateOrderDto} from './dto/update-order.dto';
 import {BatchCreateOrderDto} from './dto/batch-create-order.dto';
 import {UpdateOrderStatusDto} from './dto/update-order-status.dto';
-import {OrderService} from './order.service';
+import {OrderService, type BranchTrendGranularity} from './order.service';
+import {businessDay} from '../common/business-time';
+
+/** A date-only query param we are willing to hand to the business-zone helpers. */
+const isYmd = (v?: string): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 
@@ -209,6 +213,59 @@ export class OrderController {
       year: y,
       monthly: await this.orderService.getMonthlySales(business.id, y),
     };
+  }
+
+  @Get('branch-sales')
+  @RequirePermission('report:view')
+  @ApiOperation({
+    summary:
+      "Net revenue per branch (do'kon) over a date range — one series per branch on a shared axis, for the dashboard store-comparison chart",
+  })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO date (inclusive, business zone). Defaults to today.',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO date (inclusive, business zone). Defaults to `from`.',
+  })
+  @ApiQuery({
+    name: 'granularity',
+    required: false,
+    description:
+      "Bucket width: 'hour' | 'day' | 'month'. Defaults to the widest that keeps the range under ~70 points.",
+  })
+  async getBranchSales(
+    @CurrentBusiness() business: IBusiness,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('granularity') granularity?: string,
+  ) {
+    const today = businessDay();
+    const start = isYmd(from) ? from : today;
+    const end = isYmd(to) && to >= start ? to : start;
+    // Never trust the client with the bucket width: an 'hour' over a year is
+    // ~9k points nobody can read and a scan nobody should pay for.
+    const span = Math.round(
+      (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) /
+        86_400_000,
+    );
+    const asked =
+      granularity === 'hour' || granularity === 'day' || granularity === 'month'
+        ? granularity
+        : undefined;
+    const widest: BranchTrendGranularity =
+      span <= 2 ? 'hour' : span <= 92 ? 'day' : 'month';
+    const unit: BranchTrendGranularity =
+      asked === 'hour' && span > 2
+        ? 'day'
+        : asked === 'day' && span > 92
+          ? 'month'
+          : (asked ?? widest);
+
+    return this.orderService.getBranchSalesTrend(business.id, unit, start, end);
   }
 
   @Get('product-performance')

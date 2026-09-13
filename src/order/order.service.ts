@@ -22,6 +22,7 @@ import {
   businessDayStart,
   businessDayEnd,
   recentBusinessMonths,
+  businessBuckets,
 } from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {
@@ -108,6 +109,27 @@ function isUniqueViolation(err: unknown): boolean {
     err !== null &&
     (err as {code?: string}).code === '23505'
   );
+}
+
+/** Bucket width of the per-branch trend: a day of hours, a span of days, a year of months. */
+export type BranchTrendGranularity = 'hour' | 'day' | 'month';
+
+/** One store's line in the trend: its bucket values and the window total. */
+export interface BranchTrendSeries {
+  branchId: string;
+  branchName: string;
+  isDefault: boolean;
+  data: number[];
+  total: number;
+}
+
+/** Per-branch net revenue over a range — one series per store, shared x-axis. */
+export interface BranchSalesTrend {
+  granularity: BranchTrendGranularity;
+  from: string;
+  to: string;
+  periods: string[];
+  branches: BranchTrendSeries[];
 }
 
 @Injectable()
@@ -2020,6 +2042,155 @@ export class OrderService {
       byPeriod.set(r.period, (byPeriod.get(r.period) ?? 0) - Number(r.sum));
     }
     return {periods, monthly: periods.map((p) => byPeriod.get(p) ?? 0)};
+  }
+
+  /**
+   * Net revenue per branch ("do'kon") over a date range, one value per bucket
+   * per branch — the shape a multi-series trend chart needs, which the flat R20
+   * branch-comparison report (one number per branch) cannot give.
+   *
+   * `granularity` is the caller's: 'hour' for a single day, where the trading
+   * rhythm of each store is the reading; 'day' for a week or a month; 'month'
+   * for a year. Buckets are truncated in the business zone (+05:00), so a sale
+   * rung at 01:00 local lands on the local day, not the UTC one.
+   *
+   * Orders with no branch (rows written before branches existed) fold into the
+   * business default branch — the same convention receipts and stock use — so
+   * the per-branch series still add up to the business total.
+   */
+  async getBranchSalesTrend(
+    businessId: string,
+    granularity: BranchTrendGranularity,
+    from: string,
+    to: string,
+  ): Promise<BranchSalesTrend> {
+    return this.cache.wrap(
+      CacheKeys.ordersBranchTrend(businessId, {granularity, from, to}),
+      () => this.computeBranchSalesTrend(businessId, granularity, from, to),
+      TTL.ORDERS_MONTHLY,
+    );
+  }
+
+  private async computeBranchSalesTrend(
+    businessId: string,
+    granularity: BranchTrendGranularity,
+    from: string,
+    to: string,
+  ): Promise<BranchSalesTrend> {
+    const periods = businessBuckets(granularity, from, to);
+    const unit = granularity;
+    const fmt =
+      granularity === 'hour'
+        ? 'YYYY-MM-DD HH24'
+        : granularity === 'month'
+          ? 'YYYY-MM'
+          : 'YYYY-MM-DD';
+    // Unit and format are inlined as literals, never bind params: a reused sql
+    // fragment re-emits its params with fresh placeholders, and Postgres then
+    // reads the SELECT and GROUP BY occurrences as different expressions. Both
+    // values are whitelisted by the union type above.
+    const start = businessDayStart(from);
+    const end = businessDayEnd(to);
+
+    const bucket = sql<string>`to_char(date_trunc('${sql.raw(unit)}', ${orders.createdAt} + interval '5 hours'), '${sql.raw(fmt)}')`;
+    const rows = await this.dbService.db
+      .select({
+        period: bucket,
+        branchId: orders.branchId,
+        sum: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          gte(orders.createdAt, start),
+          lte(orders.createdAt, end),
+        ),
+      )
+      .groupBy(bucket, orders.branchId);
+
+    // Returns net off the branch the goods came back to, in the bucket of the
+    // moment they happened — the same netting every other revenue aggregate does.
+    const retBucket = sql<string>`to_char(date_trunc('${sql.raw(unit)}', ${saleReturns.createdAt} + interval '5 hours'), '${sql.raw(fmt)}')`;
+    const retRows = await this.dbService.db
+      .select({
+        period: retBucket,
+        branchId: saleReturns.branchId,
+        sum: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+      })
+      .from(saleReturns)
+      .where(
+        and(
+          eq(saleReturns.businessId, businessId),
+          gte(saleReturns.createdAt, start),
+          lte(saleReturns.createdAt, end),
+        ),
+      )
+      .groupBy(retBucket, saleReturns.branchId);
+
+    const branchRows = await this.branchService.findAll(businessId);
+    const defaultId =
+      branchRows.find((b) => b.isDefault)?.id ?? branchRows[0]?.id;
+
+    const index = new Map(periods.map((p, i) => [p, i]));
+    const known = new Set(branchRows.map((b) => b.id));
+    const series = new Map<string, number[]>(
+      branchRows.map((b) => [b.id, new Array<number>(periods.length).fill(0)]),
+    );
+    // A branch that was archived (or never set) lands on the default branch
+    // rather than dropping out of the window total.
+    const add = (period: string, branchId: string | null, value: number) => {
+      const i = index.get(period);
+      if (i === undefined) return;
+      const id = branchId && known.has(branchId) ? branchId : defaultId;
+      const row = id ? series.get(id) : undefined;
+      if (row) row[i] += value;
+    };
+    for (const r of rows) add(r.period, r.branchId, Number(r.sum));
+    for (const r of retRows) add(r.period, r.branchId, -Number(r.sum));
+
+    const branches = branchRows.map((b) => {
+      const data = series.get(b.id) ?? [];
+      return {
+        branchId: b.id,
+        branchName: b.name,
+        isDefault: b.isDefault,
+        data,
+        total: data.reduce((s, n) => s + n, 0),
+      };
+    });
+
+    // An hour axis over a full calendar day is mostly the shut hours: trim the
+    // dead run at each end so the day opens where trading opened. Keep a floor
+    // of six buckets so a quiet day still draws a chart rather than a dot.
+    if (granularity === 'hour') {
+      const live = periods.map((_, i) => branches.some((b) => b.data[i] !== 0));
+      let lo = live.indexOf(true);
+      let hi = live.lastIndexOf(true);
+      if (lo === -1) {
+        lo = 0;
+        hi = periods.length - 1;
+      }
+      while (hi - lo + 1 < 6 && (lo > 0 || hi < periods.length - 1)) {
+        if (lo > 0) lo--;
+        if (hi - lo + 1 < 6 && hi < periods.length - 1) hi++;
+      }
+      return {
+        granularity,
+        from,
+        to,
+        periods: periods.slice(lo, hi + 1),
+        branches: branches.map((b) => ({
+          ...b,
+          data: b.data.slice(lo, hi + 1),
+          // The card's figure is the whole day, not the drawn slice.
+          total: b.total,
+        })),
+      };
+    }
+
+    return {granularity, from, to, periods, branches};
   }
 
   /**

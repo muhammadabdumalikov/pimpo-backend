@@ -1637,6 +1637,103 @@ export class ReportService {
     };
   }
 
+  // ─── Zaxira sog'lig'i (dashboard rollup) ──────────────────────────────────
+  /**
+   * The catalogue split into four MUTUALLY EXCLUSIVE states, as counts and
+   * frozen money — the dashboard reading that R15 (dead stock) and R16 (reorder)
+   * can only answer as full item lists, which is megabytes for a real catalogue.
+   *
+   * Priority matters, because a product can qualify for several at once and the
+   * bucket is meant to name the ACTION:
+   *   out     — nothing on the shelf; the sale is already being lost
+   *   dead    — has stock but no sale in `days`; money frozen, do NOT reorder it
+   *   low     — selling, and at/below its low-stock threshold; reorder this
+   *   healthy — everything else
+   * `dead` deliberately outranks `low`: a product that is both is not a reorder
+   * candidate, and listing it as one is how a store buys more of what won't sell.
+   *
+   * Counted per branch when `branchId` is given (branch_stock is the on-hand
+   * there), else over the business-wide products.quantity.
+   */
+  async getStockHealth(businessId: string, branchId?: string, days = 90) {
+    // Bound as a UTC wall-time string, never a Date: postgres-js rejects a bare
+    // Date param inside a raw sql template (same note as getPaymentMethods).
+    const cutoff = new Date(Date.now() - days * 86_400_000)
+      .toISOString()
+      .slice(0, 23)
+      .replace('T', ' ');
+
+    // On-hand and the sale history are both branch-scoped, or neither is.
+    const qty = branchId ? sql`bs.quantity` : sql`p.quantity`;
+    const stockJoin = branchId
+      ? sql`JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = ${branchId}`
+      : sql``;
+    const saleBranch = branchId ? sql`AND o.branch_id = ${branchId}` : sql``;
+
+    const rows = (await this.db.execute(sql`
+      SELECT bucket,
+             COUNT(*)                          AS products,
+             COALESCE(SUM(qty), 0)             AS units,
+             COALESCE(SUM(qty * price_in), 0)  AS value
+      FROM (
+        SELECT
+          ${qty}::numeric                       AS qty,
+          COALESCE(p.price_in, 0)::numeric      AS price_in,
+          CASE
+            WHEN ${qty} <= 0 THEN 'out'
+            WHEN ls.last_sale IS NULL OR ls.last_sale < ${cutoff} THEN 'dead'
+            WHEN p.low_stock_threshold IS NOT NULL
+             AND p.low_stock_threshold > 0
+             AND ${qty} <= p.low_stock_threshold THEN 'low'
+            ELSE 'healthy'
+          END AS bucket
+        FROM products p
+        ${stockJoin}
+        LEFT JOIN (
+          SELECT oi.product_id, MAX(o.created_at) AS last_sale
+          FROM order_items oi
+          JOIN orders o ON o.id = oi.order_id
+          WHERE o.business_id = ${businessId}
+            AND o.status = 'Completed'
+            ${saleBranch}
+          GROUP BY oi.product_id
+        ) ls ON ls.product_id = p.id
+        WHERE p.business_id = ${businessId}
+          AND p.is_active = true
+      ) t
+      GROUP BY bucket
+    `)) as unknown as Array<{
+      bucket: string;
+      products: string;
+      units: string;
+      value: string;
+    }>;
+
+    const byBucket = new Map(rows.map((r) => [r.bucket, r]));
+    // Always all four, in reading order, so the chart never reshapes itself
+    // when a state happens to be empty.
+    const buckets = (['out', 'low', 'dead', 'healthy'] as const).map((key) => {
+      const r = byBucket.get(key);
+      return {
+        key,
+        products: Number(r?.products ?? 0),
+        units: Number(r?.units ?? 0),
+        value: Number(r?.value ?? 0),
+      };
+    });
+
+    return {
+      days,
+      branchId: branchId ?? null,
+      buckets,
+      totals: {
+        products: buckets.reduce((s, b) => s + b.products, 0),
+        units: buckets.reduce((s, b) => s + b.units, 0),
+        value: buckets.reduce((s, b) => s + b.value, 0),
+      },
+    };
+  }
+
   // ─── R16: Qayta buyurtma / tugash prognozi ────────────────────────────────
   /**
    * Reorder suggestions. Sales velocity = units sold in the last `days` days /
