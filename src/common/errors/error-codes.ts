@@ -131,6 +131,7 @@ export enum ErrorCode {
   RECEIPT_ONLY_DRAFT_RECEIVABLE = 'RECEIPT_ONLY_DRAFT_RECEIVABLE',
   RECEIPT_ONLY_DRAFT_EDITABLE = 'RECEIPT_ONLY_DRAFT_EDITABLE',
   RECEIPT_ONLY_DRAFT_DELETABLE = 'RECEIPT_ONLY_DRAFT_DELETABLE',
+  RECEIPT_ALREADY_DRAFT = 'RECEIPT_ALREADY_DRAFT',
   RECEIPT_RECEIVE_BEFORE_PAYMENT = 'RECEIPT_RECEIVE_BEFORE_PAYMENT',
   RECEIPT_RECEIVE_BEFORE_RETURN = 'RECEIPT_RECEIVE_BEFORE_RETURN',
   RECEIPT_NOTHING_TO_RETURN = 'RECEIPT_NOTHING_TO_RETURN',
@@ -652,6 +653,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.RECEIPT_ONLY_DRAFT_DELETABLE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'This receipt has already been received; open it to delete it',
+  },
+  // Un-receiving a document that is already a draft. It holds no stock, so
+  // there is nothing to take back — a stale tab, or two people pressing it.
+  [ErrorCode.RECEIPT_ALREADY_DRAFT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This receipt is already a draft',
   },
   // A received receipt can still be taken back, but only while all of it is
   // still on the shelf. Once a unit is sold its cost came out of this

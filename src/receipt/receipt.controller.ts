@@ -266,6 +266,36 @@ export class ReceiptController {
     return { message: 'Receipt received', receipt };
   }
 
+  @Post(':id/unreceive')
+  @RequirePermission('receipt:unreceive')
+  @ApiOperation({
+    summary: 'Send a received receipt back to draft (takes its stock back off)',
+    description:
+      'Undoes what receiving did — batches dropped, branch stock and product ' +
+      'quantity reduced, cost recomputed from the lots that remain — and ' +
+      'leaves the document standing as a draft so it can be corrected and ' +
+      'received again. Allowed only while none of its goods have been sold ' +
+      'or moved, and it carries no payments or returns.',
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  @ApiResponse({status: 200, description: 'Receipt sent back to draft'})
+  @ApiResponse({
+    status: 400,
+    description:
+      'Already a draft, partly sold/moved, or has payments/returns',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Role lacks the receipt:unreceive permission',
+  })
+  async unreceive(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    const receipt = await this.receiptService.unreceiveReceipt(business.id, id);
+    return {message: 'Receipt sent back to draft', receipt};
+  }
+
   @Get(':id/returns')
   @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Return history for a receipt' })

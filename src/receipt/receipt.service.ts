@@ -674,6 +674,148 @@ export class ReceiptService {
   }
 
   /**
+   * Take a received order back to draft.
+   *
+   * The exact reverse of `receiveReceipt`: the batches it opened are dropped,
+   * branch stock and products.quantity come back down and cost is recomputed
+   * from the lots that remain — but the document stays, as a draft, so its
+   * lines can be corrected and it can be received again. This is what a shop
+   * wants when a nakladnoy was received wrong: the paperwork is right, the
+   * numbers on it are not.
+   *
+   * The lines are not touched at all. Quantities, the supplier's cost, the
+   * selling prices entered on the delivery, the currency — the draft opens on
+   * exactly the nakladnoy that was received, which is the point: what is
+   * corrected is usually one number on it, and everything typed around that
+   * number should still be there.
+   *
+   * Held to the same line `loadReversible` draws for deleting, and for the
+   * same reason: every unit this document brought in must still be on the
+   * shelf, and it must carry no payments or returns. Once a unit is sold or
+   * moved to another branch, its cost came out of this receipt's batch and
+   * unwinding the batch would rewrite a closed record — that correction is a
+   * supplier return, not an un-receive.
+   */
+  async unreceiveReceipt(
+    businessId: string,
+    receiptId: string,
+  ): Promise<ReceiptWithItems> {
+    // Taking goods off the shelf under an open count desyncs the count's book
+    // snapshot exactly the way receiving into it does (INVENTARIZATSIYA.md
+    // §9.4).
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
+    }
+
+    const {receipt, items} = await this.loadReversible(businessId, receiptId);
+    if (receipt.status === 'draft') {
+      throw new AppException(ErrorCode.RECEIPT_ALREADY_DRAFT);
+    }
+
+    await this.dbService.db.transaction(async (tx) => {
+      // `loadReversible` read outside this transaction, so everything it
+      // cleared is re-checked here under lock. Without it two presses of the
+      // button — two tabs, two devices, a retried request — would both pass
+      // that check and each subtract the receipt's quantity, taking twice the
+      // stock off the shelf.
+      const locked = await this.lockReceiptTx(tx, businessId, receiptId);
+      if (locked.status === 'draft') {
+        throw new AppException(ErrorCode.RECEIPT_ALREADY_DRAFT);
+      }
+      await this.assertLotsWholeTx(tx, businessId, items);
+      // The locked row, not the one read before it: a branch change committed
+      // in between would otherwise take the stock off the wrong branch.
+      await this.reverseReceiptStockTx(tx, businessId, locked, items);
+      await tx
+        .update(goodsReceipts)
+        .set({status: 'draft', updatedAt: new Date()})
+        .where(
+          and(
+            eq(goodsReceipts.id, receiptId),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        );
+    });
+
+    return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
+  }
+
+  /**
+   * Take the receipt's row for this transaction, and hand back what it says
+   * now. Anything that reverses stock reads the document first and acts on it
+   * second; between those two the document can move. Holding the row makes
+   * the second reader wait for the first to commit, and then see the truth.
+   */
+  private async lockReceiptTx(
+    tx: DbTx,
+    businessId: string,
+    receiptId: string,
+  ): Promise<GoodsReceipt> {
+    const [locked] = await tx
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+    // Gone while we waited — someone else deleted it.
+    if (!locked) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    return locked;
+  }
+
+  /**
+   * The `loadReversible` "nothing of it has left the shelf" check again, now
+   * inside the transaction and with the lots locked.
+   *
+   * A sale takes the same lots FOR UPDATE, so this either runs before it (and
+   * the sale then waits for us) or after it (and sees what it took). Read
+   * outside a transaction, the check could pass a hair before a sale drew on
+   * the lot, and dropping the lot afterwards would subtract that sale's units
+   * a second time and leave a closed sale costed against a batch that no
+   * longer exists.
+   */
+  private async assertLotsWholeTx(
+    tx: DbTx,
+    businessId: string,
+    items: GoodsReceiptItem[],
+  ): Promise<void> {
+    const itemIds = items.map((i) => i.id);
+    if (!itemIds.length) return;
+
+    const batches = await tx
+      .select({
+        receiptItemId: inventoryBatches.receiptItemId,
+        qtyReceived: inventoryBatches.qtyReceived,
+        qtyRemaining: inventoryBatches.qtyRemaining,
+      })
+      .from(inventoryBatches)
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          inArray(inventoryBatches.receiptItemId, itemIds),
+        ),
+      )
+      .for('update');
+
+    const consumed = batches.find(
+      (b) => b.qtyReceived - b.qtyRemaining > 0.0005,
+    );
+    if (consumed) {
+      const item = items.find((i) => i.id === consumed.receiptItemId);
+      throw new AppException(ErrorCode.RECEIPT_PARTLY_SOLD, {
+        name: item?.productName ?? '',
+        sold:
+          Math.round((consumed.qtyReceived - consumed.qtyRemaining) * 1000) /
+          1000,
+      });
+    }
+  }
+
+  /**
    * Load a receipt that may still be taken back whole.
    *
    * A draft qualifies trivially — it holds nothing. A received one qualifies
@@ -795,6 +937,27 @@ export class ReceiptService {
       );
     }
 
+    // Which branch each product's units are sitting in. The lot knows — it was
+    // opened into a branch and follows the receipt when the header moves — and
+    // the header does not always: a legacy receipt carries no branch at all,
+    // and taking the quantity off the product while leaving branch_stock alone
+    // would break the "branch rows sum to products.quantity" invariant.
+    const branchOf = new Map<string, string>();
+    for (const lot of await tx
+      .select({
+        productId: inventoryBatches.productId,
+        branchId: inventoryBatches.branchId,
+      })
+      .from(inventoryBatches)
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          inArray(inventoryBatches.receiptItemId, itemIds),
+        ),
+      )) {
+      if (lot.branchId) branchOf.set(lot.productId, lot.branchId);
+    }
+
     await tx
       .delete(inventoryBatches)
       .where(
@@ -803,9 +966,8 @@ export class ReceiptService {
           inArray(inventoryBatches.receiptItemId, itemIds),
         ),
       );
-
-    const branchId = receipt.branchId;
     for (const [productId, qty] of perProduct) {
+      const branchId = branchOf.get(productId) ?? receipt.branchId;
       if (branchId) {
         await tx
           .update(branchStock)
@@ -1273,8 +1435,14 @@ export class ReceiptService {
     }
 
     await this.dbService.db.transaction(async (tx) => {
-      if (receipt.status !== 'draft') {
-        await this.reverseReceiptStockTx(tx, businessId, receipt, items);
+      // Under lock, and on what the row says now — not on the copy read
+      // before it. Two deletes, or a delete racing an un-receive, would
+      // otherwise each reverse the same stock; a locked status of 'draft'
+      // means someone already did, so this one only takes the document away.
+      const locked = await this.lockReceiptTx(tx, businessId, receiptId);
+      if (locked.status !== 'draft') {
+        await this.assertLotsWholeTx(tx, businessId, items);
+        await this.reverseReceiptStockTx(tx, businessId, locked, items);
       }
       await tx
         .delete(goodsReceiptItems)

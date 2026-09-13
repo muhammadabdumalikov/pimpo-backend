@@ -69,9 +69,14 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'receipt:read', group: 'procurement'},
   {key: 'receipt:create', group: 'procurement'},
   // Applying a goods receipt (nakladnoy) to stock. Covers every path that
-  // turns supplier goods into inventory: receiving a draft, creating an
-  // already-received receipt, and amending a received one.
+  // turns supplier goods into inventory: receiving a draft and creating an
+  // already-received receipt.
   {key: 'receipt:receive', group: 'procurement'},
+  // The way back: sending a received nakladnoy to draft, which takes its goods
+  // off the shelf again. Kept apart from receiving on purpose — receiving is
+  // the everyday job, undoing one is a correction that moves stock out, and a
+  // shop may well want the second in fewer hands than the first.
+  {key: 'receipt:unreceive', group: 'procurement'},
   {key: 'receipt:delete', group: 'procurement'},
   {key: 'receipt:pay', group: 'procurement'},
   {key: 'receipt:return', group: 'procurement'},
