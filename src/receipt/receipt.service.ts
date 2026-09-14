@@ -287,6 +287,27 @@ export class ReceiptService {
   }
 
   /**
+   * Every line must carry a real quantity before the goods go on the shelf.
+   *
+   * A DRAFT is allowed to hold a line at zero: it is a document being typed,
+   * and a row whose amount has not been reached yet must survive being saved —
+   * dropping it is how a delivery quietly loses a product (the card is already
+   * in the catalogue, so what is left is stock that never arrives). Receiving
+   * is the other end of that: a zero line would open an empty lot and post
+   * nothing, so it is named and refused instead.
+   */
+  private assertLinesQuantified(
+    lines: {productName: string; quantity: number}[],
+  ): void {
+    const blank = lines.find((l) => !(l.quantity > 0));
+    if (blank) {
+      throw new AppException(ErrorCode.RECEIPT_LINE_QUANTITY_REQUIRED, {
+        name: blank.productName,
+      });
+    }
+  }
+
+  /**
    * Create a goods receipt: insert the document + items, increment product
    * stock, and roll each product's purchase cost into a weighted average — all
    * in one transaction. A received receipt is immutable; a draft can still be
@@ -330,6 +351,7 @@ export class ReceiptService {
 
     const receiptId = generateId();
     const draft = dto.draft === true;
+    if (!draft) this.assertLinesQuantified(lines);
 
     // Attribute the receipt to a branch ("do'kon"); fall back to the default.
     const branchId =
@@ -643,6 +665,8 @@ export class ReceiptService {
       agg.value += priceInBase * it.quantity;
       received.set(it.productId, agg);
     }
+
+    this.assertLinesQuantified(lines);
 
     const receiveBranchId =
       receipt.branchId ??

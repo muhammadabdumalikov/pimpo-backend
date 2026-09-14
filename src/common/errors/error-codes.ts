@@ -103,6 +103,7 @@ export enum ErrorCode {
   PRODUCT_LIMIT_REACHED = 'PRODUCT_LIMIT_REACHED',
   PRODUCT_BULK_IMPORT_PRO_ONLY = 'PRODUCT_BULK_IMPORT_PRO_ONLY',
   PRODUCT_CODE_EXISTS = 'PRODUCT_CODE_EXISTS',
+  PRODUCT_BARCODE_EXISTS = 'PRODUCT_BARCODE_EXISTS',
   PRODUCT_NOT_FOUND = 'PRODUCT_NOT_FOUND',
   BARCODE_QUERY_REQUIRED = 'BARCODE_QUERY_REQUIRED',
   MXIK_QUERY_REQUIRED = 'MXIK_QUERY_REQUIRED',
@@ -129,6 +130,7 @@ export enum ErrorCode {
   SUPPLIER_NOT_FOUND_BY_ID = 'SUPPLIER_NOT_FOUND_BY_ID',
   RECEIPT_USD_RATE_REQUIRED = 'RECEIPT_USD_RATE_REQUIRED',
   RECEIPT_ONLY_DRAFT_RECEIVABLE = 'RECEIPT_ONLY_DRAFT_RECEIVABLE',
+  RECEIPT_LINE_QUANTITY_REQUIRED = 'RECEIPT_LINE_QUANTITY_REQUIRED',
   RECEIPT_ONLY_DRAFT_EDITABLE = 'RECEIPT_ONLY_DRAFT_EDITABLE',
   RECEIPT_ONLY_DRAFT_DELETABLE = 'RECEIPT_ONLY_DRAFT_DELETABLE',
   RECEIPT_ALREADY_DRAFT = 'RECEIPT_ALREADY_DRAFT',
@@ -554,6 +556,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.CONFLICT,
     message: 'Product with this code already exists',
   },
+  // One barcode, one card. A second card carrying a barcode the shop already
+  // uses makes every scan after it a coin toss — the till, the receipt and the
+  // stock all pick whichever row the query happens to return. The name of the
+  // card that holds it rides along so the screen can offer it instead.
+  [ErrorCode.PRODUCT_BARCODE_EXISTS]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Barcode {barcode} already belongs to "{name}"',
+  },
   [ErrorCode.PRODUCT_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Product not found',
@@ -641,6 +651,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.RECEIPT_ONLY_DRAFT_RECEIVABLE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Only a draft receipt can be received',
+  },
+  // A draft may hold a line whose quantity has not been typed yet — that is
+  // what a document in progress looks like, and keeping it is the whole point
+  // (nothing typed is ever dropped). Receiving is where it has to be a number:
+  // a zero line would open an empty lot and post nothing to the shelf.
+  [ErrorCode.RECEIPT_LINE_QUANTITY_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Enter a quantity for "{name}" before receiving this receipt',
   },
   // Raised when a caller edits or deletes an already-received receipt without
   // saying so outright. Both are possible — they move real stock — and the

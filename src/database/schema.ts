@@ -12,7 +12,7 @@ import {
   primaryKey,
   index,
 } from 'drizzle-orm/pg-core';
-import {relations, desc} from 'drizzle-orm';
+import {relations, desc, sql} from 'drizzle-orm';
 // Type-only: the scale barcode layout lives with its parser (it is used far
 // from the database), and this import is erased at compile time.
 import type {ScaleBarcodeFormat} from '../common/weight-barcode';
@@ -237,6 +237,14 @@ export const products = pgTable(
       desc(table.createdAt),
       desc(table.id),
     ),
+    // One barcode, one card — per business, ACTIVE cards only (a deleted card
+    // must not hold a barcode out of circulation), blanks excluded. Without it
+    // a scan is a coin toss between the cards that share the code. Enforced in
+    // ProductService too; this is the backstop. Created by hand as
+    // 0076_product_barcode_unique.sql (CONCURRENTLY, with the partial WHERE).
+    businessBarcodeUq: uniqueIndex('products_business_barcode_uq')
+      .on(table.businessId, table.barcode)
+      .where(sql`${table.isActive} AND ${table.barcode} IS NOT NULL AND ${table.barcode} <> ''`),
   }),
 );
 

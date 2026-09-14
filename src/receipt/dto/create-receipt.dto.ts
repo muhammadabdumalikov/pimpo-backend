@@ -21,11 +21,14 @@ export class ReceiptItemDto {
   @ApiProperty({
     description:
       'Quantity received. Whole units for piece products; a fractional ' +
-      'kilogram for weighed goods (max 3 decimals).',
+      'kilogram for weighed goods (max 3 decimals). A DRAFT may carry 0 — a ' +
+      'line whose amount has not been typed yet is still part of the ' +
+      'document and must survive being saved. Receiving requires every line ' +
+      'to carry a real quantity.',
     example: 100,
   })
   @IsNumber({ maxDecimalPlaces: 3 })
-  @Min(0.001)
+  @Min(0)
   quantity: number;
 
   @ApiProperty({ description: 'Unit cost paid for this batch', example: 5000 })

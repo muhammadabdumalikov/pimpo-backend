@@ -177,6 +177,10 @@ export class ProductService {
       }
     }
 
+    if (data.barcode) {
+      await this.assertBarcodeAvailable(businessId, data.barcode);
+    }
+
     // Scale PLU, when the product is meant to be weighed.
     if (data.plu != null) {
       await this.assertPluAvailable(businessId, data.plu);
@@ -902,6 +906,12 @@ export class ProductService {
       }
     }
 
+    // Clearing a barcode always passes; moving one onto this card has to be
+    // free — the same rule creation is held to.
+    if (data.barcode && data.barcode !== existing.barcode) {
+      await this.assertBarcodeAvailable(businessId, data.barcode, productId);
+    }
+
     // Clearing a PLU (null) always passes; setting one has to be free.
     if (data.plu != null && data.plu !== existing.plu) {
       await this.assertPluAvailable(businessId, data.plu, productId);
@@ -1523,6 +1533,48 @@ export class ProductService {
       throw new AppException(ErrorCode.PLU_POOL_EXHAUSTED);
     }
     return candidate;
+  }
+
+  /**
+   * One barcode, one card — within the shop.
+   *
+   * A second card carrying a barcode the shop already uses turns every scan
+   * after it into a coin toss: the till, the label and the stock each pick
+   * whichever row the query returns first, and the goods land on the wrong
+   * card. It is also how the same delivery gets typed twice — a card that
+   * "didn't appear" is made again with the same barcode instead of being
+   * found. So the second one is refused, naming the card that holds it.
+   *
+   * Only ACTIVE cards hold a barcode down: a deleted card must not keep one
+   * out of circulation. An empty barcode is not a barcode and never clashes.
+   */
+  private async assertBarcodeAvailable(
+    businessId: string,
+    barcode: string,
+    exceptProductId?: string,
+  ): Promise<void> {
+    const value = barcode.trim();
+    if (!value) return;
+
+    const [taken] = await this.dbService.db
+      .select({id: products.id, name: products.name})
+      .from(products)
+      .where(
+        and(
+          eq(products.businessId, businessId),
+          eq(products.barcode, value),
+          eq(products.isActive, true),
+        ),
+      )
+      .limit(1);
+
+    if (taken && taken.id !== exceptProductId) {
+      throw new AppException(ErrorCode.PRODUCT_BARCODE_EXISTS, {
+        barcode: value,
+        name: taken.name,
+        productId: taken.id,
+      });
+    }
   }
 
   /**
