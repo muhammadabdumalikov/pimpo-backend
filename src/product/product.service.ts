@@ -1252,11 +1252,19 @@ export class ProductService {
         branchId,
       });
       const lower = term.toLowerCase();
-      const match = found.find(
+      const matches = found.filter(
         (p) =>
           (p.barcode ?? '').toLowerCase() === lower ||
           (p.code ?? '').toLowerCase() === lower,
       );
+      // Two cards should never carry one code — ProductService refuses it now
+      // and a unique index backs that up — but a shop that already has such a
+      // pair must not be left with a till that cannot sell. `found` is
+      // newest-first, so the plain answer is whichever card was typed LAST,
+      // and that is exactly the wrong one: the second card is the one that
+      // got the barcode copied onto it, and it is usually the one with no
+      // stock. Something on the shelf beats something that is not.
+      const match = matches.find((p) => Number(p.quantity) > 0) ?? matches[0];
       if (match) return {...base, product: match};
     }
 
