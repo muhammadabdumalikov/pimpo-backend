@@ -10,6 +10,9 @@ import {
   globalBarcodes,
   mxikClassifier,
   units,
+  orders,
+  orderItems,
+  branches,
   type Product,
   type NewProduct,
   type Unit,
@@ -21,6 +24,7 @@ import {
   asc,
   desc,
   ilike,
+  ne,
   or,
   sql,
   isNull,
@@ -38,6 +42,7 @@ import {
   decodeCursor,
   keysetBefore,
   takePage,
+  type KeysetKey,
 } from '../common/cursor';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {mxikDisplayName, mxikClassName} from '../common/mxik-name';
@@ -869,6 +874,158 @@ export class ProductService {
       .limit(1);
 
     return product || null;
+  }
+
+  /**
+   * One product's sale history: every receipt it has been on, newest first.
+   *
+   * The question behind this screen is the one a shopkeeper asks of a line
+   * that looks stuck — "when did this last sell, and on which chek?" — so the
+   * receipt number travels with every row (it is what they type to find a sale
+   * again), and the summary is computed over the WHOLE history rather than the
+   * page on screen: "sold 240 in a year" is the answer, not "sold 30 on this
+   * page".
+   *
+   * Returns are netted, never hidden. A line that came back still shows on the
+   * receipt it was sold on with the returned amount beside it, while the
+   * totals count only what stayed sold — the shelf and the money agree.
+   *
+   * Held carts are excluded: a parked cart holds no stock and carries no
+   * receipt number, so it is not a sale in any sense the shop would recognise.
+   */
+  async salesHistory(
+    businessId: string,
+    productId: string,
+    options?: {limit?: number; cursor?: string; branchId?: string},
+  ) {
+    // Not scoped to active products: a card can be archived while its sales
+    // stay part of the books, and that history is exactly what someone looking
+    // at a retired product wants.
+    const [product] = await this.dbService.db
+      .select({
+        id: products.id,
+        name: products.name,
+        barcode: products.barcode,
+        code: products.code,
+        quantityType: products.quantityType,
+        quantity: products.quantity,
+      })
+      .from(products)
+      .where(
+        and(eq(products.businessId, businessId), eq(products.id, productId)),
+      )
+      .limit(1);
+    if (!product) throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
+
+    const limit = Math.min(Math.max(options?.limit ?? 30, 1), 100);
+
+    const where = [
+      eq(orderItems.businessId, businessId),
+      eq(orderItems.productId, productId),
+      ne(orders.status, 'Held'),
+    ];
+    if (options?.branchId) {
+      where.push(eq(orders.branchId, options.branchId));
+    }
+
+    // Net of returns: quantity is doublePrecision and priceOut a decimal, so
+    // the multiplication is done in numeric (exact money) and handed back as
+    // float8 — the same cast dance the catalogue stats do.
+    const sold = sql`(${orderItems.quantity} - ${orderItems.returnedQuantity})`;
+    const [totals] = await this.dbService.db
+      .select({
+        saleCount: sql<number>`count(distinct ${orders.id})::int`,
+        totalQuantity: sql<number>`coalesce(sum(${sold}), 0)::float8`,
+        totalRevenue: sql<number>`coalesce(sum(${sold}::numeric * ${orderItems.priceOut}), 0)::float8`,
+        lastSoldAt: sql<Date | null>`max(${orders.createdAt})`,
+        firstSoldAt: sql<Date | null>`min(${orders.createdAt})`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .where(and(...where));
+
+    // The line id is part of the sort key, not decoration: one receipt can
+    // carry the same product on two lines (an offline sale synced without the
+    // till's merge, an import), and a key of (sold_at, order_id) alone would
+    // step over the second one on the next page.
+    const keys: KeysetKey[] = [
+      {
+        column: orders.createdAt,
+        cast: 'timestamp',
+        read: (row) => (row.createdAt ?? null) as Date | string | null,
+      },
+      {
+        column: orders.id,
+        cast: 'text',
+        read: (row) => (row.id ?? null) as string | null,
+      },
+      {
+        column: orderItems.id,
+        cast: 'text',
+        read: (row) => (row.itemId ?? null) as string | null,
+      },
+    ];
+    const cursorValues = decodeCursor(options?.cursor, keys.length);
+    const pageWhere = cursorValues
+      ? [...where, keysetBefore(keys, cursorValues)]
+      : where;
+
+    const rows = await this.dbService.db
+      .select({
+        id: orders.id,
+        itemId: orderItems.id,
+        createdAt: orders.createdAt,
+        receiptNo: orders.receiptNo,
+        status: orders.status,
+        cashierName: orders.cashierName,
+        sellerName: orders.sellerName,
+        customerName: orders.customerName,
+        paymentMethod: orders.paymentMethod,
+        source: orders.source,
+        branchName: branches.name,
+        quantity: orderItems.quantity,
+        returnedQuantity: orderItems.returnedQuantity,
+        priceOut: orderItems.priceOut,
+        priceType: orderItems.priceType,
+        lineTotal: orderItems.lineTotal,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .leftJoin(branches, eq(branches.id, orders.branchId))
+      .where(and(...pageWhere))
+      .orderBy(desc(orders.createdAt), desc(orders.id), desc(orderItems.id))
+      .limit(limit + 1);
+
+    const page = takePage(rows, limit, keys);
+
+    return {
+      product,
+      summary: {
+        saleCount: totals?.saleCount ?? 0,
+        totalQuantity: totals?.totalQuantity ?? 0,
+        totalRevenue: totals?.totalRevenue ?? 0,
+        lastSoldAt: totals?.lastSoldAt ?? null,
+        firstSoldAt: totals?.firstSoldAt ?? null,
+      },
+      sales: page.rows.map((row) => ({
+        orderId: row.id,
+        receiptNo: row.receiptNo,
+        soldAt: row.createdAt,
+        quantity: row.quantity,
+        returnedQuantity: row.returnedQuantity,
+        priceOut: Number(row.priceOut),
+        priceType: row.priceType,
+        lineTotal: Number(row.lineTotal),
+        status: row.status,
+        cashierName: row.cashierName,
+        sellerName: row.sellerName,
+        customerName: row.customerName,
+        paymentMethod: row.paymentMethod,
+        branchName: row.branchName,
+        source: row.source,
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
 
   async update(

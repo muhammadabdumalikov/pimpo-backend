@@ -373,6 +373,47 @@ export class ProductController {
     return product;
   }
 
+  @Get(':id/sales')
+  @RequirePermission('sale:read')
+  @ApiOperation({
+    summary: "One product's sale history — every receipt it was sold on, newest first",
+  })
+  @ApiParam({name: 'id', description: 'Product ID'})
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Rows per page (default 30, max 100)',
+  })
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    type: String,
+    description: 'Opaque keyset cursor from the previous response (nextCursor)',
+  })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    type: String,
+    description: "Scope to one branch (do'kon)",
+  })
+  @ApiResponse({status: 200, description: 'Sale history with totals'})
+  @ApiResponse({status: 404, description: 'Product not found'})
+  async salesHistory(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const parsed = Number(limit);
+    return this.productService.salesHistory(business.id, id, {
+      limit: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+      cursor: cursor || undefined,
+      branchId: branchId || undefined,
+    });
+  }
+
   @Put(':id')
   @RequirePermission('product:update')
   @HttpCode(HttpStatus.OK)

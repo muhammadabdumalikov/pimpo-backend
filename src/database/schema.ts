@@ -244,7 +244,9 @@ export const products = pgTable(
     // 0076_product_barcode_unique.sql (CONCURRENTLY, with the partial WHERE).
     businessBarcodeUq: uniqueIndex('products_business_barcode_uq')
       .on(table.businessId, table.barcode)
-      .where(sql`${table.isActive} AND ${table.barcode} IS NOT NULL AND ${table.barcode} <> ''`),
+      .where(
+        sql`${table.isActive} AND ${table.barcode} IS NOT NULL AND ${table.barcode} <> ''`,
+      ),
   }),
 );
 
@@ -527,39 +529,54 @@ export const orders = pgTable(
   }),
 );
 
-export const orderItems = pgTable('order_items', {
-  id: varchar('id', {length: 36}).primaryKey().notNull(),
-  orderId: varchar('order_id', {length: 36})
-    .notNull()
-    .references(() => orders.id, {onDelete: 'cascade'}),
-  businessId: varchar('business_id', {length: 36})
-    .notNull()
-    .references(() => businesses.id, {onDelete: 'cascade'}),
-  // Product reference is kept loose: products may be deleted later, but the
-  // order keeps its name/price snapshot.
-  productId: varchar('product_id', {length: 36}),
-  productName: varchar('product_name', {length: 255}).notNull(),
-  // Weighted selling price of the line at sale time (lineTotal / quantity).
-  // With batch pricing a single line can span batches at different prices.
-  priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
-  // Which price tier this line was sold at: 'unit' (per-piece / "dona", the
-  // default), 'wholesale' (ulgurji), or 'bundle' (to'plam). priceOut above holds
-  // the resolved price for whichever tier was chosen.
-  priceType: varchar('price_type', {length: 20}).notNull().default('unit'),
-  // doublePrecision: a weighed line sells a fractional kg (0.25 = 250 g).
-  quantity: doublePrecision('quantity').notNull(),
-  lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
-  // COGS snapshot at sale time (immutable history, independent of later price
-  // changes or the costing method). 0 for pre-migration rows.
-  costIn: decimal('cost_in', {precision: 10, scale: 2}).notNull().default('0'),
-  costTotal: decimal('cost_total', {precision: 12, scale: 2})
-    .notNull()
-    .default('0'),
-  // Quantity already brought back by customers (sum of sale_return_items).
-  // quantity − returnedQuantity is what can still be returned.
-  returnedQuantity: doublePrecision('returned_quantity').notNull().default(0),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+export const orderItems = pgTable(
+  'order_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    orderId: varchar('order_id', {length: 36})
+      .notNull()
+      .references(() => orders.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // Product reference is kept loose: products may be deleted later, but the
+    // order keeps its name/price snapshot.
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    // Weighted selling price of the line at sale time (lineTotal / quantity).
+    // With batch pricing a single line can span batches at different prices.
+    priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+    // Which price tier this line was sold at: 'unit' (per-piece / "dona", the
+    // default), 'wholesale' (ulgurji), or 'bundle' (to'plam). priceOut above holds
+    // the resolved price for whichever tier was chosen.
+    priceType: varchar('price_type', {length: 20}).notNull().default('unit'),
+    // doublePrecision: a weighed line sells a fractional kg (0.25 = 250 g).
+    quantity: doublePrecision('quantity').notNull(),
+    lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
+    // COGS snapshot at sale time (immutable history, independent of later price
+    // changes or the costing method). 0 for pre-migration rows.
+    costIn: decimal('cost_in', {precision: 10, scale: 2})
+      .notNull()
+      .default('0'),
+    costTotal: decimal('cost_total', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // Quantity already brought back by customers (sum of sale_return_items).
+    // quantity − returnedQuantity is what can still be returned.
+    returnedQuantity: doublePrecision('returned_quantity').notNull().default(0),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    // "Every line for THIS product" — the sale history opened from a catalogue
+    // row (/products/:id/sales). Without it that read is a sequential scan of
+    // the whole sales ledger, which only ever grows. Created by hand as
+    // 0077_order_items_product_idx.sql (CONCURRENTLY).
+    businessProductIdx: index('order_items_business_product_idx').on(
+      table.businessId,
+      table.productId,
+    ),
+  }),
+);
 
 // Suppliers (vendors) goods are received from. Scoped per business.
 export const suppliers = pgTable('suppliers', {
@@ -2714,7 +2731,9 @@ export const saleReturnItems = pgTable(
     lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
     // lineTotal less its share of the order-level discount.
     netAmount: decimal('net_amount', {precision: 12, scale: 2}).notNull(),
-    costIn: decimal('cost_in', {precision: 10, scale: 2}).notNull().default('0'),
+    costIn: decimal('cost_in', {precision: 10, scale: 2})
+      .notNull()
+      .default('0'),
     costTotal: decimal('cost_total', {precision: 12, scale: 2})
       .notNull()
       .default('0'),
