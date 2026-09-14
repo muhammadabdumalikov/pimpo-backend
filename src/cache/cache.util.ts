@@ -72,6 +72,15 @@ export const TTL = {
   // Half that: stock moves with every sale and every receipt, so a full hour of
   // "42 tugagan" after a delivery has landed would be wrong for too long.
   REPORT_STOCK_HEALTH: 30 * 60 * 1000, // 30m
+  // P&L reads orders + order_items + expenses for the range; the dashboard card
+  // and the report page hit it with the same month key.
+  REPORT_PNL: 2 * 60 * 1000, // 2m
+  REPORT_PAYMENT_METHODS: 2 * 60 * 1000, // 2m
+  REPORT_SELLERS: 2 * 60 * 1000, // 2m
+  REPORT_CUSTOMERS: 5 * 60 * 1000, // 5m — new/returning moves over days, not minutes
+  // A shift row is only written when a shift is closed, so nothing can change
+  // in between except a close.
+  REPORT_SHIFTS: 5 * 60 * 1000, // 5m
 
   // AI assistant tool results. Short: the owner asking "and today?" right after
   // a sale must see the sale. Long enough that a multi-step answer which reads
@@ -162,6 +171,16 @@ export const CacheKeys = {
     `report:traffic:${businessId}:${paramsKey(p)}`,
   reportStockHealth: (businessId: string, p?: Record<string, unknown>) =>
     `report:stockhealth:${businessId}:${paramsKey(p)}`,
+  reportPnl: (businessId: string, p?: Record<string, unknown>) =>
+    `report:pnl:${businessId}:${paramsKey(p)}`,
+  reportPaymentMethods: (businessId: string, p?: Record<string, unknown>) =>
+    `report:paymethods:${businessId}:${paramsKey(p)}`,
+  reportSellers: (businessId: string, p?: Record<string, unknown>) =>
+    `report:sellers:${businessId}:${paramsKey(p)}`,
+  reportCustomers: (businessId: string, p?: Record<string, unknown>) =>
+    `report:customers:${businessId}:${paramsKey(p)}`,
+  reportShifts: (businessId: string, p?: Record<string, unknown>) =>
+    `report:shifts:${businessId}:${paramsKey(p)}`,
 
   // AI assistant tool calls. The model often asks for the same report twice in
   // one conversation (e.g. "and compare that to last month"); this absorbs the

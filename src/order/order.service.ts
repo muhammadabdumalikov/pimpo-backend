@@ -17,6 +17,12 @@ import {
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
+import {
+  createdAtKeys,
+  decodeCursor,
+  keysetBefore,
+  takePage,
+} from '../common/cursor';
 import {isStockTakeActive} from '../common/stock-take-lock';
 import {
   businessDayStart,
@@ -1137,11 +1143,31 @@ export class OrderService {
       sellerId?: string;
       minAmount?: number;
       maxAmount?: number;
+      // Keyset pagination (common/cursor.ts): the `nextCursor` of the page
+      // before this one. Sales are the list that grows forever and is read
+      // newest-first, so offset paging both slows down and shifts under the
+      // reader as new receipts land — a cursor does neither. Unreadable
+      // cursors fall back to `page`.
+      cursor?: string;
+      // False skips the count(*); `total` then comes back null.
+      withTotal?: boolean;
     },
-  ): Promise<{orders: Order[]; total: number; page: number; limit: number}> {
+  ): Promise<{
+    orders: Order[];
+    total: number | null;
+    page: number;
+    limit: number;
+    nextCursor: string | null;
+  }> {
     const page = options?.page || 1;
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
+    // One row more than asked for: its presence is what says "there is a next
+    // page", so no count is needed to decide that.
+    const fetchLimit = limit + 1;
+    const withTotal = options?.withTotal !== false;
+    const keys = createdAtKeys(orders.createdAt, orders.id);
+    const cursor = decodeCursor(options?.cursor, keys.length);
 
     const where = [eq(orders.businessId, businessId)];
     if (options?.status) {
@@ -1196,18 +1222,27 @@ export class OrderService {
       );
     }
 
-    const totalResult = await this.dbService.db
-      .select({count: count()})
-      .from(orders)
-      .where(and(...where));
+    const total = withTotal
+      ? (
+          await this.dbService.db
+            .select({count: count()})
+            .from(orders)
+            .where(and(...where))
+        )[0].count
+      : null;
 
-    const rows = await this.dbService.db
+    // The keyset narrows the page only — the total still counts every match.
+    const pageWhere = cursor ? [...where, keysetBefore(keys, cursor)] : where;
+
+    const fetched = await this.dbService.db
       .select()
       .from(orders)
-      .where(and(...where))
-      .orderBy(desc(orders.createdAt))
-      .limit(limit)
-      .offset(offset);
+      .where(and(...pageWhere))
+      .orderBy(desc(orders.createdAt), desc(orders.id))
+      .limit(fetchLimit)
+      .offset(cursor ? 0 : offset);
+
+    const {rows, nextCursor} = takePage(fetched, limit, keys);
 
     // Distinct-product ("tur") count per order — the number of line items, not
     // the summed quantity. Fetched in one grouped query for the whole page.
@@ -1226,7 +1261,7 @@ export class OrderService {
       itemTypes: typeCounts.get(r.id) ?? 0,
     }));
 
-    return {orders: withTypes, total: totalResult[0].count, page, limit};
+    return {orders: withTypes, total, page, limit, nextCursor};
   }
 
   async findOne(

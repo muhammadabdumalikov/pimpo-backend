@@ -33,6 +33,12 @@ import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 import {selectFields} from '../common/field-selection';
+import {
+  createdAtKeys,
+  decodeCursor,
+  keysetBefore,
+  takePage,
+} from '../common/cursor';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {mxikDisplayName, mxikClassName} from '../common/mxik-name';
 import {latinToCyrillic, escapeRegex} from '../common/uz-translit';
@@ -575,16 +581,31 @@ export class ProductService {
       // Sparse fieldset (common/field-selection.ts): only these columns are
       // read and returned, plus `id`. Undefined = the full row.
       fields?: Set<string>;
+      // Keyset pagination (common/cursor.ts): the `nextCursor` of the page
+      // before this one. Takes over from `page`/offset when it is readable, so
+      // Next costs the same on page 200 as on page 1; an unreadable one falls
+      // back to the offset below.
+      cursor?: string;
+      // False skips the `count(*)` — the caller already knows the total for
+      // these filters and is only walking pages. Then `total` comes back null.
+      withTotal?: boolean;
     },
   ): Promise<{
     products: Product[];
-    total: number;
+    total: number | null;
     page: number;
     limit: number;
+    nextCursor: string | null;
   }> {
     const page = options?.page || 1;
     const limit = options?.limit || 10;
     const offset = (page - 1) * limit;
+    // Over-fetch one row: that is how "is there a next page?" is answered
+    // without a second query — and it is what lets `total` be skipped.
+    const fetchLimit = limit + 1;
+    const withTotal = options?.withTotal !== false;
+    const keys = createdAtKeys(products.createdAt, products.id);
+    const cursor = decodeCursor(options?.cursor, keys.length);
     const search = options?.search;
     const branchId = options?.branchId;
     const stock = options?.stock;
@@ -642,53 +663,82 @@ export class ProductService {
     // list to exactly those products and reports THAT branch's on-hand as
     // `quantity` (instead of the cross-branch sum). Without a branch, the whole
     // catalogue is returned with the row's own quantity (the sum).
+    // The cursor narrows the page query only — the total still counts every
+    // matching row, not just the ones after the cursor.
+    const pageWhere = cursor
+      ? [...whereConditions, keysetBefore(keys, cursor)]
+      : whereConditions;
+    // `createdAt` rides along even when the caller asked for a sparse fieldset:
+    // the next cursor is built from the last row's sort key, which the client
+    // never has to know about.
+    const always = ['id', 'createdAt'];
+
     if (branchId) {
       const branchJoin = and(
         eq(branchStock.productId, products.id),
         eq(branchStock.branchId, branchId),
       );
 
-      const [{value: total}] = await this.dbService.db
-        .select({value: sql<number>`count(*)::int`})
-        .from(products)
-        .innerJoin(branchStock, branchJoin)
-        .where(and(...whereConditions));
+      const total = withTotal
+        ? (
+            await this.dbService.db
+              .select({value: sql<number>`count(*)::int`})
+              .from(products)
+              .innerJoin(branchStock, branchJoin)
+              .where(and(...whereConditions))
+          )[0].value
+        : null;
 
-      const paginatedProducts = await this.dbService.db
+      const branchRows = await this.dbService.db
         .select(
           selectFields(
             {...getTableColumns(products), quantity: branchStock.quantity},
             options?.fields,
+            always,
           ),
         )
         .from(products)
         .innerJoin(branchStock, branchJoin)
-        .where(and(...whereConditions))
+        .where(and(...pageWhere))
         .orderBy(...CATALOGUE_ORDER)
-        .limit(limit)
-        .offset(offset);
+        .limit(fetchLimit)
+        .offset(cursor ? 0 : offset);
 
-      return {products: paginatedProducts, total, page, limit};
+      const branchPage = takePage(branchRows, limit, keys);
+      return {
+        products: branchPage.rows,
+        total,
+        page,
+        limit,
+        nextCursor: branchPage.nextCursor,
+      };
     }
 
-    const [{value: total}] = await this.dbService.db
-      .select({value: sql<number>`count(*)::int`})
-      .from(products)
-      .where(and(...whereConditions));
+    const total = withTotal
+      ? (
+          await this.dbService.db
+            .select({value: sql<number>`count(*)::int`})
+            .from(products)
+            .where(and(...whereConditions))
+        )[0].value
+      : null;
 
-    const paginatedProducts = await this.dbService.db
-      .select(selectFields(getTableColumns(products), options?.fields))
+    const rows = await this.dbService.db
+      .select(selectFields(getTableColumns(products), options?.fields, always))
       .from(products)
-      .where(and(...whereConditions))
+      .where(and(...pageWhere))
       .orderBy(...CATALOGUE_ORDER)
-      .limit(limit)
-      .offset(offset);
+      .limit(fetchLimit)
+      .offset(cursor ? 0 : offset);
+
+    const {rows: paginatedProducts, nextCursor} = takePage(rows, limit, keys);
 
     return {
       products: paginatedProducts,
       total,
       page,
       limit,
+      nextCursor,
     };
   }
 

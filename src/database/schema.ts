@@ -12,7 +12,7 @@ import {
   primaryKey,
   index,
 } from 'drizzle-orm/pg-core';
-import {relations} from 'drizzle-orm';
+import {relations, desc} from 'drizzle-orm';
 // Type-only: the scale barcode layout lives with its parser (it is used far
 // from the database), and this import is erased at compile time.
 import type {ScaleBarcodeFormat} from '../common/weight-barcode';
@@ -164,67 +164,81 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-export const products = pgTable('products', {
-  id: varchar('id', {length: 36}).primaryKey().notNull(),
-  businessId: varchar('business_id', {length: 36})
-    .notNull()
-    .references(() => businesses.id, {onDelete: 'cascade'}),
-  name: varchar('name', {length: 255}).notNull(),
-  code: varchar('code', {length: 100}),
-  barcode: varchar('barcode', {length: 100}),
-  // Scale PLU: the short number an operator presses on a label-printing scale,
-  // which the scale then embeds in the barcode it prints (see
-  // common/weight-barcode.ts). Distinct from `code` — that is free text and is
-  // generated as "PRD-0001", which no scale can hold. Null on everything that
-  // is not weighed; scales cap out around 10k PLUs, so piece goods stay out.
-  plu: integer('plu'),
-  priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
-  priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
-  // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
-  // catalog; null when the product has no separate wholesale tier.
-  priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
-  // Optional bundle/set ("to'plam") selling price — used when the item is sold as
-  // a pack/set. Null when the product has no separate bundle tier.
-  priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
-  // Stock on hand. doublePrecision (not integer) so weighed goods (quantityType
-  // 'kg') can hold fractional amounts, e.g. 0.25 kg = 250 g. Piece products just
-  // store whole numbers. Kept clean to 3 decimals (whole grams) on every write.
-  quantity: doublePrecision('quantity').default(0).notNull(),
-  // Legacy weighted-vs-piece marker ('kg' | 'piece' | 'others'). When unitId is
-  // set, this is DERIVED from the unit on write ('kg' if precision > 0, else
-  // 'piece') so older consumers (mobile, checkout) keep working.
-  quantityType: varchar('quantity_type', {length: 50}),
-  // Unit of measure (units table; business-owned or global system row).
-  unitId: varchar('unit_id', {length: 36}).references(() => units.id, {
-    onDelete: 'set null',
+export const products = pgTable(
+  'products',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    name: varchar('name', {length: 255}).notNull(),
+    code: varchar('code', {length: 100}),
+    barcode: varchar('barcode', {length: 100}),
+    // Scale PLU: the short number an operator presses on a label-printing scale,
+    // which the scale then embeds in the barcode it prints (see
+    // common/weight-barcode.ts). Distinct from `code` — that is free text and is
+    // generated as "PRD-0001", which no scale can hold. Null on everything that
+    // is not weighed; scales cap out around 10k PLUs, so piece goods stay out.
+    plu: integer('plu'),
+    priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
+    priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+    // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
+    // catalog; null when the product has no separate wholesale tier.
+    priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),
+    // Optional bundle/set ("to'plam") selling price — used when the item is sold as
+    // a pack/set. Null when the product has no separate bundle tier.
+    priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
+    // Stock on hand. doublePrecision (not integer) so weighed goods (quantityType
+    // 'kg') can hold fractional amounts, e.g. 0.25 kg = 250 g. Piece products just
+    // store whole numbers. Kept clean to 3 decimals (whole grams) on every write.
+    quantity: doublePrecision('quantity').default(0).notNull(),
+    // Legacy weighted-vs-piece marker ('kg' | 'piece' | 'others'). When unitId is
+    // set, this is DERIVED from the unit on write ('kg' if precision > 0, else
+    // 'piece') so older consumers (mobile, checkout) keep working.
+    quantityType: varchar('quantity_type', {length: 50}),
+    // Unit of measure (units table; business-owned or global system row).
+    unitId: varchar('unit_id', {length: 36}).references(() => units.id, {
+      onDelete: 'set null',
+    }),
+    image: varchar('image', {length: 500}),
+    categoryId: varchar('category_id', {length: 100}),
+    // Reorder point: when quantity drops to or below this, the product is flagged
+    // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
+    lowStockThreshold: doublePrecision('low_stock_threshold'),
+    // Optional brand this product belongs to (for filtering/reporting).
+    brandId: varchar('brand_id', {length: 36}),
+    // Optional default supplier this product is bought from.
+    supplierId: varchar('supplier_id', {length: 36}),
+    // Branch ("do'kon") this product belongs to. A stock-take counts only its
+    // branch's products. Null on legacy rows → the business default branch
+    // (backfilled on migration); new products default to the default branch.
+    branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+      onDelete: 'set null',
+    }),
+    // National classifier (IKPU / MXIK) row this product maps to, picked in the
+    // product form from `mxikClassifier`. Every fiscal receipt line needs it, so a
+    // product without one can't be fiscalized (FISCALIZATION.md). Nullable: the
+    // catalog is filled in gradually, long before fiscalization goes live.
+    mxikCode: varchar('mxik_code', {length: 17}),
+    // Packaging/measure code that goes with the MXIK code on the fiscal receipt
+    // ('PackageCode'). Sourced from the same classifier row.
+    packageCode: varchar('package_code', {length: 20}),
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    // The catalogue list: newest-first, keyset-paginated (common/cursor.ts).
+    // Partial on is_active because the list never shows archived products.
+    // Created by hand as 0075_pagination_indexes.sql (CONCURRENTLY, with the
+    // DESC ordering and the WHERE — none of which this builder emits).
+    businessCreatedIdx: index('products_business_created_idx').on(
+      table.businessId,
+      desc(table.createdAt),
+      desc(table.id),
+    ),
   }),
-  image: varchar('image', {length: 500}),
-  categoryId: varchar('category_id', {length: 100}),
-  // Reorder point: when quantity drops to or below this, the product is flagged
-  // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
-  lowStockThreshold: doublePrecision('low_stock_threshold'),
-  // Optional brand this product belongs to (for filtering/reporting).
-  brandId: varchar('brand_id', {length: 36}),
-  // Optional default supplier this product is bought from.
-  supplierId: varchar('supplier_id', {length: 36}),
-  // Branch ("do'kon") this product belongs to. A stock-take counts only its
-  // branch's products. Null on legacy rows → the business default branch
-  // (backfilled on migration); new products default to the default branch.
-  branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
-    onDelete: 'set null',
-  }),
-  // National classifier (IKPU / MXIK) row this product maps to, picked in the
-  // product form from `mxikClassifier`. Every fiscal receipt line needs it, so a
-  // product without one can't be fiscalized (FISCALIZATION.md). Nullable: the
-  // catalog is filled in gradually, long before fiscalization goes live.
-  mxikCode: varchar('mxik_code', {length: 17}),
-  // Packaging/measure code that goes with the MXIK code on the fiscal receipt
-  // ('PackageCode'). Sourced from the same classifier row.
-  packageCode: varchar('package_code', {length: 20}),
-  isActive: boolean('is_active').default(true).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+);
 
 // Product brands (marketing manufacturers, e.g. "Nike", "Bosch"). Scoped per
 // business, managed by the business. Referenced loosely by products.brandId so
@@ -326,6 +340,15 @@ export const users = pgTable(
     uniquePhoneBusiness: uniqueIndex('unique_phone_business').on(
       table.phone,
       table.businessId,
+    ),
+    // The customers list (/loyalty/customers): richest first, then signup date,
+    // keyset-paginated. Created by hand as 0075_pagination_indexes.sql, which
+    // also carries the DESC ordering and the `WHERE is_active`.
+    businessBonusIdx: index('users_business_bonus_idx').on(
+      table.businessId,
+      desc(table.bonusBalance),
+      desc(table.createdAt),
+      desc(table.id),
     ),
   }),
 );
@@ -485,6 +508,13 @@ export const orders = pgTable(
       table.businessId,
       table.telegramUserId,
       table.createdAt,
+    ),
+    // The sales list (/orders): newest-first, keyset-paginated. Created by hand
+    // as 0075_pagination_indexes.sql, where the DESC ordering lives.
+    businessCreatedIdx: index('orders_business_created_idx').on(
+      table.businessId,
+      desc(table.createdAt),
+      desc(table.id),
     ),
   }),
 );

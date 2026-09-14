@@ -12,6 +12,12 @@ import {
 } from '../database/schema';
 import { CacheKeys, TTL } from '../cache/cache.util';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
+import {
+  decodeCursor,
+  encodeCursor,
+  keysetBefore,
+  type KeysetKey,
+} from '../common/cursor';
 
 // A customer row on the loyalty list — the balance/tier view of a customer.
 export interface LoyaltyCustomer {
@@ -34,6 +40,26 @@ const DEFAULTS = {
   expiryMonths: null as number | null,
   tiers: [] as LoyaltyTier[],
 };
+
+/**
+ * Sort key of the customers list: balance first (the point of the screen — the
+ * most-rewarded customer on top), then the signup date, then the id so rows
+ * with the same balance — which is most of them, at 0 — still have exactly one
+ * order for the cursor to resume from.
+ */
+const CUSTOMER_KEYS: KeysetKey[] = [
+  {
+    column: users.bonusBalance,
+    cast: 'numeric',
+    read: (row) => (row.bonusBalance ?? '0') as string,
+  },
+  {
+    column: users.createdAt,
+    cast: 'timestamp',
+    read: (row) => (row.createdAt ?? null) as Date | null,
+  },
+  { column: users.id, cast: 'text', read: (row) => (row.id ?? '') as string },
+];
 
 @Injectable()
 export class LoyaltyService {
@@ -134,16 +160,29 @@ export class LoyaltyService {
    */
   async listCustomers(
     businessId: string,
-    options?: { page?: number; limit?: number; search?: string },
+    options?: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      // Keyset pagination (common/cursor.ts). This list is not sorted by date,
+      // so its cursor carries the balance too — see CUSTOMER_KEYS.
+      cursor?: string;
+      // False skips the count(*); `total` then comes back null.
+      withTotal?: boolean;
+    },
   ): Promise<{
     customers: LoyaltyCustomer[];
-    total: number;
+    total: number | null;
     page: number;
     limit: number;
+    nextCursor: string | null;
   }> {
     const page = options?.page || 1;
     const limit = options?.limit || 20;
     const offset = (page - 1) * limit;
+    const fetchLimit = limit + 1;
+    const withTotal = options?.withTotal !== false;
+    const cursor = decodeCursor(options?.cursor, CUSTOMER_KEYS.length);
     const search = options?.search?.trim();
 
     const where = [eq(users.businessId, businessId), eq(users.isActive, true)];
@@ -153,10 +192,14 @@ export class LoyaltyService {
       );
     }
 
-    const [{ value: total }] = await this.dbService.db
-      .select({ value: count() })
-      .from(users)
-      .where(and(...where));
+    const total = withTotal
+      ? (
+          await this.dbService.db
+            .select({ value: count() })
+            .from(users)
+            .where(and(...where))
+        )[0].value
+      : null;
 
     // Last visit per customer via a correlated max(order date).
     const lastOrderAt = sql<string | null>`(
@@ -164,7 +207,7 @@ export class LoyaltyService {
       where ${orders.userId} = ${users.id}
     )`;
 
-    const rows = await this.dbService.db
+    const fetched = await this.dbService.db
       .select({
         id: users.id,
         name: users.name,
@@ -172,21 +215,40 @@ export class LoyaltyService {
         bonusBalance: users.bonusBalance,
         totalSpent: users.totalSpent,
         lastOrderAt,
+        // Part of the sort key, so it has to be read even though the client
+        // never sees it — it is stripped back out below.
+        createdAt: users.createdAt,
       })
       .from(users)
-      .where(and(...where))
-      .orderBy(desc(users.bonusBalance), desc(users.createdAt))
-      .limit(limit)
-      .offset(offset);
+      .where(
+        and(
+          ...(cursor ? [...where, keysetBefore(CUSTOMER_KEYS, cursor)] : where),
+        ),
+      )
+      .orderBy(desc(users.bonusBalance), desc(users.createdAt), desc(users.id))
+      .limit(fetchLimit)
+      .offset(cursor ? 0 : offset);
+
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
+    const nextCursor = hasMore
+      ? encodeCursor(rows[rows.length - 1], CUSTOMER_KEYS)
+      : null;
 
     const { tiers } = await this.getSettings(businessId);
+    // `createdAt` was read for the cursor only — it is not part of the shape
+    // the customers screen is typed against, so it stops here.
     const customers: LoyaltyCustomer[] = rows.map((r) => ({
-      ...r,
+      id: r.id,
+      name: r.name,
+      phone: r.phone,
+      bonusBalance: r.bonusBalance,
+      totalSpent: r.totalSpent,
       lastOrderAt: r.lastOrderAt ? new Date(r.lastOrderAt).toISOString() : null,
       tier: this.tierFor(Number(r.totalSpent), tiers),
     }));
 
-    return { customers, total, page, limit };
+    return { customers, total, page, limit, nextCursor };
   }
 
   /** One customer's loyalty ledger (newest first), paginated. */

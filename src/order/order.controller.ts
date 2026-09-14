@@ -108,6 +108,17 @@ export class OrderController {
   })
   @ApiQuery({name: 'minAmount', required: false})
   @ApiQuery({name: 'maxAmount', required: false})
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    description:
+      'Opaque `nextCursor` from the previous page (keyset paging). Overrides `page`; an unreadable one falls back to it.',
+  })
+  @ApiQuery({
+    name: 'withTotal',
+    required: false,
+    description: "'false' skips the count(*) and returns total: null",
+  })
   async findAll(
     @CurrentBusiness() business: IBusiness,
     @Query('page') page?: string,
@@ -122,6 +133,8 @@ export class OrderController {
     @Query('sellerId') sellerId?: string,
     @Query('minAmount') minAmount?: string,
     @Query('maxAmount') maxAmount?: string,
+    @Query('cursor') cursor?: string,
+    @Query('withTotal') withTotal?: string,
   ) {
     const num = (v?: string) => {
       if (v == null || v === '') return undefined;
@@ -141,6 +154,8 @@ export class OrderController {
       sellerId,
       minAmount: num(minAmount),
       maxAmount: num(maxAmount),
+      cursor: cursor || undefined,
+      withTotal: withTotal !== 'false',
     });
   }
 

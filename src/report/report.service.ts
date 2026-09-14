@@ -71,6 +71,15 @@ export interface TransferRoute {
  * Amounts are UZS (the base currency). Multi-currency (UZS/USD) reporting is a
  * later enhancement — see HISOBOTLAR.md R8.
  */
+/**
+ * Window the "fastest selling" list averages over. Deliberately short and
+ * independent of the dead-stock threshold: a quarter-long average cannot notice
+ * what started selling this month, which is exactly what the list is for.
+ */
+const VELOCITY_DAYS = 30;
+/** How many movers the dashboard card has room for. */
+const FAST_MOVER_LIMIT = 5;
+
 @Injectable()
 export class ReportService {
   constructor(
@@ -129,6 +138,14 @@ export class ReportService {
    *   shifts closed in the range (surplus = income, shortage = expense).
    */
   async getPnl(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportPnl(businessId, {...range}),
+      () => this.computePnl(businessId, range),
+      TTL.REPORT_PNL,
+    );
+  }
+
+  private async computePnl(businessId: string, range?: DateRange) {
     const orderWhere = and(
       eq(orders.businessId, businessId),
       eq(orders.status, 'Completed'),
@@ -606,6 +623,14 @@ export class ReportService {
    * The `cashierId`/`cashierName` keys are kept for API compatibility.
    */
   async getSellers(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportSellers(businessId, {...range}),
+      () => this.computeSellers(businessId, range),
+      TTL.REPORT_SELLERS,
+    );
+  }
+
+  private async computeSellers(businessId: string, range?: DateRange) {
     const rows = await this.db
       .select({
         cashierId: creditedStaffId,
@@ -681,6 +706,14 @@ export class ReportService {
    * Guest/walk-in sales (no userId) are excluded from the customer breakdown.
    */
   async getCustomers(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportCustomers(businessId, {...range}),
+      () => this.computeCustomers(businessId, range),
+      TTL.REPORT_CUSTOMERS,
+    );
+  }
+
+  private async computeCustomers(businessId: string, range?: DateRange) {
     const rows = await this.db
       .select({
         userId: orders.userId,
@@ -1135,6 +1168,14 @@ export class ReportService {
    * register, not a branch — so it is ignored here.
    */
   async getShifts(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportShifts(businessId, {...range}),
+      () => this.computeShifts(businessId, range),
+      TTL.REPORT_SHIFTS,
+    );
+  }
+
+  private async computeShifts(businessId: string, range?: DateRange) {
     const rows = await this.db
       .select({
         id: cashShifts.id,
@@ -1232,6 +1273,14 @@ export class ReportService {
    * per-method share. Raw SQL is used because the unnest sits in the FROM clause.
    */
   async getPaymentMethods(businessId: string, range?: DateRange) {
+    return this.cache.wrap(
+      CacheKeys.reportPaymentMethods(businessId, {...range}),
+      () => this.computePaymentMethods(businessId, range),
+      TTL.REPORT_PAYMENT_METHODS,
+    );
+  }
+
+  private async computePaymentMethods(businessId: string, range?: DateRange) {
     // Bind the day bounds as UTC "YYYY-MM-DD HH:mm:ss.SSS" strings, not Date
     // objects: postgres-js rejects a bare Date param inside a raw sql template
     // ("string argument must be ... Received an instance of Date"). created_at is
@@ -1767,10 +1816,75 @@ export class ReportService {
       };
     });
 
+    // The other half of the stock question. The buckets say what is stuck; this
+    // says what is flying off the shelf — and, with on-hand beside it, how long
+    // that can last. A fast mover with three days of cover is the most urgent
+    // line on the dashboard, and it is invisible in the buckets (it counts as
+    // `healthy` right up until it is `out`).
+    //
+    // Velocity is measured over its own short window, NOT `days`: `days` is the
+    // dead-stock threshold (a quarter), and a quarter-long average is far too
+    // slow to notice what started selling this month.
+    const fastFrom = new Date(Date.now() - VELOCITY_DAYS * 86_400_000)
+      .toISOString()
+      .slice(0, 23)
+      .replace('T', ' ');
+
+    const moverRows = (await this.db.execute(sql`
+      SELECT p.id, p.name, p.code,
+             ${qty}::numeric            AS qty,
+             COALESCE(p.price_out, 0)::numeric AS price_out,
+             s.units::numeric           AS units
+      FROM products p
+      ${stockJoin}
+      JOIN (
+        SELECT oi.product_id, SUM(oi.quantity) AS units
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE o.business_id = ${businessId}
+          AND o.status = 'Completed'
+          AND o.created_at >= ${fastFrom}
+          ${saleBranch}
+        GROUP BY oi.product_id
+      ) s ON s.product_id = p.id
+      WHERE p.business_id = ${businessId}
+        AND p.is_active = true
+        AND s.units > 0
+      ORDER BY s.units DESC
+      LIMIT ${FAST_MOVER_LIMIT}
+    `)) as unknown as Array<{
+      id: string;
+      name: string;
+      code: string | null;
+      qty: string;
+      price_out: string;
+      units: string;
+    }>;
+
+    const fastMovers = moverRows.map((r) => {
+      const sold = Number(r.units);
+      const quantity = Number(r.qty);
+      const dailyVelocity = sold / VELOCITY_DAYS;
+      return {
+        productId: r.id,
+        name: r.name,
+        code: r.code,
+        sold,
+        dailyVelocity,
+        quantity,
+        // Null when nothing is moving (guarded by the > 0 filter) or when the
+        // shelf is empty — "0 days" and "unknown" are different answers.
+        daysOfStock: dailyVelocity > 0 ? quantity / dailyVelocity : null,
+        revenue: sold * Number(r.price_out),
+      };
+    });
+
     return {
       days,
+      velocityDays: VELOCITY_DAYS,
       branchId: branchId ?? null,
       buckets,
+      fastMovers,
       totals: {
         products: buckets.reduce((s, b) => s + b.products, 0),
         units: buckets.reduce((s, b) => s + b.units, 0),

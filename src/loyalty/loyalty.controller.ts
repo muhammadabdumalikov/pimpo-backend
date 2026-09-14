@@ -62,16 +62,33 @@ export class LoyaltyController {
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    type: String,
+    description:
+      'Opaque `nextCursor` from the previous page (keyset paging). Overrides `page`; an unreadable one falls back to it.',
+  })
+  @ApiQuery({
+    name: 'withTotal',
+    required: false,
+    type: Boolean,
+    description: "'false' skips the count(*) and returns total: null",
+  })
   async listCustomers(
     @CurrentBusiness() business: IBusiness,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
+    @Query('cursor') cursor?: string,
+    @Query('withTotal') withTotal?: string,
   ) {
     return this.loyaltyService.listCustomers(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
+      cursor: cursor || undefined,
+      withTotal: withTotal !== 'false',
     });
   }
 

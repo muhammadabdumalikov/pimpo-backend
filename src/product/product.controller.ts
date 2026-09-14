@@ -143,6 +143,20 @@ export class ProductController {
     description:
       'Comma-separated product fields to return (plus id), e.g. name,priceOut,quantity. Omit for the full row.',
   })
+  @ApiQuery({
+    name: 'cursor',
+    required: false,
+    type: String,
+    description:
+      'Opaque `nextCursor` from the previous page. Keyset pagination: same cost on every page, and stable while rows are being inserted. Overrides `page`; ignored (falls back to `page`) when unreadable.',
+  })
+  @ApiQuery({
+    name: 'withTotal',
+    required: false,
+    type: Boolean,
+    description:
+      "'false' skips the count(*) and returns total: null — for paging through a list whose total the caller already has.",
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -158,6 +172,8 @@ export class ProductController {
     @Query('supplierId') supplierId?: string,
     @Query('unitId') unitId?: string,
     @Query('fields') fields?: string,
+    @Query('cursor') cursor?: string,
+    @Query('withTotal') withTotal?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -171,6 +187,8 @@ export class ProductController {
       supplierId: supplierId || undefined,
       unitId: unitId || undefined,
       fields: parseFields(fields),
+      cursor: cursor || undefined,
+      withTotal: withTotal !== 'false',
     });
     return result;
   }
