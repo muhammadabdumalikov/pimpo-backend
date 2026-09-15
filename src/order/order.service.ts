@@ -557,6 +557,10 @@ export class OrderService {
             batchUnitPrice: c.priceOut,
             minLotPrice: c.minLotPriceOut,
             maxLotPrice: c.maxLotPriceOut,
+            // The card price the till was reading from. Without it, putting a
+            // price up on goods already in stock would block every sale of
+            // that line until the next delivery.
+            cardPrice: p.priceOut,
             productName: p.productName,
             // Same line the payment reconciliation draws: a replayed sale is
             // recorded, never refused.

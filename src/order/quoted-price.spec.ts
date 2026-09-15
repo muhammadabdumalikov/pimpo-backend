@@ -73,6 +73,40 @@ describe('resolveLinePrice', () => {
     );
   });
 
+  // Repricing without a delivery: the card goes to 7,000, the lot on the shelf
+  // still wears 6,000. This used to refuse every sale of the line.
+  it('honours the card price when no lot has caught up with it', () => {
+    const repriced = {
+      quantity: 1,
+      batchRevenue: 6000,
+      batchUnitPrice: 6000,
+      minLotPrice: 6000,
+      maxLotPrice: 6000,
+      cardPrice: 7000,
+      productName: 'Flavis nok',
+      strict: true,
+    };
+    expect(resolveLinePrice({...repriced, quoted: 7000})).toEqual({
+      revenueTotal: 7000,
+      priceOut: 7000,
+    });
+    // A price cut works the same way, from the other side of the lot.
+    expect(
+      resolveLinePrice({...repriced, cardPrice: 5000, quoted: 5000}),
+    ).toEqual({revenueTotal: 5000, priceOut: 5000});
+    // The band still has ends: the card widened it, it did not remove it.
+    expect(
+      codeOf(() => resolveLinePrice({...repriced, quoted: 9000})),
+    ).toBe(ErrorCode.ORDER_PRICE_NOT_BACKED);
+  });
+
+  // A card with no price set says nothing, and must not open the floor to 0.
+  it('ignores a zero card price', () => {
+    expect(
+      codeOf(() => resolveLinePrice({...oneLot, cardPrice: 0, quoted: 0})),
+    ).toBe(ErrorCode.ORDER_PRICE_NOT_BACKED);
+  });
+
   it('agrees with the batch price when a single lot covers the line', () => {
     expect(resolveLinePrice({...oneLot, quoted: 5508})).toEqual({
       revenueTotal: 16524,
