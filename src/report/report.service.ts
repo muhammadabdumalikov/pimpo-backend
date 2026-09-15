@@ -1834,11 +1834,19 @@ export class ReportService {
       SELECT p.id, p.name, p.code,
              ${qty}::numeric            AS qty,
              COALESCE(p.price_out, 0)::numeric AS price_out,
-             s.units::numeric           AS units
+             s.units::numeric           AS units,
+             s.since_first::numeric     AS since_first
       FROM products p
       ${stockJoin}
       JOIN (
-        SELECT oi.product_id, SUM(oi.quantity) AS units
+        SELECT oi.product_id, SUM(oi.quantity) AS units,
+               -- Days from this product's FIRST sale in the window to now. The
+               -- subtraction is timestamp-to-timestamp in UTC wall time (the
+               -- basis every created_at is written in), so no client timezone
+               -- gets a say in it.
+               EXTRACT(
+                 EPOCH FROM ((NOW() AT TIME ZONE 'UTC') - MIN(o.created_at))
+               ) / 86400 AS since_first
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
         WHERE o.business_id = ${businessId}
@@ -1859,17 +1867,31 @@ export class ReportService {
       qty: string;
       price_out: string;
       units: string;
+      since_first: string;
     }>;
 
     const fastMovers = moverRows.map((r) => {
       const sold = Number(r.units);
       const quantity = Number(r.qty);
-      const dailyVelocity = sold / VELOCITY_DAYS;
+      // Divide by the days the product has actually been SELLING here, not by
+      // the whole window. A line that arrived two days ago and went out in two
+      // days sells ten a day, not a third of one — and dividing it by thirty
+      // told the shop it had a quarter's cover of something about to run out.
+      // Floored at one day: less than that is a handful of hours, and nothing
+      // sane can be extrapolated from it. Capped at the window, so an
+      // established line keeps the plain 30-day average it always had.
+      const activeDays = Math.min(
+        VELOCITY_DAYS,
+        Math.max(1, Number(r.since_first) || VELOCITY_DAYS),
+      );
+      const dailyVelocity = sold / activeDays;
       return {
         productId: r.id,
         name: r.name,
         code: r.code,
         sold,
+        /** Days this line has been selling in the window — the rate's basis. */
+        activeDays,
         dailyVelocity,
         quantity,
         // Null when nothing is moving (guarded by the > 0 filter) or when the
