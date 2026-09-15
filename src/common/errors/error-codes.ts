@@ -83,6 +83,9 @@ export enum ErrorCode {
   DEBT_SALE_CUSTOMER_REQUIRED = 'DEBT_SALE_CUSTOMER_REQUIRED',
   PRODUCT_NOT_FOUND_BY_ID = 'PRODUCT_NOT_FOUND_BY_ID',
   ORDER_EMPTY = 'ORDER_EMPTY',
+  ORDER_UNDERPAID = 'ORDER_UNDERPAID',
+  ORDER_PRICE_NOT_BACKED = 'ORDER_PRICE_NOT_BACKED',
+  ORDER_NON_CASH_EXCEEDS_TOTAL = 'ORDER_NON_CASH_EXCEEDS_TOTAL',
   CASHIER_NOT_FOUND = 'CASHIER_NOT_FOUND',
   SELLER_NOT_FOUND = 'SELLER_NOT_FOUND',
   ORDER_HAS_RETURNS = 'ORDER_HAS_RETURNS',
@@ -490,6 +493,25 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Order must contain at least one item',
   },
+  // The tender does not cover the total this server computed for the sale.
+  // Both carry the two figures so the till can show the real total and let the
+  // cashier re-ring rather than guess what went wrong.
+  // The till quoted a price no lot behind the line carries — a screen left
+  // open while prices moved, or a client naming a figure of its own.
+  [ErrorCode.ORDER_PRICE_NOT_BACKED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Quoted price {quoted} for "{name}" is not a price these goods carry (current: {expected})',
+  },
+  [ErrorCode.ORDER_UNDERPAID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Payment {received} is short of the {expected} total',
+  },
+  [ErrorCode.ORDER_NON_CASH_EXCEEDS_TOTAL]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'Card/other tender {received} exceeds the {expected} total — no change is given from it',
+  },
   [ErrorCode.CASHIER_NOT_FOUND]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Cashier not found for this business',
@@ -692,7 +714,7 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.RECEIPT_HAS_PAYMENTS]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Remove this receipt\'s payments before deleting it',
+    message: "Remove this receipt's payments before deleting it",
   },
   [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {
     status: HttpStatus.BAD_REQUEST,
@@ -777,7 +799,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.STAFF_ACCOUNT_FIELDS_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Login, password and role are required to give an employee an account',
+    message:
+      'Login, password and role are required to give an employee an account',
   },
   [ErrorCode.STAFF_NO_ACCOUNT]: {
     status: HttpStatus.UNAUTHORIZED,
@@ -795,7 +818,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.PAYROLL_ALREADY_ACCRUED]: {
     status: HttpStatus.CONFLICT,
-    message: 'Payroll for {period} has already been accrued for every selected employee',
+    message:
+      'Payroll for {period} has already been accrued for every selected employee',
   },
   [ErrorCode.PAYROLL_NOTHING_TO_ACCRUE]: {
     status: HttpStatus.BAD_REQUEST,

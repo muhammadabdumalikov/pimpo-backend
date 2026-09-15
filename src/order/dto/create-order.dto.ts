@@ -33,12 +33,28 @@ export class OrderItemDto {
     description:
       "Price tier to sell this line at: 'unit' (per-piece / dona, default), " +
       "'wholesale' (ulgurji), or 'bundle' (to'plam). The server resolves it to " +
-      'the product\'s configured price; unknown/unset tiers fall back to unit.',
+      "the product's configured price; unknown/unset tiers fall back to unit.",
     enum: ['unit', 'wholesale', 'bundle'],
   })
   @IsOptional()
   @IsIn(['unit', 'wholesale', 'bundle'])
   priceTier?: 'unit' | 'wholesale' | 'bundle';
+
+  @ApiPropertyOptional({
+    description:
+      'Unit price the till QUOTED for this line — what the customer was ' +
+      'shown and agreed to pay. The receipt is written at this price so the ' +
+      'screen and the paper never disagree, but it is not taken on trust: it ' +
+      'is honoured only when the lots this line draws on actually carry it ' +
+      '(between the cheapest and dearest of them), so a stale or hostile ' +
+      'client cannot name a figure of its own. Omitted = price per batch, as ' +
+      'before. Ignored for a wholesale/bundle tier, which has its own price.',
+    example: 5508,
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  quotedPrice?: number;
 }
 
 export class PaymentSplitDto {
@@ -175,7 +191,7 @@ export class CreateOrderDto {
 
   @ApiPropertyOptional({
     description:
-      "Loyalty bonus balance (soʼm) to spend on this sale. Clamped server-side " +
+      'Loyalty bonus balance (soʼm) to spend on this sale. Clamped server-side ' +
       "to the customer's balance and the program's redeem cap; requires a customer.",
   })
   @IsNumber()

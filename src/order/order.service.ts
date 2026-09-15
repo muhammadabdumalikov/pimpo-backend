@@ -55,6 +55,8 @@ import {
   type OrderItem,
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
+import {reconcilePayments} from './payment-reconcile';
+import {resolveLinePrice} from './quoted-price';
 import {
   creditedStaffId,
   creditedStaffName,
@@ -319,6 +321,13 @@ export class OrderService {
     // from a verified Telegram launch payload), never part of the HTTP DTO.
     dto: CreateOrderDto & {telegramUserId?: string | null},
     account?: IAccount,
+    // A sale coming back off the offline queue, not one being rung up now. Set
+    // by createBatch and nothing else — it is the ENDPOINT that knows, not the
+    // payload. The checks that would refuse a live sale (the tender against the
+    // total, a quoted price against the lots) only warn the cashier usefully
+    // while they are still at the counter; a sale that already happened is
+    // recorded instead, or it drops out of the books entirely.
+    options?: {replay?: boolean},
   ): Promise<OrderWithItems> {
     // Idempotency: an offline sale may be re-sent from the client's outbox over
     // a flaky connection. If this clientId was already stored, return that order
@@ -343,13 +352,15 @@ export class OrderService {
     const shiftId = isStoreSale
       ? null
       : await this.resolveShiftForSale(businessId, dto);
-    // Storefront orders have no register, so nobody to credit there. An
-    // offline sale (clientId) was already handed to the customer — it syncs
-    // even if its seller was deactivated or deleted meanwhile, just uncredited
-    // if the record is gone, rather than bouncing out of the outbox.
+    // Storefront orders have no register, so nobody to credit there. A sale
+    // replayed off the offline queue was already handed to the customer — it
+    // syncs even if its seller was deactivated or deleted meanwhile, just
+    // uncredited if the record is gone, rather than bouncing out of the
+    // outbox. A live sale is held to the strict lookup: the cashier picked
+    // that seller a second ago and should be told if the pick is stale.
     let seller: {id: string; name: string | null} | null = null;
     if (!isStoreSale && dto.sellerId) {
-      seller = dto.clientId
+      seller = options?.replay
         ? await this.resolveSeller(businessId, dto.sellerId, false).catch(
             (err) => {
               if (err instanceof AppException) return null;
@@ -425,6 +436,9 @@ export class OrderService {
       // the whole line at priceOverride.
       priceType: 'unit' | 'wholesale' | 'bundle';
       priceOverride: number | null;
+      // What the till showed for this line, to be honoured if the lots back it
+      // (see quoted-price.ts). Null when the client quoted nothing.
+      quotedPrice: number | null;
     }[] = [];
     let itemCount = 0;
 
@@ -464,6 +478,9 @@ export class OrderService {
         quantity: item.quantity,
         priceType,
         priceOverride,
+        // A tier already names the price for the whole line; a quote only
+        // speaks for the default unit price.
+        quotedPrice: priceOverride == null ? (item.quotedPrice ?? null) : null,
       });
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
@@ -530,14 +547,29 @@ export class OrderService {
             branchId, // draw from the sale's branch lots
             p.priceOverride,
           );
-          total += c.revenueTotal;
+          // The receipt is written at the price the customer was shown, as long
+          // as the lots behind the line carry it. Stock and COGS above are
+          // already settled and are not touched by this.
+          const settledLine = resolveLinePrice({
+            quoted: p.quotedPrice,
+            quantity: p.quantity,
+            batchRevenue: c.revenueTotal,
+            batchUnitPrice: c.priceOut,
+            minLotPrice: c.minLotPriceOut,
+            maxLotPrice: c.maxLotPriceOut,
+            productName: p.productName,
+            // Same line the payment reconciliation draws: a replayed sale is
+            // recorded, never refused.
+            strict: !options?.replay,
+          });
+          total += settledLine.revenueTotal;
           lines.push({
             productId: p.productId,
             productName: p.productName,
-            priceOut: money(c.priceOut),
+            priceOut: money(settledLine.priceOut),
             priceType: p.priceType,
             quantity: p.quantity,
-            lineTotal: money(c.revenueTotal),
+            lineTotal: money(settledLine.revenueTotal),
             costIn: money(c.costIn),
             costTotal: money(c.costTotal),
             frontPriceOut: c.frontPriceOut,
@@ -629,17 +661,29 @@ export class OrderService {
             dto.payments && dto.payments.length > 0
               ? dto.payments.map((p) => ({method: p.method, amount: p.amount}))
               : [{method: dto.paymentMethod ?? 'cash', amount: payable}];
+
+          // What the till says was handed over has to agree with the total
+          // computed just above — see reconcilePayments. A sale replayed off
+          // the offline queue already happened at the counter, so it is
+          // recorded rather than refused.
+          const settled = reconcilePayments({
+            payable,
+            payments,
+            tendered: dto.amountPaid,
+            strict: !options?.replay,
+          });
+          payments = settled.payments;
+          amountPaid = settled.amountPaid;
+          changeAmount = settled.changeAmount;
+
+          // Read off the SETTLED tenders: clamping the cash can empty an entry
+          // (a card that covers the whole sale), and the method recorded has to
+          // be the one the money actually came in on.
           const methods = Array.from(new Set(payments.map((p) => p.method)));
           paymentMethod =
             methods.length > 1
               ? 'split'
               : (methods[0] ?? dto.paymentMethod ?? null);
-          // Cash tendered (defaults to the total); change is over the cash portion.
-          const cashApplied = payments
-            .filter((p) => p.method === 'cash')
-            .reduce((sum, p) => sum + p.amount, 0);
-          amountPaid = dto.amountPaid ?? cashApplied;
-          changeAmount = Math.max(0, amountPaid - cashApplied);
         }
 
         const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
@@ -840,9 +884,7 @@ export class OrderService {
         taxAmount: created.taxAmount,
         itemCount: created.itemCount,
         paymentMethod: created.paymentMethod,
-        payments: created.payments as
-          | {method: string; amount: number}[]
-          | null,
+        payments: created.payments as {method: string; amount: number}[] | null,
         amountPaid: created.amountPaid,
         changeAmount: created.changeAmount,
         customerName: created.customerName,
@@ -1081,7 +1123,9 @@ export class OrderService {
     const results: BatchOrderResult[] = [];
     for (const dto of orders) {
       try {
-        const order = await this.create(businessId, dto, account);
+        const order = await this.create(businessId, dto, account, {
+          replay: true,
+        });
         results.push({
           clientId: dto.clientId ?? null,
           status: 'ok',
@@ -1443,7 +1487,11 @@ export class OrderService {
         patch.sellerName = null;
       } else if (dto.sellerId !== existing.sellerId) {
         // Correcting an old sale may credit someone who has since left.
-        const seller = await this.resolveSeller(businessId, dto.sellerId, false);
+        const seller = await this.resolveSeller(
+          businessId,
+          dto.sellerId,
+          false,
+        );
         patch.sellerId = seller.id;
         patch.sellerName = seller.name;
       }
@@ -1767,8 +1815,9 @@ export class OrderService {
       retValue += Number(r.totalAmount);
       retUnits += r.itemCount;
       retDebt += Number(r.debtReduced);
-      for (const p of (r.refunds as {method: string; amount: number}[] | null) ??
-        []) {
+      for (const p of (r.refunds as
+        | {method: string; amount: number}[]
+        | null) ?? []) {
         refundBy.set(p.method, (refundBy.get(p.method) ?? 0) + p.amount);
       }
     }
@@ -1779,10 +1828,7 @@ export class OrderService {
       revenue: Number(totals.revenue) - retValue,
       cash: methodTotal('cash') - (refundBy.get('cash') ?? 0),
       card: methodTotal('card') - (refundBy.get('card') ?? 0),
-      debt: Math.max(
-        0,
-        Number(debtRow.total) - Number(debtRow.paid) - retDebt,
-      ),
+      debt: Math.max(0, Number(debtRow.total) - Number(debtRow.paid) - retDebt),
     };
   }
 

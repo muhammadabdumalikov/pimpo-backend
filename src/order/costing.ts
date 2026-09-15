@@ -19,6 +19,14 @@ export interface LineCosting {
   // Selling price of the oldest open batch AFTER this consumption, so the caller
   // can keep products.priceOut tracking the next-to-sell price (null if no stock).
   frontPriceOut: string | null;
+  // The band of selling prices the lots behind this line actually carry — the
+  // cheapest and the dearest of them (the oversell fallback counts as a lot of
+  // its own). It is what makes a price QUOTED by the till checkable: a figure
+  // inside this band is one the goods really wear, anything outside it is a
+  // stale screen or a client making prices up. Equal to `priceOut` when the
+  // line came out of a single lot, which is the ordinary case.
+  minLotPriceOut: number;
+  maxLotPriceOut: number;
 }
 
 function round2(value: number): number {
@@ -75,6 +83,9 @@ export async function consumeBatches(
   let need = quantity;
   let costTotal = 0;
   let revenueTotal = 0;
+  // The band of lot prices this line touched (see minLotPriceOut).
+  let minLot = Infinity;
+  let maxLot = -Infinity;
 
   for (const batch of batches) {
     if (need <= 0) break;
@@ -82,6 +93,8 @@ export async function consumeBatches(
     const unitCost =
       method === 'FIFO' ? Number(batch.priceIn) : fallbackPriceIn;
     const unitPrice = Number(batch.priceOut);
+    minLot = Math.min(minLot, unitPrice);
+    maxLot = Math.max(maxLot, unitPrice);
     costTotal += take * unitCost;
     revenueTotal += take * unitPrice;
     await tx
@@ -97,6 +110,8 @@ export async function consumeBatches(
   if (need > 0) {
     costTotal += need * fallbackPriceIn;
     revenueTotal += need * fallbackPriceOut;
+    minLot = Math.min(minLot, fallbackPriceOut);
+    maxLot = Math.max(maxLot, fallbackPriceOut);
   }
 
   // A chosen tier (wholesale/bundle) prices the whole line flat, replacing the
@@ -131,5 +146,9 @@ export async function consumeBatches(
     revenueTotal,
     priceOut,
     frontPriceOut: front?.priceOut ?? null,
+    // Nothing was drawn at all (a zero-quantity line): the product's own price
+    // is the only figure this line can be said to carry.
+    minLotPriceOut: Number.isFinite(minLot) ? round2(minLot) : fallbackPriceOut,
+    maxLotPriceOut: Number.isFinite(maxLot) ? round2(maxLot) : fallbackPriceOut,
   };
 }
