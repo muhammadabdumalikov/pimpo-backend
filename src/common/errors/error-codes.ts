@@ -145,6 +145,9 @@ export enum ErrorCode {
   RECEIPT_PARTLY_SOLD = 'RECEIPT_PARTLY_SOLD',
   RECEIPT_HAS_RETURNS = 'RECEIPT_HAS_RETURNS',
   RECEIPT_HAS_PAYMENTS = 'RECEIPT_HAS_PAYMENTS',
+  RECEIPT_PAYMENT_NOT_FOUND = 'RECEIPT_PAYMENT_NOT_FOUND',
+  RECEIPT_ALREADY_SETTLED = 'RECEIPT_ALREADY_SETTLED',
+  RECEIPT_PAYMENT_EXCEEDS_DEBT = 'RECEIPT_PAYMENT_EXCEEDS_DEBT',
 
   // ── Role ───────────────────────────────────────────────────────────────────
   ROLE_NOT_FOUND = 'ROLE_NOT_FOUND',
@@ -714,7 +717,25 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.RECEIPT_HAS_PAYMENTS]: {
     status: HttpStatus.BAD_REQUEST,
-    message: "Remove this receipt's payments before deleting it",
+    message: "Cancel this receipt's payments first",
+  },
+  [ErrorCode.RECEIPT_PAYMENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Payment not found',
+  },
+  // Paying a receipt that owes nothing. What is owed is the total less what
+  // was paid AND what was returned: goods sent back settle the debt as surely
+  // as money does.
+  [ErrorCode.RECEIPT_ALREADY_SETTLED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Nothing is owed on this receipt',
+  },
+  // More than is owed. Refused rather than clamped: the amount is cash that
+  // leaves an account, so recording a different figure than the one handed
+  // over would put the books and the drawer out of step.
+  [ErrorCode.RECEIPT_PAYMENT_EXCEEDS_DEBT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Payment is more than is owed: {outstanding} {currency}',
   },
   [ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT]: {
     status: HttpStatus.BAD_REQUEST,

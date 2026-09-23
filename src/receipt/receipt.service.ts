@@ -53,11 +53,37 @@ function money(value: number): string {
   return value.toFixed(2);
 }
 
-/** Roll paid vs total into a status. */
-function paymentStatusOf(paid: number, total: number): string {
-  if (paid <= 0) return 'unpaid';
-  if (paid >= total) return 'paid';
+/**
+ * Roll what is settled against the total into a status. Settled is what was
+ * paid PLUS what was returned — goods sent back reduce the debt as surely as
+ * money does, so every caller passes both. Compared in whole cents: USD lines
+ * sum in floating point, and 99.99999 must still read as paid.
+ */
+function paymentStatusOf(settled: number, total: number): string {
+  const settledCents = Math.round(settled * 100);
+  if (settledCents <= 0) return 'unpaid';
+  if (settledCents >= Math.round(total * 100)) return 'paid';
   return 'partial';
+}
+
+/** What is still owed on a receipt, never below zero, to the cent. */
+function outstandingOf(receipt: GoodsReceipt): number {
+  const cents =
+    Math.round(Number(receipt.totalAmount) * 100) -
+    Math.round(Number(receipt.paidAmount) * 100) -
+    Math.round(Number(receipt.returnedAmount) * 100);
+  return Math.max(0, cents) / 100;
+}
+
+/**
+ * An amount for an error message: thousands grouped with a space, cents only
+ * when there are any ("30 000", "12.50"). Locale-neutral on purpose — the
+ * message is localized on the client, the number is not.
+ */
+function displayAmount(value: number): string {
+  const [whole, cents] = value.toFixed(2).split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return cents === '00' ? grouped : `${grouped}.${cents}`;
 }
 
 export type ReceiptWithItems = GoodsReceipt & {
@@ -1644,29 +1670,31 @@ export class ReceiptService {
     dto: AddPaymentDto,
     account?: IAccount,
   ): Promise<{payment: SupplierPayment; receipt: GoodsReceipt}> {
-    const [receipt] = await this.dbService.db
-      .select()
-      .from(goodsReceipts)
-      .where(
-        and(
-          eq(goodsReceipts.id, receiptId),
-          eq(goodsReceipts.businessId, businessId),
-        ),
-      )
-      .limit(1);
-    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
-    if (receipt.status === 'draft') {
-      throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT);
-    }
-
     const cashier = await this.resolveCashier(account);
-    const currency = receipt.currency ?? 'UZS';
-    const total = Number(receipt.totalAmount);
-    const newPaid = Number(receipt.paidAmount) + dto.amount;
-    const status = paymentStatusOf(newPaid, total);
     const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
 
     return this.dbService.db.transaction(async (tx) => {
+      // What is owed is read under the row lock and written back from the
+      // same read. Read outside, two payments entered at once would each add
+      // to the same starting figure and one would vanish from the receipt —
+      // while both still left the account.
+      const receipt = await this.lockReceiptTx(tx, businessId, receiptId);
+      if (receipt.status === 'draft') {
+        throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_PAYMENT);
+      }
+
+      const currency = receipt.currency ?? 'UZS';
+      const outstanding = outstandingOf(receipt);
+      if (outstanding <= 0) {
+        throw new AppException(ErrorCode.RECEIPT_ALREADY_SETTLED);
+      }
+      if (Math.round(dto.amount * 100) > Math.round(outstanding * 100)) {
+        throw new AppException(ErrorCode.RECEIPT_PAYMENT_EXCEEDS_DEBT, {
+          outstanding: displayAmount(outstanding),
+          currency,
+        });
+      }
+
       const txn = await this.financeService.recordExpenseTx(tx, businessId, {
         accountId: dto.accountId,
         amount: dto.amount,
@@ -1698,11 +1726,15 @@ export class ReceiptService {
         })
         .returning();
 
+      const newPaid = Number(receipt.paidAmount) + dto.amount;
       const [updated] = await tx
         .update(goodsReceipts)
         .set({
           paidAmount: money(newPaid),
-          paymentStatus: status,
+          paymentStatus: paymentStatusOf(
+            newPaid + Number(receipt.returnedAmount),
+            Number(receipt.totalAmount),
+          ),
           updatedAt: new Date(),
         })
         .where(
@@ -1714,6 +1746,91 @@ export class ReceiptService {
         .returning();
 
       return {payment, receipt: updated};
+    });
+  }
+
+  /**
+   * Cancel a payment made against a receipt.
+   *
+   * The money comes back the way payroll reverses a paid wage: the finance
+   * expense is not deleted but answered with a compensating income on the same
+   * account, so Moliya keeps both rows — what left, and that it was taken
+   * back. The payment record itself goes, and the receipt's paid figure and
+   * status are rolled back from it.
+   *
+   * This is also what opens the way to un-receiving or deleting a receipt,
+   * both of which refuse while any payment stands.
+   */
+  async cancelPayment(
+    businessId: string,
+    receiptId: string,
+    paymentId: string,
+    account?: IAccount,
+  ): Promise<{receipt: GoodsReceipt}> {
+    const cashier = await this.resolveCashier(account);
+
+    return this.dbService.db.transaction(async (tx) => {
+      // Receipt first, then the payment — the same order a payment is added
+      // in, so a cancel and an add on one receipt queue instead of crossing.
+      // A second cancel of the same payment waits here and then finds it gone.
+      const receipt = await this.lockReceiptTx(tx, businessId, receiptId);
+      const [payment] = await tx
+        .select()
+        .from(supplierPayments)
+        .where(
+          and(
+            eq(supplierPayments.id, paymentId),
+            eq(supplierPayments.businessId, businessId),
+            eq(supplierPayments.receiptId, receiptId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (!payment) {
+        throw new AppException(ErrorCode.RECEIPT_PAYMENT_NOT_FOUND);
+      }
+
+      const amount = Number(payment.amount);
+      // A payment with no booked expense behind it (none were made without
+      // one, but the columns are nullable) has nothing in Moliya to answer.
+      if (payment.financialTransactionId && payment.accountId) {
+        await this.financeService.recordIncomeTx(tx, businessId, {
+          accountId: payment.accountId,
+          amount,
+          currency: payment.currency,
+          note: `Bekor qilindi: ta'minotchi to'lovi${payment.supplierName ? `: ${payment.supplierName}` : ''}`,
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+        });
+      }
+
+      await tx
+        .delete(supplierPayments)
+        .where(eq(supplierPayments.id, payment.id));
+
+      const newPaid = Math.max(
+        0,
+        Math.round((Number(receipt.paidAmount) - amount) * 100) / 100,
+      );
+      const [updated] = await tx
+        .update(goodsReceipts)
+        .set({
+          paidAmount: money(newPaid),
+          paymentStatus: paymentStatusOf(
+            newPaid + Number(receipt.returnedAmount),
+            Number(receipt.totalAmount),
+          ),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(goodsReceipts.id, receiptId),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        )
+        .returning();
+
+      return {receipt: updated};
     });
   }
 
@@ -1889,16 +2006,16 @@ export class ReceiptService {
     const cashier = await this.resolveCashier(account);
     const currency = receipt.currency ?? 'UZS';
     const returnId = generateId();
-    const newReturned = Number(receipt.returnedAmount) + returnTotal;
-    const status = paymentStatusOf(
-      Number(receipt.paidAmount) + newReturned,
-      Number(receipt.totalAmount),
-    );
 
     const returnBranchId =
       receipt.branchId ??
       (await this.branchService.ensureDefault(businessId)).id;
     return this.dbService.db.transaction(async (tx) => {
+      // The receipt row is taken first, before any lot or stock row — the order
+      // un-receiving and deleting take them in. Taken last, a return racing an
+      // un-receive of the same receipt would hold the lots while waiting for
+      // the row the other side holds, and one of them would die in a deadlock.
+      const locked = await this.lockReceiptTx(tx, businessId, receiptId);
       const [ret] = await tx
         .insert(supplierReturns)
         .values({
@@ -1970,11 +2087,18 @@ export class ReceiptService {
           );
       }
 
+      // Settle from the locked row: a payment committed since this return was
+      // planned must count toward the status, and its amount must not be
+      // written back over.
+      const newReturned = Number(locked.returnedAmount) + returnTotal;
       const [updated] = await tx
         .update(goodsReceipts)
         .set({
           returnedAmount: money(newReturned),
-          paymentStatus: status,
+          paymentStatus: paymentStatusOf(
+            Number(locked.paidAmount) + newReturned,
+            Number(locked.totalAmount),
+          ),
           updatedAt: new Date(),
         })
         .where(

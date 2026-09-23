@@ -25,6 +25,7 @@ import {
   desc,
   ilike,
   ne,
+  gt,
   or,
   sql,
   isNull,
@@ -1095,6 +1096,26 @@ export class ProductService {
         .where(
           and(eq(products.id, productId), eq(products.businessId, businessId)),
         );
+
+      // A hand-set selling price reprices the stock on hand. Lots carry their
+      // own priceOut and every sale / receipt re-syncs products.priceOut from
+      // the FIFO-front lot, so leaving the lots at the old figure would snap
+      // the card back to the delivery price on the next sale.
+      if (
+        data.priceOut != null &&
+        Number(data.priceOut) !== Number(existing.priceOut)
+      ) {
+        await tx
+          .update(inventoryBatches)
+          .set({priceOut: data.priceOut})
+          .where(
+            and(
+              eq(inventoryBatches.businessId, businessId),
+              eq(inventoryBatches.productId, productId),
+              gt(inventoryBatches.qtyRemaining, 0),
+            ),
+          );
+      }
 
       // Reassigned to another branch: move its lots + stock across, leaving the
       // total (products.quantity) unchanged.

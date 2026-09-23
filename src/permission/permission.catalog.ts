@@ -79,6 +79,10 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'receipt:unreceive', group: 'procurement'},
   {key: 'receipt:delete', group: 'procurement'},
   {key: 'receipt:pay', group: 'procurement'},
+  // Cancelling a supplier payment: the money goes back into the account it
+  // left. Apart from paying because it undoes a cash movement after the fact —
+  // the kind of correction a shop keeps in fewer hands.
+  {key: 'receipt:unpay', group: 'procurement'},
   {key: 'receipt:return', group: 'procurement'},
   {key: 'supplier:manage', group: 'procurement'},
 

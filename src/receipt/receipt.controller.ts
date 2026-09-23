@@ -250,6 +250,38 @@ export class ReceiptController {
     return { message: 'Payment recorded', ...result };
   }
 
+  @Delete(':id/payments/:paymentId')
+  @RequirePermission('receipt:unpay')
+  @ApiOperation({
+    summary: 'Cancel a supplier payment (money back to its account)',
+    description:
+      "Removes the payment and rolls the receipt's paid figure and status " +
+      'back. The finance expense it booked is answered with a compensating ' +
+      'income on the same account rather than deleted, so Moliya keeps both.',
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  @ApiParam({name: 'paymentId', description: 'Payment ID'})
+  @ApiResponse({status: 200, description: 'Payment cancelled'})
+  @ApiResponse({
+    status: 403,
+    description: 'Role lacks the receipt:unpay permission',
+  })
+  @ApiResponse({status: 404, description: 'Receipt or payment not found'})
+  async cancelPayment(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Param('paymentId') paymentId: string,
+  ) {
+    const result = await this.receiptService.cancelPayment(
+      business.id,
+      id,
+      paymentId,
+      account,
+    );
+    return {message: 'Payment cancelled', ...result};
+  }
+
   @Post(':id/receive')
   @RequirePermission('receipt:receive')
   @ApiOperation({ summary: 'Receive a draft receipt (applies stock)' })
@@ -281,8 +313,7 @@ export class ReceiptController {
   @ApiResponse({status: 200, description: 'Receipt sent back to draft'})
   @ApiResponse({
     status: 400,
-    description:
-      'Already a draft, partly sold/moved, or has payments/returns',
+    description: 'Already a draft, partly sold/moved, or has payments/returns',
   })
   @ApiResponse({
     status: 403,
