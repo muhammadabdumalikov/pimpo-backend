@@ -374,6 +374,35 @@ export class ProductController {
     return product;
   }
 
+  @Get(':id/price-history')
+  @RequirePermission('product:update')
+  @ApiOperation({
+    summary: "One product's selling-price history — every change, newest first",
+    description:
+      'Who set which price, when, and where from: the product card, or a ' +
+      "delivery note's price applied to it. Rows sourced 'receipt_line' are " +
+      "the other direction — the card's price written back onto a delivery " +
+      'line that held a typo. Reading it takes the right to change prices, ' +
+      'since it is the audit trail of exactly that.',
+  })
+  @ApiParam({name: 'id', description: 'Product ID'})
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: Number,
+    description: 'Rows (default 50, max 200)',
+  })
+  async priceHistory(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+  ) {
+    const parsed = Number(limit);
+    return this.productService.priceHistory(business.id, id, {
+      limit: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+    });
+  }
+
   @Get(':id/sales')
   @RequirePermission('sale:read')
   @ApiOperation({

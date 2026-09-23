@@ -5,6 +5,7 @@ import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
 import {
   products,
+  goodsReceipts,
   inventoryBatches,
   branchStock,
   globalBarcodes,
@@ -1032,6 +1033,75 @@ export class ProductService {
       })),
       nextCursor: page.nextCursor,
     };
+  }
+
+  /**
+   * Every selling price this product has ever been given, newest first.
+   *
+   * The question it answers is the one a shop asks out loud: "who changed this
+   * price?" Until there was a row per change, the only trace was
+   * products.updated_at — one timestamp any edit moves — and answering took an
+   * afternoon of reading sale prices backwards.
+   *
+   * Rows with source 'receipt_line' describe the DOCUMENT moving, not the
+   * shelf: a delivery note whose typed price was corrected to the card's. They
+   * belong in the same list because the person reading it is asking about one
+   * product's prices, not about which table changed.
+   */
+  async priceHistory(
+    businessId: string,
+    productId: string,
+    options?: {limit?: number},
+  ) {
+    const [product] = await this.dbService.db
+      .select({
+        id: products.id,
+        name: products.name,
+        priceOut: products.priceOut,
+        priceWholesale: products.priceWholesale,
+        priceBundle: products.priceBundle,
+      })
+      .from(products)
+      .where(
+        and(eq(products.businessId, businessId), eq(products.id, productId)),
+      )
+      .limit(1);
+    if (!product) throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
+
+    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 200);
+    const rows = await this.dbService.db
+      .select({
+        id: productPriceHistory.id,
+        field: productPriceHistory.field,
+        oldPrice: productPriceHistory.oldPrice,
+        newPrice: productPriceHistory.newPrice,
+        source: productPriceHistory.source,
+        receiptId: productPriceHistory.receiptId,
+        // The delivery a receipt-sourced change came from, so the row can name
+        // it ("Jkmooo, 11.09") and link to the document.
+        supplierName: goodsReceipts.supplierName,
+        receiptAt: sql<
+          string | null
+        >`${goodsReceipts.createdAt} AT TIME ZONE 'UTC'`,
+        cashierId: productPriceHistory.cashierId,
+        cashierName: productPriceHistory.cashierName,
+        createdAt: productPriceHistory.createdAt,
+      })
+      .from(productPriceHistory)
+      .leftJoin(
+        goodsReceipts,
+        eq(goodsReceipts.id, productPriceHistory.receiptId),
+      )
+      .where(
+        and(
+          eq(productPriceHistory.businessId, businessId),
+          eq(productPriceHistory.productId, productId),
+        ),
+      )
+      .orderBy(desc(productPriceHistory.createdAt))
+      .limit(limit);
+
+    return {product, changes: rows};
   }
 
   async update(

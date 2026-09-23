@@ -19,6 +19,7 @@ import {
   staff,
   businesses,
   branches,
+  productPriceHistory,
   type GoodsReceipt,
   type GoodsReceiptItem,
   type SupplierPayment,
@@ -50,6 +51,7 @@ import {AddPaymentDto} from './dto/add-payment.dto';
 import {CreateReturnDto} from './dto/create-return.dto';
 import {displayAmount} from '../common/display-amount';
 import {recordPriceChangesTx} from '../common/price-history';
+import {priceFlags, isSevere, type PriceFlag} from '../common/price-risk';
 
 function money(value: number): string {
   return value.toFixed(2);
@@ -139,6 +141,35 @@ export interface PriceSuggestion {
   };
   /** Which of the three actually differ — the rest are left alone. */
   changes: PriceField[];
+  /**
+   * What this product cost on this receipt, in base UZS — the floor a selling
+   * price is judged against, and what the margin is read from. Null when the
+   * receipt names no cost for it.
+   */
+  priceIn: string | null;
+  /**
+   * Why this row is worth a look, across every tier it changes. Empty is the
+   * ordinary case; anything here means the dialog must not pre-accept the row.
+   */
+  flags: PriceFlag[];
+  /**
+   * Set alongside the 'cardMoved' flag: when the card was last moved off the
+   * figure this document still carries, and who moved it. The evidence behind
+   * the flag, so the owner is told whose decision they are about to undo.
+   */
+  cardMoved: {at: string; by: string | null} | null;
+}
+
+/**
+ * Sort weight for the review list. A dialog is read from the top and pressed
+ * from the bottom, so the rows that must not be waved through go first: a
+ * certain mistake, then a decision this document would undo, then a big move,
+ * then the ordinary repricings nobody needs to stop on.
+ */
+function rank(s: PriceSuggestion): number {
+  if (isSevere(s.flags)) return 3;
+  if (s.flags.includes('cardMoved')) return 2;
+  return s.flags.length > 0 ? 1 : 0;
 }
 
 @Injectable()
@@ -1828,6 +1859,11 @@ export class ReceiptService {
         priceBundle: string | null;
       }
     >();
+    // Cost per product in base UZS. A selling price under this one loses money
+    // on every unit, which is the only mistake these rules can be certain of.
+    const cost = new Map<string, number>();
+    const rateToBase =
+      receipt.currency === 'USD' ? Number(receipt.usdRate ?? 0) : 1;
     for (const item of receipt.items) {
       if (!item.productId) continue;
       const cur = proposed.get(item.productId) ?? {
@@ -1840,6 +1876,10 @@ export class ReceiptService {
       if (item.priceWholesale != null) cur.priceWholesale = item.priceWholesale;
       if (item.priceBundle != null) cur.priceBundle = item.priceBundle;
       proposed.set(item.productId, cur);
+      // Same rule for the cost: the last line naming one is what the product
+      // was bought at on this document.
+      const base = Number(item.priceIn) * rateToBase;
+      if (base > 0) cost.set(item.productId, base);
     }
     if (proposed.size === 0) return [];
 
@@ -1876,19 +1916,107 @@ export class ReceiptService {
         changes.push('priceBundle');
       }
       if (changes.length === 0) continue;
+      const current = {
+        priceOut: card.priceOut,
+        priceWholesale: card.priceWholesale,
+        priceBundle: card.priceBundle,
+      };
+      // One row, one verdict: a tier in trouble puts the whole row in trouble,
+      // because the row is what the owner accepts or refuses.
+      const lineCost = cost.get(card.id) ?? null;
+      const flags = new Set<PriceFlag>();
+      for (const field of changes) {
+        for (const flag of priceFlags({
+          card: current[field] != null ? Number(current[field]) : null,
+          proposed: Number(want[field]),
+          cost: lineCost,
+        })) {
+          flags.add(flag);
+        }
+      }
       out.push({
         productId: card.id,
         productName: card.name,
-        current: {
-          priceOut: card.priceOut,
-          priceWholesale: card.priceWholesale,
-          priceBundle: card.priceBundle,
-        },
+        current,
         proposed: want,
         changes,
+        priceIn: lineCost != null ? money(lineCost) : null,
+        flags: [...flags],
+        cardMoved: null,
       });
     }
-    return out;
+
+    await this.markMovedCards(businessId, receipt, out);
+
+    // Trouble first. The list is read top-down and the rows that must not be
+    // waved through are the ones that have to survive a fast reader.
+    return out.sort((a, b) => rank(b) - rank(a));
+  }
+
+  /**
+   * Flag the rows whose figure the card has already moved away from.
+   *
+   * The selling price on a receipt line is copied from the card when the line
+   * is written (see create: `item.priceOut ?? info.priceOut`) and never
+   * refreshed after. So a draft saved on Monday, a card edited by hand on
+   * Tuesday and the draft received on Thursday produce a difference that looks
+   * exactly like a repricing but points backwards: accepting it would undo
+   * Tuesday's decision, which is the very thing this feature exists to stop.
+   *
+   * The evidence is in the price history: a card change made AFTER this
+   * document was written whose old price is the figure the document still
+   * carries. That is the card leaving this number behind, not the document
+   * proposing a new one.
+   */
+  private async markMovedCards(
+    businessId: string,
+    receipt: ReceiptWithItems,
+    suggestions: PriceSuggestion[],
+  ): Promise<void> {
+    if (suggestions.length === 0) return;
+    const rows = await this.dbService.db
+      .select({
+        productId: productPriceHistory.productId,
+        field: productPriceHistory.field,
+        oldPrice: productPriceHistory.oldPrice,
+        createdAt: productPriceHistory.createdAt,
+        cashierName: productPriceHistory.cashierName,
+      })
+      .from(productPriceHistory)
+      .where(
+        and(
+          eq(productPriceHistory.businessId, businessId),
+          inArray(
+            productPriceHistory.productId,
+            suggestions.map((s) => s.productId),
+          ),
+          gt(productPriceHistory.createdAt, receipt.createdAt),
+          // 'receipt_line' rows describe a DOCUMENT being corrected, not the
+          // card moving, so they are not evidence of anything here.
+          ne(productPriceHistory.source, 'receipt_line'),
+        ),
+      )
+      .orderBy(asc(productPriceHistory.createdAt));
+    if (rows.length === 0) return;
+
+    for (const s of suggestions) {
+      for (const row of rows) {
+        if (row.productId !== s.productId) continue;
+        if (!s.changes.includes(row.field as PriceField)) continue;
+        const docPrice = s.proposed[row.field as PriceField];
+        if (docPrice == null || row.oldPrice == null) continue;
+        if (Math.abs(Number(row.oldPrice) - Number(docPrice)) > 0.005) continue;
+        // Rows come oldest-first, so the last match wins: the most recent time
+        // the card held this figure and left it.
+        s.cardMoved = {
+          at: row.createdAt.toISOString(),
+          by: row.cashierName,
+        };
+      }
+      if (s.cardMoved && !s.flags.includes('cardMoved')) {
+        s.flags.push('cardMoved');
+      }
+    }
   }
 
   // ─── Supplier returns (T3) ────────────────────────────────────────────────
