@@ -10,23 +10,14 @@ export type CostingMethod = 'AVERAGE' | 'FIFO';
 
 export interface LineCosting {
   // COGS for the whole line and its weighted unit cost (the order_items snapshot).
+  // A line can span lots bought at different costs, so costIn is computed.
   costTotal: number;
   costIn: number;
-  // Revenue for the line and its weighted unit selling price — a line can span
-  // batches at different selling prices, so this is computed, not a single price.
+  // Revenue for the line and its unit selling price. Both come from the product
+  // card (or the chosen tier), never from the lots: the shop sets one price and
+  // every unit sells at it, whichever delivery it happens to come out of.
   revenueTotal: number;
   priceOut: number;
-  // Selling price of the oldest open batch AFTER this consumption, so the caller
-  // can keep products.priceOut tracking the next-to-sell price (null if no stock).
-  frontPriceOut: string | null;
-  // The band of selling prices the lots behind this line actually carry — the
-  // cheapest and the dearest of them (the oversell fallback counts as a lot of
-  // its own). It is what makes a price QUOTED by the till checkable: a figure
-  // inside this band is one the goods really wear, anything outside it is a
-  // stale screen or a client making prices up. Equal to `priceOut` when the
-  // line came out of a single lot, which is the ordinary case.
-  minLotPriceOut: number;
-  maxLotPriceOut: number;
 }
 
 function round2(value: number): number {
@@ -37,13 +28,18 @@ function round2(value: number): number {
  * Consume `quantity` units of a product from its open inventory batches,
  * oldest-first (FIFO), and value the COGS for the line.
  *
- * - Selling price is normally taken per batch (`batch.priceOut`). When
- *   `priceOverride` is given (a chosen wholesale/bundle tier), the whole line is
- *   valued at that flat unit price instead — cost and stock are unaffected.
+ * - Selling price is the product card's price (`cardPriceOut`), or the flat
+ *   `priceOverride` when a wholesale/bundle tier was chosen. The lots carry a
+ *   `priceOut` of their own, but it is the price that was written on the
+ *   delivery note — a record of that document, not what the shop charges today.
+ *   Pricing from it is what used to make a card price wander: a sale valued the
+ *   line at the front lot's figure and then snapped the card back to it, so a
+ *   hand-set price survived only until the next sale of that product.
  * - Unit cost depends on the method: FIFO uses each batch's own `priceIn`;
  *   AVERAGE uses the product's current weighted-average cost (`fallbackPriceIn`).
  * - If the batches run dry before the quantity is met (oversell), the shortfall
- *   is valued at the product's current `priceIn` / `priceOut`.
+ *   is costed at the product's current `priceIn`. It sells at the same card
+ *   price as the rest of the line.
  *
  * The batch rows are locked `FOR UPDATE` so two concurrent sales can't drain the
  * same lot twice.
@@ -55,7 +51,7 @@ export async function consumeBatches(
   quantity: number,
   method: CostingMethod,
   fallbackPriceIn: number,
-  fallbackPriceOut: number,
+  cardPriceOut: number,
   // Draw only from this branch's lots (per-branch FIFO). Null = any lot (legacy
   // / single-branch), so pre-per-branch callers keep working.
   branchId: string | null = null,
@@ -65,7 +61,6 @@ export async function consumeBatches(
     .select({
       id: inventoryBatches.id,
       priceIn: inventoryBatches.priceIn,
-      priceOut: inventoryBatches.priceOut,
       qtyRemaining: inventoryBatches.qtyRemaining,
     })
     .from(inventoryBatches)
@@ -82,21 +77,13 @@ export async function consumeBatches(
 
   let need = quantity;
   let costTotal = 0;
-  let revenueTotal = 0;
-  // The band of lot prices this line touched (see minLotPriceOut).
-  let minLot = Infinity;
-  let maxLot = -Infinity;
 
   for (const batch of batches) {
     if (need <= 0) break;
     const take = Math.min(need, batch.qtyRemaining);
     const unitCost =
       method === 'FIFO' ? Number(batch.priceIn) : fallbackPriceIn;
-    const unitPrice = Number(batch.priceOut);
-    minLot = Math.min(minLot, unitPrice);
-    maxLot = Math.max(maxLot, unitPrice);
     costTotal += take * unitCost;
-    revenueTotal += take * unitPrice;
     await tx
       .update(inventoryBatches)
       .set({
@@ -106,49 +93,24 @@ export async function consumeBatches(
     need -= take;
   }
 
-  // Oversell: value the leftover units at the product's current cost/price.
+  // Oversell: the units the lots could not cover are costed at the product's
+  // current weighted-average cost. They sell at the card price like the rest.
   if (need > 0) {
     costTotal += need * fallbackPriceIn;
-    revenueTotal += need * fallbackPriceOut;
-    minLot = Math.min(minLot, fallbackPriceOut);
-    maxLot = Math.max(maxLot, fallbackPriceOut);
   }
 
-  // A chosen tier (wholesale/bundle) prices the whole line flat, replacing the
-  // per-batch revenue; COGS and stock consumption above are unaffected.
-  if (priceOverride != null) {
-    revenueTotal = priceOverride * quantity;
-  }
+  // One price for the whole line: the chosen tier when there is one, the card
+  // price otherwise.
+  const unitPrice = priceOverride != null ? priceOverride : cardPriceOut;
 
   costTotal = round2(costTotal);
-  revenueTotal = round2(revenueTotal);
+  const revenueTotal = round2(unitPrice * quantity);
   const costIn = quantity > 0 ? round2(costTotal / quantity) : 0;
-  const priceOut = quantity > 0 ? round2(revenueTotal / quantity) : 0;
-
-  // Oldest open batch left after consuming — the next price the till shows.
-  const [front] = await tx
-    .select({priceOut: inventoryBatches.priceOut})
-    .from(inventoryBatches)
-    .where(
-      and(
-        eq(inventoryBatches.businessId, businessId),
-        eq(inventoryBatches.productId, productId),
-        gt(inventoryBatches.qtyRemaining, 0),
-        ...(branchId ? [eq(inventoryBatches.branchId, branchId)] : []),
-      ),
-    )
-    .orderBy(asc(inventoryBatches.createdAt))
-    .limit(1);
 
   return {
     costTotal,
     costIn,
     revenueTotal,
-    priceOut,
-    frontPriceOut: front?.priceOut ?? null,
-    // Nothing was drawn at all (a zero-quantity line): the product's own price
-    // is the only figure this line can be said to carry.
-    minLotPriceOut: Number.isFinite(minLot) ? round2(minLot) : fallbackPriceOut,
-    maxLotPriceOut: Number.isFinite(maxLot) ? round2(maxLot) : fallbackPriceOut,
+    priceOut: round2(unitPrice),
   };
 }

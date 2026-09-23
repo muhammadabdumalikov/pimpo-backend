@@ -470,6 +470,19 @@ export class OrderService {
         priceType = 'bundle';
         priceOverride = Number(product.priceBundle);
       }
+      // The card is the price, so a card with no price cannot be sold from —
+      // it would ring up at nothing. A replayed offline sale is exempt: it
+      // already happened at the counter, and refusing it here would drop it
+      // out of the books.
+      if (
+        !options?.replay &&
+        priceOverride == null &&
+        !(Number(product.priceOut) > 0)
+      ) {
+        throw new AppException(ErrorCode.PRODUCT_PRICE_NOT_SET, {
+          name: product.name,
+        });
+      }
       planned.push({
         productId: product.id,
         productName: product.name,
@@ -531,7 +544,6 @@ export class OrderService {
           lineTotal: string;
           costIn: string;
           costTotal: string;
-          frontPriceOut: string | null;
         }[] = [];
         let total = 0;
 
@@ -548,19 +560,15 @@ export class OrderService {
             p.priceOverride,
           );
           // The receipt is written at the price the customer was shown, as long
-          // as the lots behind the line carry it. Stock and COGS above are
+          // as it is still the price the shop names. Stock and COGS above are
           // already settled and are not touched by this.
           const settledLine = resolveLinePrice({
             quoted: p.quotedPrice,
             quantity: p.quantity,
-            batchRevenue: c.revenueTotal,
-            batchUnitPrice: c.priceOut,
-            minLotPrice: c.minLotPriceOut,
-            maxLotPrice: c.maxLotPriceOut,
-            // The card price the till was reading from. Without it, putting a
-            // price up on goods already in stock would block every sale of
-            // that line until the next delivery.
-            cardPrice: p.priceOut,
+            lineRevenue: c.revenueTotal,
+            // The shop's price for this line: the tier the cashier chose, or
+            // the product card. A till reading anything else is out of date.
+            cardPrice: p.priceOverride ?? p.priceOut,
             productName: p.productName,
             // Same line the payment reconciliation draws: a replayed sale is
             // recorded, never refused.
@@ -576,7 +584,6 @@ export class OrderService {
             lineTotal: money(settledLine.revenueTotal),
             costIn: money(c.costIn),
             costTotal: money(c.costTotal),
-            frontPriceOut: c.frontPriceOut,
           });
         }
 
@@ -742,9 +749,11 @@ export class OrderService {
           })),
         );
 
-        // Draw the sold qty from the sale's BRANCH stock, keep products.quantity
-        // (the cross-branch sum) in step, and track the displayed selling price
-        // to the new FIFO-front batch (the next unit to be sold).
+        // Draw the sold qty from the sale's BRANCH stock and keep
+        // products.quantity (the cross-branch sum) in step. The selling price
+        // is NOT touched here: it belongs to the product card and only a person
+        // changes it. This used to re-point it at the new FIFO-front lot, which
+        // quietly undid every hand-set price at the next sale.
         for (const line of lines) {
           await tx
             .insert(branchStock)
@@ -766,9 +775,6 @@ export class OrderService {
             .update(products)
             .set({
               quantity: sql`ROUND((${products.quantity} - ${line.quantity})::numeric, 3)`,
-              ...(line.frontPriceOut !== null
-                ? {priceOut: line.frontPriceOut}
-                : {}),
               updatedAt: new Date(),
             })
             .where(

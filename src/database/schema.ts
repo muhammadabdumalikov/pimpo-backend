@@ -802,6 +802,46 @@ export const inventoryBatches = pgTable(
   }),
 );
 
+// Who changed a selling price, when, and what it was before. One row per field
+// changed, so "how did the wholesale price get here" is a single-column query.
+//
+// Selling prices are only ever set by a person — the product card, or applying
+// a delivery note's prices to it — so this is a complete account of how a price
+// came to be what it is. It exists because it once was not: a card price could
+// be quietly overwritten by a sale, and the only way to answer "it changes by
+// itself" was to infer it from sale prices and deploy dates.
+export const productPriceHistory = pgTable(
+  'product_price_history',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    // 'priceOut' | 'priceWholesale' | 'priceBundle'
+    field: varchar('field', {length: 20}).notNull(),
+    // Null when a tier is being set for the first time.
+    oldPrice: decimal('old_price', {precision: 10, scale: 2}),
+    newPrice: decimal('new_price', {precision: 10, scale: 2}).notNull(),
+    // 'card' (the product form) or 'receipt' (a delivery's prices applied).
+    source: varchar('source', {length: 20}).notNull().default('card'),
+    // The delivery note the price came from, when it came from one.
+    receiptId: varchar('receipt_id', {length: 36}),
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    productIdx: index('product_price_history_product_idx').on(
+      table.businessId,
+      table.productId,
+      table.createdAt,
+    ),
+  }),
+);
+
 // Per-branch stock ("do'kon qoldig'i") — the source of truth for how much of a
 // product is on hand IN EACH BRANCH. products.quantity is kept as the sum across
 // branches (denormalised) for backward compat. Sales deduct, receipts add, and
@@ -1108,13 +1148,15 @@ export const cashMovements = pgTable('cash_movements', {
 // ── Finance (Moliya) ──────────────────────────────────────────────────────
 // A financial account where money is kept: 'cash' (register/on-hand) or
 // 'noncash' (bank/card terminal). A cash account may link to a cash_register.
+// 'external' is the one hidden system account per business that "Tashqi
+// mablag'" (owner paid from own pocket) pairs are booked on — never listed.
 export const accounts = pgTable('accounts', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
     .notNull()
     .references(() => businesses.id, {onDelete: 'cascade'}),
   name: varchar('name', {length: 255}).notNull(), // "Asosiy kassa", "Bank hisobi"
-  type: varchar('type', {length: 10}).notNull(), // 'cash' | 'noncash'
+  type: varchar('type', {length: 10}).notNull(), // 'cash' | 'noncash' | 'external'
   // For a cash account: which register it belongs to (optional).
   registerId: varchar('register_id', {length: 36}),
   storeId: varchar('store_id', {length: 36}), // future: multi-store
@@ -1160,6 +1202,9 @@ export const financialCategories = pgTable('financial_categories', {
     .references(() => businesses.id, {onDelete: 'cascade'}),
   name: varchar('name', {length: 255}).notNull(),
   kind: varchar('kind', {length: 10}).notNull(), // 'income' | 'expense'
+  // Capital money (owner injection, opening balance, inkassatsiya) — moves
+  // between the owner and the business, so it stays out of the P&L.
+  isCapital: boolean('is_capital').default(false).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -1200,6 +1245,17 @@ export const financialTransactions = pgTable(
     orderId: varchar('order_id', {length: 36}),
     shiftId: varchar('shift_id', {length: 36}),
     cashMovementId: varchar('cash_movement_id', {length: 36}),
+    // Who wrote the row: 'manual' | 'external' | 'supplier_payment' |
+    // 'payroll' | 'shift_close' | 'cash_movement' | 'stock_take' | 'reversal'.
+    // The P&L reads it — a supplier payment is already in COGS.
+    source: varchar('source', {length: 20}).notNull().default('manual'),
+    // Storno: a 'reversal' row points at what it undoes, and that original
+    // gets cancelledAt. Both stay in the ledger; neither counts in reports.
+    reversesId: varchar('reverses_id', {length: 36}),
+    cancelledAt: timestamp('cancelled_at'),
+    // The two legs of a "Tashqi mablag'" booking (capital kirim + the
+    // expense it paid for) share one pairId and are cancelled together.
+    pairId: varchar('pair_id', {length: 36}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -1692,6 +1748,8 @@ export type SubscriptionPlan = typeof subscriptionPlans.$inferSelect;
 export type NewSubscriptionPlan = typeof subscriptionPlans.$inferInsert;
 export type BusinessSubscription = typeof businessSubscriptions.$inferSelect;
 export type NewBusinessSubscription = typeof businessSubscriptions.$inferInsert;
+export type ProductPriceHistory = typeof productPriceHistory.$inferSelect;
+export type NewProductPriceHistory = typeof productPriceHistory.$inferInsert;
 export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
 export type GlobalBarcode = typeof globalBarcodes.$inferSelect;

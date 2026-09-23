@@ -70,6 +70,11 @@ export enum ErrorCode {
   // ── Finance ────────────────────────────────────────────────────────────────
   FINANCE_ACCOUNT_NOT_FOUND = 'FINANCE_ACCOUNT_NOT_FOUND',
   FINANCE_TRANSFER_SAME_ACCOUNT = 'FINANCE_TRANSFER_SAME_ACCOUNT',
+  FINANCE_INSUFFICIENT_BALANCE = 'FINANCE_INSUFFICIENT_BALANCE',
+  FINANCE_CATEGORY_REQUIRED = 'FINANCE_CATEGORY_REQUIRED',
+  FINANCE_TRANSACTION_NOT_FOUND = 'FINANCE_TRANSACTION_NOT_FOUND',
+  FINANCE_TRANSACTION_ALREADY_CANCELLED = 'FINANCE_TRANSACTION_ALREADY_CANCELLED',
+  FINANCE_TRANSACTION_NOT_CANCELLABLE = 'FINANCE_TRANSACTION_NOT_CANCELLABLE',
 
   // ── Order ──────────────────────────────────────────────────────────────────
   ORDER_NOT_FOUND = 'ORDER_NOT_FOUND',
@@ -139,6 +144,9 @@ export enum ErrorCode {
   RECEIPT_ALREADY_DRAFT = 'RECEIPT_ALREADY_DRAFT',
   RECEIPT_RECEIVE_BEFORE_PAYMENT = 'RECEIPT_RECEIVE_BEFORE_PAYMENT',
   RECEIPT_RECEIVE_BEFORE_RETURN = 'RECEIPT_RECEIVE_BEFORE_RETURN',
+  RECEIPT_RECEIVE_BEFORE_PRICES = 'RECEIPT_RECEIVE_BEFORE_PRICES',
+  PRODUCT_PRICE_NOT_SET = 'PRODUCT_PRICE_NOT_SET',
+  RECEIPT_NO_PRICES_TO_APPLY = 'RECEIPT_NO_PRICES_TO_APPLY',
   RECEIPT_NOTHING_TO_RETURN = 'RECEIPT_NOTHING_TO_RETURN',
   RECEIPT_PRODUCT_NOT_ON_RECEIPT = 'RECEIPT_PRODUCT_NOT_ON_RECEIPT',
   RECEIPT_RETURN_EXCEEDS_STOCK = 'RECEIPT_RETURN_EXCEEDS_STOCK',
@@ -447,6 +455,28 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message: 'Source and destination must differ',
   },
+  [ErrorCode.FINANCE_INSUFFICIENT_BALANCE]: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'Not enough money on "{accountName}": balance {balance} {currency}, short by {shortfall} {currency}.',
+  },
+  [ErrorCode.FINANCE_CATEGORY_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Choose a category for the income.',
+  },
+  [ErrorCode.FINANCE_TRANSACTION_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Transaction not found',
+  },
+  [ErrorCode.FINANCE_TRANSACTION_ALREADY_CANCELLED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This transaction is already cancelled.',
+  },
+  [ErrorCode.FINANCE_TRANSACTION_NOT_CANCELLABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'This entry can only be cancelled where it was made (supplier payment, payroll, shift).',
+  },
 
   // Order
   [ErrorCode.ORDER_NOT_FOUND]: {
@@ -744,6 +774,26 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Receive the draft before returning goods',
+  },
+  // Selling at the card price means a card with no price has nothing to sell
+  // at. It used to fall back to whatever the lot behind the line was worth, so
+  // an unpriced product quietly went out at some old delivery's figure; now it
+  // stops at the till, where somebody can put a price on it.
+  [ErrorCode.PRODUCT_PRICE_NOT_SET]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'No selling price is set for "{name}"',
+  },
+  // Prices on a draft are still being typed, and the goods are not on the shelf
+  // yet — there is nothing to reprice until the document is received.
+  [ErrorCode.RECEIPT_RECEIVE_BEFORE_PRICES]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Receive the draft before applying its prices',
+  },
+  // Every product asked for is already at the price this receipt names — two
+  // people on the same banner, or a stale tab pressing it twice.
+  [ErrorCode.RECEIPT_NO_PRICES_TO_APPLY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'These prices are already on the product cards',
   },
   [ErrorCode.RECEIPT_NOTHING_TO_RETURN]: {
     status: HttpStatus.BAD_REQUEST,

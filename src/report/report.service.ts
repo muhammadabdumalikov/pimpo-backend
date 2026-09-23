@@ -12,6 +12,7 @@ import {
   userDebts,
   debtPayments,
   financialTransactions,
+  financialCategories,
   cashShifts,
   inventoryBatches,
   goodsReceipts,
@@ -27,7 +28,8 @@ import {
   saleReturns,
   saleReturnItems,
 } from '../database/schema';
-import {eq, and, or, gte, lte, gt, sql, desc} from 'drizzle-orm';
+import {eq, and, or, gte, lte, gt, ne, not, sql, desc} from 'drizzle-orm';
+import {capitalRow, liveRow} from '../finance/ledger-rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
 
@@ -133,7 +135,12 @@ export class ReportService {
    *   Xarajatlar (finance expense categories) → Kassa farqi → Sof foyda.
    *
    * - Revenue/discounts/COGS come from completed orders in the range.
-   * - Expenses come from the finance ledger (kind='expense') grouped by category.
+   * - Expenses come from the finance ledger (kind='expense') grouped by category,
+   *   minus what isn't a cost of this period: supplier payments (the goods are
+   *   costed in COGS when sold), capital outflows (inkassatsiya), and stornoed
+   *   rows with their reversals.
+   * - Other income is operational kirim (not capital) — e.g. "Boshqa tushum",
+   *   a stock-take surplus.
    * - "Kassa yopishdagi farq" is the sum of shift reconciliation differences for
    *   shifts closed in the range (surplus = income, shortage = expense).
    */
@@ -179,26 +186,39 @@ export class ReportService {
       .leftJoin(products, eq(orderItems.productId, products.id))
       .where(orderWhere);
 
-    // Expenses grouped by finance category (the ledger is the source of truth).
-    const expenseRows = await this.db
-      .select({
-        category: sql<string>`COALESCE(${financialTransactions.categoryName}, 'Boshqa')`,
-        amount: sql<string>`COALESCE(SUM(${financialTransactions.amount}), 0)`,
-      })
-      .from(financialTransactions)
-      .where(
-        and(
-          eq(financialTransactions.businessId, businessId),
-          eq(financialTransactions.kind, 'expense'),
-          eq(financialTransactions.currency, 'UZS'),
-          ...this.rawDateWhere(
-            sql`COALESCE(${financialTransactions.operationDate}, ${financialTransactions.createdAt})`,
-            range,
-          ),
+    // Expenses and other income grouped by finance category (the ledger is
+    // the source of truth). Both read the same live, non-capital rows.
+    const ledgerWhere = (kind: 'income' | 'expense') =>
+      and(
+        eq(financialTransactions.businessId, businessId),
+        eq(financialTransactions.kind, kind),
+        eq(financialTransactions.currency, 'UZS'),
+        ne(financialTransactions.source, 'supplier_payment'),
+        liveRow(),
+        not(capitalRow()),
+        ...this.rawDateWhere(
+          sql`COALESCE(${financialTransactions.operationDate}, ${financialTransactions.createdAt})`,
+          range,
         ),
-      )
-      .groupBy(sql`COALESCE(${financialTransactions.categoryName}, 'Boshqa')`)
-      .orderBy(desc(sql`SUM(${financialTransactions.amount})`));
+      );
+    const byCategory = (kind: 'income' | 'expense') =>
+      this.db
+        .select({
+          category: sql<string>`COALESCE(${financialTransactions.categoryName}, 'Boshqa')`,
+          amount: sql<string>`COALESCE(SUM(${financialTransactions.amount}), 0)`,
+        })
+        .from(financialTransactions)
+        .leftJoin(
+          financialCategories,
+          eq(financialCategories.id, financialTransactions.categoryId),
+        )
+        .where(ledgerWhere(kind))
+        .groupBy(sql`COALESCE(${financialTransactions.categoryName}, 'Boshqa')`)
+        .orderBy(desc(sql`SUM(${financialTransactions.amount})`));
+    const [expenseRows, otherIncomeRows] = await Promise.all([
+      byCategory('expense'),
+      byCategory('income'),
+    ]);
 
     // Customer returns in the range (on the day they happened): their net
     // value comes off revenue, and the cost of goods put back on the shelf
@@ -238,8 +258,14 @@ export class ReportService {
       amount: Number(e.amount),
     }));
     const totalExpenses = expenses.reduce((s, e) => s + e.amount, 0);
+    const otherIncome = otherIncomeRows.map((e) => ({
+      category: e.category,
+      amount: Number(e.amount),
+    }));
+    const totalOtherIncome = otherIncome.reduce((s, e) => s + e.amount, 0);
     const cashDifference = Number(diffRow?.difference ?? 0);
-    const netProfit = grossProfit - totalExpenses + cashDifference;
+    const netProfit =
+      grossProfit + totalOtherIncome - totalExpenses + cashDifference;
 
     return {
       from: range?.from ?? null,
@@ -250,6 +276,8 @@ export class ReportService {
       cogs,
       grossProfit,
       grossMargin,
+      otherIncome,
+      totalOtherIncome,
       expenses,
       totalExpenses,
       cashDifference,

@@ -48,6 +48,8 @@ import {UpdateReceiptDto} from './dto/update-receipt.dto';
 import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import {AddPaymentDto} from './dto/add-payment.dto';
 import {CreateReturnDto} from './dto/create-return.dto';
+import {displayAmount} from '../common/display-amount';
+import {recordPriceChangesTx} from '../common/price-history';
 
 function money(value: number): string {
   return value.toFixed(2);
@@ -73,17 +75,6 @@ function outstandingOf(receipt: GoodsReceipt): number {
     Math.round(Number(receipt.paidAmount) * 100) -
     Math.round(Number(receipt.returnedAmount) * 100);
   return Math.max(0, cents) / 100;
-}
-
-/**
- * An amount for an error message: thousands grouped with a space, cents only
- * when there are any ("30 000", "12.50"). Locale-neutral on purpose — the
- * message is localized on the client, the number is not.
- */
-function displayAmount(value: number): string {
-  const [whole, cents] = value.toFixed(2).split('.');
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  return cents === '00' ? grouped : `${grouped}.${cents}`;
 }
 
 export type ReceiptWithItems = GoodsReceipt & {
@@ -120,21 +111,35 @@ interface PreparedReceipt {
   received: Map<string, {qty: number; value: number}>;
   productInfo: Map<
     string,
-    {
-      name: string;
-      priceOut: string;
-      quantityType?: string | null;
-      repriceOverride?: boolean;
-    }
+    {name: string; priceOut: string; quantityType?: string | null}
   >;
-  wholesaleByProduct: Map<string, string>;
-  bundleByProduct: Map<string, string>;
   total: number;
   itemCount: number;
 }
 
 // Drizzle transaction handle (parameter of db.transaction's callback).
 type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
+
+/** The card fields a receipt line can propose a new figure for. */
+export type PriceField = 'priceOut' | 'priceWholesale' | 'priceBundle';
+
+/** One product whose card prices disagree with what this receipt says. */
+export interface PriceSuggestion {
+  productId: string;
+  productName: string;
+  current: {
+    priceOut: string | null;
+    priceWholesale: string | null;
+    priceBundle: string | null;
+  };
+  proposed: {
+    priceOut: string | null;
+    priceWholesale: string | null;
+    priceBundle: string | null;
+  };
+  /** Which of the three actually differ — the rest are left alone. */
+  changes: PriceField[];
+}
 
 @Injectable()
 export class ReceiptService {
@@ -209,22 +214,13 @@ export class ReceiptService {
     // The receipt keeps every entered line as the document of record.
     const productInfo = new Map<
       string,
-      {
-        name: string;
-        priceOut: string;
-        quantityType?: string | null;
-        repriceOverride?: boolean;
-      }
+      {name: string; priceOut: string; quantityType?: string | null}
     >();
     // Per-product received totals — the same product across multiple lines is
     // summed so a single stock/cost update applies the full received batch
     // (otherwise a second line for the same product would overwrite the first).
     const received = new Map<string, {qty: number; value: number}>();
     const lines: ReceiptLine[] = [];
-    // Wholesale + bundle prices entered per product (last line wins) → update
-    // the product's tiers.
-    const wholesaleByProduct = new Map<string, string>();
-    const bundleByProduct = new Map<string, string>();
     let total = 0;
     let itemCount = 0;
 
@@ -253,23 +249,12 @@ export class ReceiptService {
         };
         productInfo.set(item.productId, info);
       }
-      // A per-line override (last one wins) controls repricing for the product.
-      if (item.repriceExisting !== undefined) {
-        info.repriceOverride = item.repriceExisting;
-      }
-
       // Selling price of this batch: explicit, else the product's current price.
       const priceOut = item.priceOut ?? Number(info.priceOut);
       const priceWholesale =
         item.priceWholesale != null ? money(item.priceWholesale) : null;
-      if (priceWholesale != null) {
-        wholesaleByProduct.set(item.productId, priceWholesale);
-      }
       const priceBundle =
         item.priceBundle != null ? money(item.priceBundle) : null;
-      if (priceBundle != null) {
-        bundleByProduct.set(item.productId, priceBundle);
-      }
       // Line total is in the receipt currency; the base cost (UZS) drives the
       // inventory batch + weighted-average product cost.
       const lineTotal = item.priceIn * item.quantity;
@@ -305,8 +290,6 @@ export class ReceiptService {
       lines,
       received,
       productInfo,
-      wholesaleByProduct,
-      bundleByProduct,
       total,
       itemCount,
     };
@@ -359,21 +342,9 @@ export class ReceiptService {
       lines,
       received,
       productInfo,
-      wholesaleByProduct,
-      bundleByProduct,
       total,
       itemCount,
     } = await this.prepareReceipt(businessId, dto);
-
-    // Default selling-price behaviour comes from the business settings, but a
-    // receipt line can override it per product.
-    const [settings] = await this.dbService.db
-      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
-      .from(receiptSettings)
-      .where(eq(receiptSettings.businessId, businessId))
-      .limit(1);
-    const repriceExistingDefault =
-      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
 
     const receiptId = generateId();
     const draft = dto.draft === true;
@@ -418,17 +389,7 @@ export class ReceiptService {
       // A draft only records the document — stock, batches and cost are applied
       // later when it is received. A normal receipt applies them immediately.
       if (!draft) {
-        await this.applyReceiptStockTx(
-          tx,
-          businessId,
-          branchId,
-          lines,
-          received,
-          productInfo,
-          wholesaleByProduct,
-          bundleByProduct,
-          repriceExistingDefault,
-        );
+        await this.applyReceiptStockTx(tx, businessId, branchId, lines, received);
       }
     });
 
@@ -436,7 +397,7 @@ export class ReceiptService {
   }
 
   /**
-   * Apply a receipt's lines to stock: push wholesale prices, open one inventory
+   * Apply a receipt's lines to stock: open one inventory
    * batch per line, add received quantity + roll the weighted-average cost, and
    * settle the selling price (reprice existing batches or track the FIFO front).
    * Runs inside the caller's transaction. Shared by immediate receipts and by
@@ -448,32 +409,14 @@ export class ReceiptService {
     branchId: string,
     lines: ReceiptLine[],
     received: Map<string, {qty: number; value: number}>,
-    productInfo: Map<
-      string,
-      {name: string; priceOut: string; repriceOverride?: boolean}
-    >,
-    wholesaleByProduct: Map<string, string>,
-    bundleByProduct: Map<string, string>,
-    repriceExistingDefault: boolean,
   ): Promise<void> {
-    // Push entered wholesale prices onto the products (last value per product).
-    for (const [productId, priceWholesale] of wholesaleByProduct) {
-      await tx
-        .update(products)
-        .set({priceWholesale, updatedAt: new Date()})
-        .where(
-          and(eq(products.businessId, businessId), eq(products.id, productId)),
-        );
-    }
-    // Same for entered bundle ("to'plam") prices.
-    for (const [productId, priceBundle] of bundleByProduct) {
-      await tx
-        .update(products)
-        .set({priceBundle, updatedAt: new Date()})
-        .where(
-          and(eq(products.businessId, businessId), eq(products.id, productId)),
-        );
-    }
+    // No selling price is touched here, in either direction. The prices typed
+    // on a delivery note are what that document says; the prices the shop
+    // charges live on the product cards. A delivery proposes and a person
+    // disposes — see getPriceSuggestions / applyPrices. Receiving used to write
+    // both: it pushed the entered tiers onto the cards and re-pointed the card
+    // price at a lot, so a 20%-markup figure nobody had looked at could become
+    // the shelf price of a whole catalogue.
 
     // Open one inventory batch per line — the FIFO/cost source of truth. Same
     // product at different prices stays as separate lots. The batch belongs to
@@ -535,63 +478,6 @@ export class ReceiptService {
         );
     }
 
-    // Selling-price handling per product (reprice existing batches up, or track
-    // the FIFO-front price).
-    for (const [productId, info] of productInfo) {
-      const currentPriceOut = Number(info.priceOut);
-      const newPriceOut = Math.max(
-        ...lines
-          .filter((l) => l.productId === productId)
-          .map((l) => Number(l.priceOut)),
-      );
-      const reprice = info.repriceOverride ?? repriceExistingDefault;
-
-      if (newPriceOut > currentPriceOut && reprice) {
-        await tx
-          .update(inventoryBatches)
-          .set({priceOut: money(newPriceOut)})
-          .where(
-            and(
-              eq(inventoryBatches.businessId, businessId),
-              eq(inventoryBatches.productId, productId),
-              gt(inventoryBatches.qtyRemaining, 0),
-            ),
-          );
-        await tx
-          .update(products)
-          .set({priceOut: money(newPriceOut), updatedAt: new Date()})
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.id, productId),
-            ),
-          );
-      } else {
-        const [front] = await tx
-          .select({priceOut: inventoryBatches.priceOut})
-          .from(inventoryBatches)
-          .where(
-            and(
-              eq(inventoryBatches.businessId, businessId),
-              eq(inventoryBatches.productId, productId),
-              gt(inventoryBatches.qtyRemaining, 0),
-            ),
-          )
-          .orderBy(asc(inventoryBatches.createdAt))
-          .limit(1);
-        if (front) {
-          await tx
-            .update(products)
-            .set({priceOut: front.priceOut, updatedAt: new Date()})
-            .where(
-              and(
-                eq(products.businessId, businessId),
-                eq(products.id, productId),
-              ),
-            );
-        }
-      }
-    }
   }
 
   /**
@@ -622,14 +508,6 @@ export class ReceiptService {
       .from(goodsReceiptItems)
       .where(eq(goodsReceiptItems.receiptId, receiptId));
 
-    const [settings] = await this.dbService.db
-      .select({priceIncreaseMode: receiptSettings.priceIncreaseMode})
-      .from(receiptSettings)
-      .where(eq(receiptSettings.businessId, businessId))
-      .limit(1);
-    const repriceExistingDefault =
-      settings?.priceIncreaseMode === 'REPRICE_EXISTING';
-
     // Cost is stored in base UZS; convert the saved line prices by the receipt's
     // rate (1 for UZS receipts).
     const rateToBase =
@@ -638,12 +516,7 @@ export class ReceiptService {
     // Rebuild the apply inputs from the saved lines + the products' live prices.
     const lines: ReceiptLine[] = [];
     const received = new Map<string, {qty: number; value: number}>();
-    const productInfo = new Map<
-      string,
-      {name: string; priceOut: string; repriceOverride?: boolean}
-    >();
-    const wholesaleByProduct = new Map<string, string>();
-    const bundleByProduct = new Map<string, string>();
+    const productInfo = new Map<string, {name: string; priceOut: string}>();
 
     for (const it of items) {
       if (!it.productId) continue;
@@ -666,12 +539,6 @@ export class ReceiptService {
         productInfo.set(it.productId, info);
       }
       const priceOut = it.priceOut ?? info.priceOut;
-      if (it.priceWholesale != null) {
-        wholesaleByProduct.set(it.productId, it.priceWholesale);
-      }
-      if (it.priceBundle != null) {
-        bundleByProduct.set(it.productId, it.priceBundle);
-      }
       const priceInBase = Number(it.priceIn) * rateToBase;
       lines.push({
         itemId: it.id,
@@ -704,10 +571,6 @@ export class ReceiptService {
         receiveBranchId,
         lines,
         received,
-        productInfo,
-        wholesaleByProduct,
-        bundleByProduct,
-        repriceExistingDefault,
       );
       await tx
         .update(goodsReceipts)
@@ -1067,31 +930,9 @@ export class ReceiptService {
           and(eq(products.businessId, businessId), eq(products.id, productId)),
         );
 
-      // Selling price follows the FIFO front of what remains — the same rule
-      // receiving uses when it is not repricing.
-      const [front] = await tx
-        .select({priceOut: inventoryBatches.priceOut})
-        .from(inventoryBatches)
-        .where(
-          and(
-            eq(inventoryBatches.businessId, businessId),
-            eq(inventoryBatches.productId, productId),
-            gt(inventoryBatches.qtyRemaining, 0),
-          ),
-        )
-        .orderBy(asc(inventoryBatches.createdAt))
-        .limit(1);
-      if (front) {
-        await tx
-          .update(products)
-          .set({priceOut: front.priceOut, updatedAt: new Date()})
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.id, productId),
-            ),
-          );
-      }
+      // The selling price is deliberately left alone. Cost is arithmetic — it
+      // is whatever the remaining lots were bought for — but the price is a
+      // decision the shop made, and undoing a delivery is no reason to undo it.
     }
   }
 
@@ -1696,7 +1537,10 @@ export class ReceiptService {
       }
 
       const txn = await this.financeService.recordExpenseTx(tx, businessId, {
+        source: 'supplier_payment',
         accountId: dto.accountId,
+        external: dto.external,
+        allowNegative: dto.allowNegative,
         amount: dto.amount,
         currency,
         note:
@@ -1794,14 +1638,12 @@ export class ReceiptService {
       // A payment with no booked expense behind it (none were made without
       // one, but the columns are nullable) has nothing in Moliya to answer.
       if (payment.financialTransactionId && payment.accountId) {
-        await this.financeService.recordIncomeTx(tx, businessId, {
-          accountId: payment.accountId,
-          amount,
-          currency: payment.currency,
-          note: `Bekor qilindi: ta'minotchi to'lovi${payment.supplierName ? `: ${payment.supplierName}` : ''}`,
-          cashierId: cashier.id,
-          cashierName: cashier.name,
-        });
+        await this.financeService.reverseTx(
+          tx,
+          businessId,
+          payment.financialTransactionId,
+          cashier,
+        );
       }
 
       await tx
@@ -1832,6 +1674,177 @@ export class ReceiptService {
 
       return {receipt: updated};
     });
+  }
+
+  // ─── Selling prices a receipt proposes ───────────────────────────────────
+
+  /**
+   * The lines of this receipt whose selling prices differ from what the product
+   * cards say today — what receiving no longer applies on its own.
+   *
+   * A delivery note is where a price change is usually noticed: the goods came
+   * in dearer, so the shelf price moves. It is not where that price is decided.
+   * Receiving used to write these figures onto the cards by itself, and since a
+   * blank line is pre-filled from the house markup, a document nobody read
+   * could quietly reprice a shop's whole catalogue. So the receipt proposes and
+   * a person disposes: this is the proposal.
+   *
+   * Same product on several lines: the last line that named a price wins, the
+   * way the document reads.
+   */
+  async getPriceSuggestions(
+    businessId: string,
+    receiptId: string,
+  ): Promise<PriceSuggestion[]> {
+    const receipt = await this.findOne(businessId, receiptId);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    return this.buildPriceSuggestions(businessId, receipt);
+  }
+
+  /**
+   * Put the receipt's prices on the chosen products' cards. Only the products
+   * asked for, and only the fields that actually differ — a card nobody picked
+   * keeps the price it has.
+   */
+  async applyPrices(
+    businessId: string,
+    receiptId: string,
+    productIds: string[],
+    account?: IAccount,
+  ): Promise<{applied: number; products: PriceSuggestion[]}> {
+    const receipt = await this.findOne(businessId, receiptId);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    // A draft's prices are still being typed and its goods are not on the shelf.
+    if (receipt.status === 'draft') {
+      throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_PRICES);
+    }
+
+    const wanted = new Set(productIds);
+    const suggestions = (
+      await this.buildPriceSuggestions(businessId, receipt)
+    ).filter((s) => wanted.has(s.productId));
+    if (suggestions.length === 0) {
+      throw new AppException(ErrorCode.RECEIPT_NO_PRICES_TO_APPLY);
+    }
+
+    const actor = await this.resolveCashier(account);
+
+    await this.dbService.db.transaction(async (tx) => {
+      for (const s of suggestions) {
+        const set: Record<string, string | Date> = {updatedAt: new Date()};
+        if (s.changes.includes('priceOut') && s.proposed.priceOut != null) {
+          set.priceOut = s.proposed.priceOut;
+        }
+        if (
+          s.changes.includes('priceWholesale') &&
+          s.proposed.priceWholesale != null
+        ) {
+          set.priceWholesale = s.proposed.priceWholesale;
+        }
+        if (s.changes.includes('priceBundle') && s.proposed.priceBundle != null) {
+          set.priceBundle = s.proposed.priceBundle;
+        }
+        await tx
+          .update(products)
+          .set(set)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.id, s.productId),
+            ),
+          );
+        // The same history a hand-edited card writes, pointing back at the
+        // document the figure came from.
+        await recordPriceChangesTx(tx, {
+          businessId,
+          productId: s.productId,
+          before: s.current,
+          after: Object.fromEntries(
+            s.changes.map((f) => [f, s.proposed[f]]),
+          ) as Record<string, string | null>,
+          origin: {source: 'receipt', receiptId},
+          actor,
+        });
+      }
+    });
+
+    return {applied: suggestions.length, products: suggestions};
+  }
+
+  /** Shared by the proposal and by applying it, so the two cannot drift. */
+  private async buildPriceSuggestions(
+    businessId: string,
+    receipt: ReceiptWithItems,
+  ): Promise<PriceSuggestion[]> {
+    const proposed = new Map<
+      string,
+      {
+        priceOut: string | null;
+        priceWholesale: string | null;
+        priceBundle: string | null;
+      }
+    >();
+    for (const item of receipt.items) {
+      if (!item.productId) continue;
+      const cur = proposed.get(item.productId) ?? {
+        priceOut: null,
+        priceWholesale: null,
+        priceBundle: null,
+      };
+      // Last line naming a price wins; a blank leaves the earlier one standing.
+      if (item.priceOut != null) cur.priceOut = item.priceOut;
+      if (item.priceWholesale != null) cur.priceWholesale = item.priceWholesale;
+      if (item.priceBundle != null) cur.priceBundle = item.priceBundle;
+      proposed.set(item.productId, cur);
+    }
+    if (proposed.size === 0) return [];
+
+    const cards = await this.dbService.db
+      .select({
+        id: products.id,
+        name: products.name,
+        priceOut: products.priceOut,
+        priceWholesale: products.priceWholesale,
+        priceBundle: products.priceBundle,
+      })
+      .from(products)
+      .where(
+        and(
+          eq(products.businessId, businessId),
+          inArray(products.id, [...proposed.keys()]),
+        ),
+      );
+
+    // Money carries two decimals: below half a tiyin is the same price.
+    const differs = (a: string | null, b: string | null): boolean =>
+      b != null && (a == null || Math.abs(Number(a) - Number(b)) > 0.005);
+
+    const out: PriceSuggestion[] = [];
+    for (const card of cards) {
+      const want = proposed.get(card.id);
+      if (!want) continue;
+      const changes: PriceField[] = [];
+      if (differs(card.priceOut, want.priceOut)) changes.push('priceOut');
+      if (differs(card.priceWholesale, want.priceWholesale)) {
+        changes.push('priceWholesale');
+      }
+      if (differs(card.priceBundle, want.priceBundle)) {
+        changes.push('priceBundle');
+      }
+      if (changes.length === 0) continue;
+      out.push({
+        productId: card.id,
+        productName: card.name,
+        current: {
+          priceOut: card.priceOut,
+          priceWholesale: card.priceWholesale,
+          priceBundle: card.priceBundle,
+        },
+        proposed: want,
+        changes,
+      });
+    }
+    return out;
   }
 
   // ─── Supplier returns (T3) ────────────────────────────────────────────────
@@ -1909,26 +1922,6 @@ export class ReceiptService {
     }
     const itemIds = receiptItems.map((it) => it.id);
 
-    const batches = itemIds.length
-      ? await this.dbService.db
-          .select()
-          .from(inventoryBatches)
-          .where(
-            and(
-              eq(inventoryBatches.businessId, businessId),
-              inArray(inventoryBatches.receiptItemId, itemIds),
-              gt(inventoryBatches.qtyRemaining, 0),
-            ),
-          )
-          .orderBy(asc(inventoryBatches.createdAt))
-      : [];
-    const batchesByProduct = new Map<string, typeof batches>();
-    for (const b of batches) {
-      const list = batchesByProduct.get(b.productId) ?? [];
-      list.push(b);
-      batchesByProduct.set(b.productId, list);
-    }
-
     // Unit type per returned product, so weighed goods count as one item (their
     // fractional kg isn't a piece count) — keeps itemCount whole.
     const requestedIds = [...requested.keys()];
@@ -1947,62 +1940,6 @@ export class ReceiptService {
       productMeta.map((p) => [p.id, p.quantityType]),
     );
 
-    // Plan the reversal: consume the receipt's batches oldest-first and value
-    // each returned unit at that batch's purchase cost.
-    const returnLines: {
-      productId: string;
-      productName: string;
-      quantity: number;
-      priceIn: string;
-      lineTotal: string;
-    }[] = [];
-    const batchUpdates: {id: string; newRemaining: number}[] = [];
-    let returnTotal = 0;
-    let returnedQty = 0;
-
-    for (const [productId, qty] of requested) {
-      const name = nameByProduct.get(productId);
-      if (!name) {
-        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, {
-          productId,
-        });
-      }
-      const pb = batchesByProduct.get(productId) ?? [];
-      const available = pb.reduce((s, b) => s + b.qtyRemaining, 0);
-      if (qty > available) {
-        throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, {
-          qty,
-          name,
-          available,
-        });
-      }
-      let toReturn = qty;
-      let lineValue = 0;
-      for (const b of pb) {
-        if (toReturn <= 0) break;
-        const take = Math.min(toReturn, b.qtyRemaining);
-        // Value the return at the line's original (receipt-currency) cost.
-        const unit = b.receiptItemId
-          ? (priceInByItem.get(b.receiptItemId) ?? Number(b.priceIn))
-          : Number(b.priceIn);
-        lineValue += take * unit;
-        toReturn -= take;
-        batchUpdates.push({
-          id: b.id,
-          newRemaining: Math.round((b.qtyRemaining - take) * 1000) / 1000,
-        });
-      }
-      returnTotal += lineValue;
-      returnedQty += qtyTypeByProduct.get(productId) === 'kg' ? 1 : qty;
-      returnLines.push({
-        productId,
-        productName: name,
-        quantity: qty,
-        priceIn: money(qty > 0 ? lineValue / qty : 0),
-        lineTotal: money(lineValue),
-      });
-    }
-
     const cashier = await this.resolveCashier(account);
     const currency = receipt.currency ?? 'UZS';
     const returnId = generateId();
@@ -2016,6 +1953,86 @@ export class ReceiptService {
       // un-receive of the same receipt would hold the lots while waiting for
       // the row the other side holds, and one of them would die in a deadlock.
       const locked = await this.lockReceiptTx(tx, businessId, receiptId);
+
+      // The lots this return draws down, locked, and only then checked against.
+      // Planned outside the transaction — as this once was — two tills
+      // returning the same units both passed a check only one of them could
+      // honour, and each wrote an absolute qtyRemaining over the other's: a
+      // delivery of 10 could go back twice.
+      const batches = itemIds.length
+        ? await tx
+            .select()
+            .from(inventoryBatches)
+            .where(
+              and(
+                eq(inventoryBatches.businessId, businessId),
+                inArray(inventoryBatches.receiptItemId, itemIds),
+                gt(inventoryBatches.qtyRemaining, 0),
+              ),
+            )
+            .orderBy(asc(inventoryBatches.createdAt))
+            .for('update')
+        : [];
+      const batchesByProduct = new Map<string, typeof batches>();
+      for (const b of batches) {
+        const list = batchesByProduct.get(b.productId) ?? [];
+        list.push(b);
+        batchesByProduct.set(b.productId, list);
+      }
+
+      // Plan the reversal: consume the receipt's batches oldest-first and value
+      // each returned unit at that batch's purchase cost.
+      const returnLines: {
+        productId: string;
+        productName: string;
+        quantity: number;
+        priceIn: string;
+        lineTotal: string;
+      }[] = [];
+      const batchUpdates: {id: string; take: number}[] = [];
+      let returnTotal = 0;
+      let returnedQty = 0;
+
+      for (const [productId, qty] of requested) {
+        const name = nameByProduct.get(productId);
+        if (!name) {
+          throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, {
+            productId,
+          });
+        }
+        const pb = batchesByProduct.get(productId) ?? [];
+        const available = pb.reduce((s, b) => s + b.qtyRemaining, 0);
+        if (qty > available) {
+          throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, {
+            qty,
+            name,
+            available,
+          });
+        }
+        let toReturn = qty;
+        let lineValue = 0;
+        for (const b of pb) {
+          if (toReturn <= 0) break;
+          const take = Math.min(toReturn, b.qtyRemaining);
+          // Value the return at the line's original (receipt-currency) cost.
+          const unit = b.receiptItemId
+            ? (priceInByItem.get(b.receiptItemId) ?? Number(b.priceIn))
+            : Number(b.priceIn);
+          lineValue += take * unit;
+          toReturn -= take;
+          batchUpdates.push({id: b.id, take});
+        }
+        returnTotal += lineValue;
+        returnedQty += qtyTypeByProduct.get(productId) === 'kg' ? 1 : qty;
+        returnLines.push({
+          productId,
+          productName: name,
+          quantity: qty,
+          priceIn: money(qty > 0 ? lineValue / qty : 0),
+          lineTotal: money(lineValue),
+        });
+      }
+
       const [ret] = await tx
         .insert(supplierReturns)
         .values({
@@ -2046,11 +2063,14 @@ export class ReceiptService {
         })),
       );
 
-      // Reverse the batches (reduce qtyRemaining) …
+      // Reverse the batches (reduce qtyRemaining) — relative to what the row
+      // holds now, not to a figure read before the lock.
       for (const u of batchUpdates) {
         await tx
           .update(inventoryBatches)
-          .set({qtyRemaining: u.newRemaining})
+          .set({
+            qtyRemaining: sql`ROUND((${inventoryBatches.qtyRemaining} - ${u.take})::numeric, 3)`,
+          })
           .where(eq(inventoryBatches.id, u.id));
       }
 

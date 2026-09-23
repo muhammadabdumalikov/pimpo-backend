@@ -935,10 +935,10 @@ export class StockTakeService {
       for (const line of lines) {
         await tx.execute(sql`
           INSERT INTO financial_transactions
-            (id, business_id, kind, is_cash, amount, currency,
+            (id, business_id, kind, source, is_cash, amount, currency,
              category_name, cashier_id, cashier_name, note, operation_date, created_at)
           VALUES
-            (${generateId()}, ${p.businessId}, ${line.kind}, false,
+            (${generateId()}, ${p.businessId}, ${line.kind}, 'stock_take', false,
              ${line.amount.toFixed(4)}, 'UZS', ${line.categoryName},
              ${p.cashierId}, ${p.cashierName}, ${line.note}, now(), now())
         `);

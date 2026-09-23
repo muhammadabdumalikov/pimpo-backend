@@ -419,7 +419,9 @@ export class PayrollService {
     staffId: string,
     data: {
       amount: number;
-      accountId: string;
+      accountId?: string;
+      external?: boolean;
+      allowNegative?: boolean;
       type: 'payment' | 'advance';
       note?: string;
     },
@@ -437,7 +439,10 @@ export class PayrollService {
 
     return this.db.transaction(async (tx) => {
       const txn = await this.financeService.recordExpenseTx(tx, businessId, {
+        source: 'payroll',
         accountId: data.accountId,
+        external: data.external,
+        allowNegative: data.allowNegative,
         amount: data.amount,
         currency: 'UZS',
         categoryId: category.id,
@@ -464,7 +469,7 @@ export class PayrollService {
           type: data.type,
           amount: String(data.amount),
           balanceAfter: String(balanceAfter),
-          accountId: data.accountId,
+          accountId: txn.accountId,
           financialTransactionId: txn.id,
           note: data.note?.trim() || null,
           createdById: actor.id,
@@ -549,18 +554,12 @@ export class PayrollService {
       await this.applyToBalance(tx, entry.staffId, amount, reverseSign);
 
       if (entry.financialTransactionId && entry.accountId) {
-        const category =
-          await this.financeService.getOrCreatePayrollCategory(businessId);
-        await this.financeService.recordIncomeTx(tx, businessId, {
-          accountId: entry.accountId,
-          amount,
-          currency: 'UZS',
-          categoryId: category.id,
-          categoryName: category.name,
-          cashierId: actor.id,
-          cashierName: actor.name,
-          note: `Bekor qilindi: ${entry.staffName} — ish haqi to'lovi`,
-        });
+        await this.financeService.reverseTx(
+          tx,
+          businessId,
+          entry.financialTransactionId,
+          actor,
+        );
       }
 
       await tx.delete(payrollEntries).where(eq(payrollEntries.id, entryId));

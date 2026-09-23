@@ -131,6 +131,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   business_id varchar(36) NOT NULL
   name varchar(255) NOT NULL
   kind varchar(10) NOT NULL
+  is_capital boolean NOT NULL
   is_active boolean NOT NULL
   created_at timestamp NOT NULL
 
@@ -158,6 +159,10 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   order_id varchar(36)
   shift_id varchar(36)
   cash_movement_id varchar(36)
+  source varchar(20) NOT NULL
+  reverses_id varchar(36)
+  cancelled_at timestamp
+  pair_id varchar(36)
   created_at timestamp NOT NULL
 
 ## goods_receipt_items

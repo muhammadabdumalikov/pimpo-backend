@@ -7,6 +7,7 @@ import {
   Min,
   MaxLength,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 
 /** Move money between two accounts in the same currency. */
@@ -40,4 +41,11 @@ export class CreateTransferDto {
   @IsDateString()
   @IsOptional()
   operationDate?: string;
+
+  @ApiPropertyOptional({
+    description: 'Go ahead even if the source balance goes below zero',
+  })
+  @IsBoolean()
+  @IsOptional()
+  allowNegative?: boolean;
 }

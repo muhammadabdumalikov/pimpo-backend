@@ -24,7 +24,8 @@ import {
 import {ProductService} from './product.service';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
-import {IBusiness} from '../business/types';
+import {CurrentAccount} from '../business/decorators/current-account.decorator';
+import {IBusiness, IAccount} from '../business/types';
 import {CreateProductDto} from './dto/create-product.dto';
 import {UpdateProductDto} from './dto/update-product.dto';
 import {BulkCreateProductDto} from './dto/bulk-create-product.dto';
@@ -427,6 +428,7 @@ export class ProductController {
   @ApiResponse({status: 409, description: 'Product code already exists'})
   async update(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
     @Body() updateProductDto: UpdateProductDto,
   ) {
@@ -434,6 +436,7 @@ export class ProductController {
       business.id,
       id,
       updateProductDto,
+      account,
     );
     return {
       message: 'Product updated successfully',

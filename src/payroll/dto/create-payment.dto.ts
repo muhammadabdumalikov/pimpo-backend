@@ -1,11 +1,13 @@
 import {ApiProperty} from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsIn,
   IsNumber,
   IsOptional,
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreatePaymentDto {
@@ -14,9 +16,14 @@ export class CreatePaymentDto {
   @Min(0.01)
   amount: number;
 
-  @ApiProperty({description: 'Finance account the money leaves from'})
+  @ApiProperty({
+    description:
+      'Finance account the money leaves from; omitted when `external` is true',
+    required: false,
+  })
+  @ValidateIf((o: CreatePaymentDto) => !o.external)
   @IsString()
-  accountId: string;
+  accountId?: string;
 
   @ApiProperty({
     description: "'payment' settles wages owed; 'advance' is an avans",
@@ -33,4 +40,21 @@ export class CreatePaymentDto {
   @MaxLength(500)
   @IsOptional()
   note?: string;
+
+  @ApiProperty({
+    description:
+      "Paid from the owner's own pocket (Tashqi mablag') instead of a shop account",
+    required: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  external?: boolean;
+
+  @ApiProperty({
+    description: 'Go ahead even if the account balance goes below zero',
+    required: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  allowNegative?: boolean;
 }

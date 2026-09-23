@@ -68,6 +68,13 @@ export const SCHEMA_DOC_NOTES = `
   products.quantity is the denormalised total across all branches.
 - inventory_batches is the FIFO lot ledger: SUM(qty_remaining) per product
   equals products.quantity.
+- The selling price is products.price_out (with price_wholesale / price_bundle
+  for the other tiers). inventory_batches.price_out and
+  goods_receipt_items.price_out are historical: the price written on the
+  delivery that lot came in on. Never price a sale or value stock at a retail
+  price from them — use products.price_out, or order_items.price_out for what a
+  past sale actually charged. inventory_batches.price_in is the real cost and
+  is the right column for COGS and stock value.
 
 # Not readable
 

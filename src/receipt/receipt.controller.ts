@@ -36,6 +36,7 @@ import { UpdateReceiptDto } from './dto/update-receipt.dto';
 import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
+import { ApplyPricesDto } from './dto/apply-prices.dto';
 
 @ApiTags('receipts')
 @Controller('receipts')
@@ -325,6 +326,53 @@ export class ReceiptController {
   ) {
     const receipt = await this.receiptService.unreceiveReceipt(business.id, id);
     return {message: 'Receipt sent back to draft', receipt};
+  }
+
+  @Get(':id/price-suggestions')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary: "Products whose card price differs from this receipt's lines",
+    description:
+      'Receiving a receipt no longer touches selling prices. This is what it ' +
+      'would change if asked — the review list behind the "apply prices" step.',
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  async getPriceSuggestions(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    return this.receiptService.getPriceSuggestions(business.id, id);
+  }
+
+  @Post(':id/apply-prices')
+  @RequirePermission('product:update')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: "Put this receipt's prices on the chosen products' cards",
+    description:
+      'Only the products named, and only the fields that differ. Changing a ' +
+      'selling price is a catalogue act, so it takes product:update — not the ' +
+      'right to receive a delivery.',
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  @ApiResponse({status: 200, description: 'Prices applied'})
+  @ApiResponse({
+    status: 400,
+    description: 'Receipt is still a draft, or nothing differs',
+  })
+  async applyPrices(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: ApplyPricesDto,
+  ) {
+    const result = await this.receiptService.applyPrices(
+      business.id,
+      id,
+      dto.productIds,
+      account,
+    );
+    return {message: 'Prices applied', ...result};
   }
 
   @Get(':id/returns')

@@ -13,6 +13,9 @@ import {
   orders,
   orderItems,
   branches,
+  businesses,
+  staff,
+  productPriceHistory,
   type Product,
   type NewProduct,
   type Unit,
@@ -55,6 +58,8 @@ import {
   type ParsedWeightBarcode,
 } from '../common/weight-barcode';
 import {ScaleService} from '../scale/scale.service';
+import {IAccount} from '../business/types';
+import {recordPriceChangesTx, type PriceChangeOrigin} from '../common/price-history';
 
 /**
  * How the catalogue list comes back: newest first.
@@ -1033,6 +1038,7 @@ export class ProductService {
     businessId: string,
     productId: string,
     data: Partial<Omit<NewProduct, 'id' | 'businessId' | 'createdAt'>>,
+    account?: IAccount,
   ): Promise<Product> {
     const existing = await this.findOne(businessId, productId);
     if (!existing) {
@@ -1089,6 +1095,8 @@ export class ProductService {
     const {quantity: _q, ...rest} = data;
     void _q;
 
+    const actor = await this.resolveActor(account);
+
     return await this.dbService.db.transaction(async (tx) => {
       await tx
         .update(products)
@@ -1097,25 +1105,26 @@ export class ProductService {
           and(eq(products.id, productId), eq(products.businessId, businessId)),
         );
 
-      // A hand-set selling price reprices the stock on hand. Lots carry their
-      // own priceOut and every sale / receipt re-syncs products.priceOut from
-      // the FIFO-front lot, so leaving the lots at the old figure would snap
-      // the card back to the delivery price on the next sale.
-      if (
-        data.priceOut != null &&
-        Number(data.priceOut) !== Number(existing.priceOut)
-      ) {
-        await tx
-          .update(inventoryBatches)
-          .set({priceOut: data.priceOut})
-          .where(
-            and(
-              eq(inventoryBatches.businessId, businessId),
-              eq(inventoryBatches.productId, productId),
-              gt(inventoryBatches.qtyRemaining, 0),
-            ),
-          );
-      }
+      // Every selling price the shop sets is written down: who, when, and what
+      // it was before. Prices are only ever changed by a person now, so this is
+      // the whole account of how a price came to be what it is — and the answer
+      // to the next "it changed by itself".
+      await this.recordPriceChanges(
+        tx,
+        businessId,
+        productId,
+        existing,
+        data,
+        {source: 'card'},
+        actor,
+      );
+
+      // The lots are left alone by a price change. Each one records the price
+      // written on the delivery it came in on; the card above is what the shop
+      // charges today, and a sale reads the card. This used to rewrite every
+      // open lot, because back then a sale priced itself from the lots and then
+      // pushed that figure back onto the card — so a price set here survived
+      // only until the next sale of the product.
 
       // Reassigned to another branch: move its lots + stock across, leaving the
       // total (products.quantity) unchanged.
@@ -1181,6 +1190,50 @@ export class ProductService {
         )
         .limit(1);
       return product;
+    });
+  }
+
+  /**
+   * Who is making this change, for the price history. A staff account carries
+   * its own name; the owner's account is the business itself.
+   */
+  private async resolveActor(
+    account?: IAccount,
+  ): Promise<{id: string | null; name: string | null}> {
+    if (!account) return {id: null, name: null};
+    if (account.type === 'staff') {
+      const [row] = await this.dbService.db
+        .select({name: staff.name})
+        .from(staff)
+        .where(eq(staff.id, account.id))
+        .limit(1);
+      return {id: account.id, name: row?.name ?? null};
+    }
+    const [row] = await this.dbService.db
+      .select({name: businesses.name})
+      .from(businesses)
+      .where(eq(businesses.id, account.id))
+      .limit(1);
+    return {id: account.id, name: row?.name ?? null};
+  }
+
+  /** Write a history row for each selling price this edit actually moves. */
+  private async recordPriceChanges(
+    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
+    businessId: string,
+    productId: string,
+    before: Product,
+    after: Partial<NewProduct>,
+    origin: PriceChangeOrigin,
+    actor: {id: string | null; name: string | null},
+  ): Promise<void> {
+    await recordPriceChangesTx(tx, {
+      businessId,
+      productId,
+      before,
+      after,
+      origin,
+      actor,
     });
   }
 

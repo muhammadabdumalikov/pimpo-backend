@@ -2,24 +2,12 @@ import {resolveLinePrice} from './quoted-price';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 
-// A line drawn from one lot at 5,508 — the ordinary case.
-const oneLot = {
+// A line of 3 at the card price of 5,508. The lots behind it may have been
+// bought at any number of different costs — none of that reaches the price.
+const line = {
   quantity: 3,
-  batchRevenue: 16524,
-  batchUnitPrice: 5508,
-  minLotPrice: 5508,
-  maxLotPrice: 5508,
-  productName: 'Milky Way',
-  strict: true,
-};
-
-// The same line running past the end of the front lot: 2 at 5,508 + 1 at 6,000.
-const twoLots = {
-  quantity: 3,
-  batchRevenue: 17016,
-  batchUnitPrice: 5672,
-  minLotPrice: 5508,
-  maxLotPrice: 6000,
+  lineRevenue: 16524,
+  cardPrice: 5508,
   productName: 'Milky Way',
   strict: true,
 };
@@ -34,54 +22,43 @@ const codeOf = (fn: () => unknown): string => {
 };
 
 describe('resolveLinePrice', () => {
-  it('prices per batch when the till quoted nothing', () => {
-    expect(resolveLinePrice({...twoLots, quoted: null})).toEqual({
-      revenueTotal: 17016,
-      priceOut: 5672,
-    });
-  });
-
-  // The case that made screen and paper disagree: the till showed the front
-  // lot's price for all three, the sale blended in the dearer lot behind it.
-  it('honours the quoted price when the lots carry it', () => {
-    expect(resolveLinePrice({...twoLots, quoted: 5508})).toEqual({
+  it('uses the card price when the till quoted nothing', () => {
+    expect(resolveLinePrice({...line, quoted: null})).toEqual({
       revenueTotal: 16524,
       priceOut: 5508,
     });
   });
 
-  it('honours the dearer end of the band too', () => {
-    expect(resolveLinePrice({...twoLots, quoted: 6000})).toEqual({
-      revenueTotal: 18000,
-      priceOut: 6000,
+  it('honours a quote that matches the card', () => {
+    expect(resolveLinePrice({...line, quoted: 5508})).toEqual({
+      revenueTotal: 16524,
+      priceOut: 5508,
     });
   });
 
-  it('refuses a price no lot behind the line carries', () => {
-    expect(codeOf(() => resolveLinePrice({...twoLots, quoted: 4000}))).toBe(
+  // The band used to stretch across every lot the line drew on, so a stale
+  // screen showing an old delivery's price was accepted. One price, one figure.
+  it('refuses a quote the card does not name, high or low', () => {
+    expect(codeOf(() => resolveLinePrice({...line, quoted: 3720}))).toBe(
       ErrorCode.ORDER_PRICE_NOT_BACKED,
     );
-    expect(codeOf(() => resolveLinePrice({...twoLots, quoted: 9000}))).toBe(
+    expect(codeOf(() => resolveLinePrice({...line, quoted: 9000}))).toBe(
       ErrorCode.ORDER_PRICE_NOT_BACKED,
     );
   });
 
-  // A client naming its own figure is the reason the band exists at all.
   it('refuses a token price outright', () => {
-    expect(codeOf(() => resolveLinePrice({...oneLot, quoted: 1}))).toBe(
+    expect(codeOf(() => resolveLinePrice({...line, quoted: 1}))).toBe(
       ErrorCode.ORDER_PRICE_NOT_BACKED,
     );
   });
 
-  // Repricing without a delivery: the card goes to 7,000, the lot on the shelf
-  // still wears 6,000. This used to refuse every sale of the line.
-  it('honours the card price when no lot has caught up with it', () => {
+  // Repricing without a delivery: the card goes to 7,000 while the lot on the
+  // shelf still records the 6,000 it was delivered at. The sale is at 7,000.
+  it('sells at the card price when the lots record an older figure', () => {
     const repriced = {
       quantity: 1,
-      batchRevenue: 6000,
-      batchUnitPrice: 6000,
-      minLotPrice: 6000,
-      maxLotPrice: 6000,
+      lineRevenue: 7000,
       cardPrice: 7000,
       productName: 'Flavis nok',
       strict: true,
@@ -90,55 +67,52 @@ describe('resolveLinePrice', () => {
       revenueTotal: 7000,
       priceOut: 7000,
     });
-    // A price cut works the same way, from the other side of the lot.
+    // A price cut works the same way.
     expect(
-      resolveLinePrice({...repriced, cardPrice: 5000, quoted: 5000}),
+      resolveLinePrice({
+        ...repriced,
+        lineRevenue: 5000,
+        cardPrice: 5000,
+        quoted: 5000,
+      }),
     ).toEqual({revenueTotal: 5000, priceOut: 5000});
-    // The band still has ends: the card widened it, it did not remove it.
-    expect(
-      codeOf(() => resolveLinePrice({...repriced, quoted: 9000})),
-    ).toBe(ErrorCode.ORDER_PRICE_NOT_BACKED);
   });
 
-  // A card with no price set says nothing, and must not open the floor to 0.
+  // A card with no price set says nothing, and must not open the floor to 0:
+  // the line's own value stands in for it.
   it('ignores a zero card price', () => {
     expect(
-      codeOf(() => resolveLinePrice({...oneLot, cardPrice: 0, quoted: 0})),
+      codeOf(() => resolveLinePrice({...line, cardPrice: 0, quoted: 0})),
     ).toBe(ErrorCode.ORDER_PRICE_NOT_BACKED);
   });
 
-  it('agrees with the batch price when a single lot covers the line', () => {
-    expect(resolveLinePrice({...oneLot, quoted: 5508})).toEqual({
+  it('lets a sub-so’m difference through, and books the card price', () => {
+    expect(resolveLinePrice({...line, quoted: 5507.7})).toEqual({
       revenueTotal: 16524,
       priceOut: 5508,
     });
   });
 
-  it('lets a sub-so’m difference through', () => {
-    const r = resolveLinePrice({...oneLot, quoted: 5507.7});
-    expect(r.priceOut).toBe(5507.7);
-  });
-
   // An offline sale already happened; the unbacked quote is dropped, not the sale.
-  it('falls back to the lots for an offline sale instead of refusing it', () => {
-    expect(resolveLinePrice({...twoLots, strict: false, quoted: 4000})).toEqual(
-      {revenueTotal: 17016, priceOut: 5672},
-    );
+  it('falls back to the card for an offline sale instead of refusing it', () => {
+    expect(resolveLinePrice({...line, strict: false, quoted: 3720})).toEqual({
+      revenueTotal: 16524,
+      priceOut: 5508,
+    });
   });
 
-  it('still honours a backed quote on an offline sale', () => {
-    expect(resolveLinePrice({...twoLots, strict: false, quoted: 5508})).toEqual(
-      {revenueTotal: 16524, priceOut: 5508},
-    );
+  it('still honours a matching quote on an offline sale', () => {
+    expect(resolveLinePrice({...line, strict: false, quoted: 5508})).toEqual({
+      revenueTotal: 16524,
+      priceOut: 5508,
+    });
   });
 
   it('rounds a weighed line to the so’m', () => {
     const r = resolveLinePrice({
       quantity: 0.325,
-      batchRevenue: 6500,
-      batchUnitPrice: 20000,
-      minLotPrice: 20000,
-      maxLotPrice: 20000,
+      lineRevenue: 6500,
+      cardPrice: 20000,
       productName: 'Go‘sht',
       strict: true,
       quoted: 20000,

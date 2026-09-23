@@ -144,6 +144,8 @@ export class PayrollController {
       {
         amount: dto.amount,
         accountId: dto.accountId,
+        external: dto.external,
+        allowNegative: dto.allowNegative,
         type: dto.type ?? 'payment',
         note: dto.note,
       },

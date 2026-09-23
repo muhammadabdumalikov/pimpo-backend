@@ -8,13 +8,17 @@ import {
   Min,
   MaxLength,
   IsDateString,
+  ValidateIf,
 } from 'class-validator';
 
 /** Shared body for income / expense (single-account) transactions. */
 export class CreateTransactionDto {
-  @ApiProperty({description: 'Account id (source)'})
+  @ApiPropertyOptional({
+    description: 'Account id (source); omitted when `external` is true',
+  })
+  @ValidateIf((o: CreateTransactionDto) => !o.external)
   @IsString()
-  accountId: string;
+  accountId?: string;
 
   @ApiProperty({description: 'Amount (> 0)'})
   @IsNumber()
@@ -47,4 +51,19 @@ export class CreateTransactionDto {
   @IsDateString()
   @IsOptional()
   operationDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Expense only: paid from the owner's own pocket (Tashqi mablag') — books a capital kirim + this expense as a pair",
+  })
+  @IsBoolean()
+  @IsOptional()
+  external?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Go ahead even if the account balance goes below zero',
+  })
+  @IsBoolean()
+  @IsOptional()
+  allowNegative?: boolean;
 }

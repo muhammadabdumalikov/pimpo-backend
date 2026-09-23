@@ -12,4 +12,11 @@ export class UpdateFinanceCategoryDto {
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Capital money (owner in/out) — kept out of the P&L',
+  })
+  @IsBoolean()
+  @IsOptional()
+  isCapital?: boolean;
 }

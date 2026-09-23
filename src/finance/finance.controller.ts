@@ -31,6 +31,7 @@ import {UpdateFinanceCategoryDto} from './dto/update-finance-category.dto';
 import {CreateTransactionDto} from './dto/create-transaction.dto';
 import {CreateTransferDto} from './dto/create-transfer.dto';
 import {QueryTransactionsDto} from './dto/query-transactions.dto';
+import {CancelTransactionDto} from './dto/cancel-transaction.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 
@@ -73,6 +74,15 @@ export class FinanceController {
   ) {
     const account = await this.financeService.updateAccount(business.id, id, dto);
     return {message: 'Account updated', account};
+  }
+
+  @Get('finance/capital')
+  @RequirePermission('finance:read')
+  @ApiOperation({
+    summary: "What the owner put in and took out (Ta'sischi kiritmasi)",
+  })
+  async getCapital(@CurrentBusiness() business: IBusiness) {
+    return this.financeService.getCapitalSummary(business.id);
   }
 
   // ─── Categories (Toifalar) ────────────────────────────────────────────────
@@ -182,5 +192,28 @@ export class FinanceController {
       account,
     );
     return {message: 'Transfer recorded', transaction};
+  }
+
+  @Post('finance/transactions/:id/cancel')
+  @RequirePermission('finance:manage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      "Storno a manual transaction (and its Tashqi mablag' pair) — reversal rows, original kept as cancelled",
+  })
+  @ApiParam({name: 'id', description: 'Transaction ID'})
+  async cancelTransaction(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: CancelTransactionDto,
+  ) {
+    const transactions = await this.financeService.cancelTransaction(
+      business.id,
+      id,
+      dto,
+      account,
+    );
+    return {message: 'Transaction cancelled', transactions};
   }
 }

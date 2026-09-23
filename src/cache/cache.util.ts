@@ -172,7 +172,7 @@ export const CacheKeys = {
   reportStockHealth: (businessId: string, p?: Record<string, unknown>) =>
     `report:stockhealth:${businessId}:${paramsKey(p)}`,
   reportPnl: (businessId: string, p?: Record<string, unknown>) =>
-    `report:pnl:${businessId}:${paramsKey(p)}`,
+    `report:pnl:v2:${businessId}:${paramsKey(p)}`,
   reportPaymentMethods: (businessId: string, p?: Record<string, unknown>) =>
     `report:paymethods:${businessId}:${paramsKey(p)}`,
   reportSellers: (businessId: string, p?: Record<string, unknown>) =>

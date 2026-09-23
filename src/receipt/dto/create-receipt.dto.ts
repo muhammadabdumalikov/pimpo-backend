@@ -65,16 +65,6 @@ export class ReceiptItemDto {
   @Min(0)
   @IsOptional()
   priceBundle?: number;
-
-  @ApiPropertyOptional({
-    description:
-      'When the new selling price is higher than the current one, whether to ' +
-      'also reprice the existing open batches up (true) or keep their old ' +
-      'price (false). Overrides the business priceIncreaseMode default.',
-  })
-  @IsBoolean()
-  @IsOptional()
-  repriceExisting?: boolean;
 }
 
 export class CreateReceiptDto {
