@@ -749,8 +749,8 @@ export class ReportService {
         phone: sql<string | null>`MAX(${users.phone})`,
         orderCount: sql<string>`COUNT(*)`,
         revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
-        firstEver: sql<string>`MIN(${orders.createdAt})`,
-        lastOrderAt: sql<string>`MAX(${orders.createdAt})`,
+        firstEver: sql<string>`MIN(${orders.createdAt}) AT TIME ZONE 'UTC'`,
+        lastOrderAt: sql<string>`MAX(${orders.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(orders)
       .leftJoin(users, eq(orders.userId, users.id))
@@ -770,7 +770,7 @@ export class ReportService {
     const firstOrders = await this.db
       .select({
         userId: orders.userId,
-        firstEver: sql<string>`MIN(${orders.createdAt})`,
+        firstEver: sql<string>`MIN(${orders.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(orders)
       .where(
@@ -1697,7 +1697,7 @@ export class ReportService {
     const lastSaleRows = await this.db
       .select({
         productId: orderItems.productId,
-        last: sql<string>`MAX(${orders.createdAt})`,
+        last: sql<string>`MAX(${orders.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(orderItems)
       .innerJoin(orders, eq(orderItems.orderId, orders.id))
@@ -2038,7 +2038,7 @@ export class ReportService {
     const firstStockRows = await this.db
       .select({
         productId: inventoryBatches.productId,
-        first: sql<string>`MIN(${inventoryBatches.createdAt})`,
+        first: sql<string>`MIN(${inventoryBatches.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(inventoryBatches)
       .where(
@@ -2237,7 +2237,7 @@ export class ReportService {
       .select({
         productId: inventoryBatches.productId,
         branchId: inventoryBatches.branchId,
-        first: sql<string>`MIN(${inventoryBatches.createdAt})`,
+        first: sql<string>`MIN(${inventoryBatches.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(inventoryBatches)
       .where(eq(inventoryBatches.businessId, businessId))

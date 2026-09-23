@@ -171,7 +171,10 @@ export class SupplierService {
         receiptCount: sql<number>`count(distinct ${goodsReceipts.id})::int`.as(
           'receipt_count',
         ),
-        lastReceivedAt: sql<string>`max(${goodsReceipts.createdAt})`.as(
+        // AT TIME ZONE 'UTC': a naive timestamp read through raw SQL comes back
+        // as a bare string with no zone, which a browser takes for local time —
+        // five hours out here. This makes the string carry its offset.
+        lastReceivedAt: sql<string>`max(${goodsReceipts.createdAt}) AT TIME ZONE 'UTC'`.as(
           'last_received_at',
         ),
         // The cost on the most recent delivery: array_agg keeps the whole

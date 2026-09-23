@@ -348,11 +348,13 @@ export class ReceiptController {
   @RequirePermission('product:update')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Put this receipt's prices on the chosen products' cards",
+    summary: "Settle the selling prices a receipt's lines disagree with",
     description:
-      'Only the products named, and only the fields that differ. Changing a ' +
-      'selling price is a catalogue act, so it takes product:update — not the ' +
-      'right to receive a delivery.',
+      "applyToCard: the card takes the line's price and the shop sells at it. " +
+      "applyToReceipt: the line takes the card's price, for a figure typed " +
+      'wrong on the document. Only the products named, and only the fields ' +
+      'that differ. Changing a selling price is a catalogue act, so it takes ' +
+      'product:update — not the right to receive a delivery.',
   })
   @ApiParam({name: 'id', description: 'Receipt ID'})
   @ApiResponse({status: 200, description: 'Prices applied'})
@@ -369,7 +371,7 @@ export class ReceiptController {
     const result = await this.receiptService.applyPrices(
       business.id,
       id,
-      dto.productIds,
+      dto,
       account,
     );
     return {message: 'Prices applied', ...result};

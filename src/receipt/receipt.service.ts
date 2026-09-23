@@ -1709,9 +1709,13 @@ export class ReceiptService {
   async applyPrices(
     businessId: string,
     receiptId: string,
-    productIds: string[],
+    decision: {applyToCard?: string[]; applyToReceipt?: string[]},
     account?: IAccount,
-  ): Promise<{applied: number; products: PriceSuggestion[]}> {
+  ): Promise<{
+    applied: number;
+    toCard: PriceSuggestion[];
+    toReceipt: PriceSuggestion[];
+  }> {
     const receipt = await this.findOne(businessId, receiptId);
     if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
     // A draft's prices are still being typed and its goods are not on the shelf.
@@ -1719,30 +1723,27 @@ export class ReceiptService {
       throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_PRICES);
     }
 
-    const wanted = new Set(productIds);
-    const suggestions = (
-      await this.buildPriceSuggestions(businessId, receipt)
-    ).filter((s) => wanted.has(s.productId));
-    if (suggestions.length === 0) {
+    const toCardIds = new Set(decision.applyToCard ?? []);
+    const toReceiptIds = new Set(decision.applyToReceipt ?? []);
+    const suggestions = await this.buildPriceSuggestions(businessId, receipt);
+    const toCard = suggestions.filter((s) => toCardIds.has(s.productId));
+    const toReceipt = suggestions.filter(
+      (s) => !toCardIds.has(s.productId) && toReceiptIds.has(s.productId),
+    );
+    if (toCard.length === 0 && toReceipt.length === 0) {
       throw new AppException(ErrorCode.RECEIPT_NO_PRICES_TO_APPLY);
     }
 
     const actor = await this.resolveCashier(account);
 
     await this.dbService.db.transaction(async (tx) => {
-      for (const s of suggestions) {
+      // The receipt was right: the card takes its price, and the shop starts
+      // selling at it.
+      for (const s of toCard) {
         const set: Record<string, string | Date> = {updatedAt: new Date()};
-        if (s.changes.includes('priceOut') && s.proposed.priceOut != null) {
-          set.priceOut = s.proposed.priceOut;
-        }
-        if (
-          s.changes.includes('priceWholesale') &&
-          s.proposed.priceWholesale != null
-        ) {
-          set.priceWholesale = s.proposed.priceWholesale;
-        }
-        if (s.changes.includes('priceBundle') && s.proposed.priceBundle != null) {
-          set.priceBundle = s.proposed.priceBundle;
+        for (const field of s.changes) {
+          const value = s.proposed[field];
+          if (value != null) set[field] = value;
         }
         await tx
           .update(products)
@@ -1766,9 +1767,52 @@ export class ReceiptService {
           actor,
         });
       }
+
+      // The card was right and the line carries a typo — 150 000 where the
+      // shop sells at 15 000. The line takes the card's figure, so document
+      // and shelf agree and this difference stops being reported for ever.
+      // Only fields the card actually prices are written: a card with no
+      // price says nothing, and writing that nothing into the document would
+      // replace a wrong number with an empty one.
+      for (const s of toReceipt) {
+        const set: Record<string, string> = {};
+        const before: Record<string, string | null> = {};
+        const after: Record<string, string | null> = {};
+        for (const field of s.changes) {
+          const cardValue = s.current[field];
+          if (cardValue == null || !(Number(cardValue) > 0)) continue;
+          set[field] = cardValue;
+          before[field] = s.proposed[field];
+          after[field] = cardValue;
+        }
+        if (Object.keys(set).length === 0) continue;
+        await tx
+          .update(goodsReceiptItems)
+          .set(set)
+          .where(
+            and(
+              eq(goodsReceiptItems.businessId, businessId),
+              eq(goodsReceiptItems.receiptId, receiptId),
+              eq(goodsReceiptItems.productId, s.productId),
+            ),
+          );
+        // Logged like a card change, but source 'receipt_line' says the row
+        // describes the DOCUMENT's price moving, not the shelf's. Without it
+        // the figure somebody typed would vanish with nothing to show for it —
+        // the same silence that made "the price changed by itself" take a day
+        // to answer.
+        await recordPriceChangesTx(tx, {
+          businessId,
+          productId: s.productId,
+          before,
+          after,
+          origin: {source: 'receipt_line', receiptId},
+          actor,
+        });
+      }
     });
 
-    return {applied: suggestions.length, products: suggestions};
+    return {applied: toCard.length + toReceipt.length, toCard, toReceipt};
   }
 
   /** Shared by the proposal and by applying it, so the two cannot drift. */

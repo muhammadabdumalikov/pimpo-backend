@@ -24,9 +24,13 @@ CREATE TABLE IF NOT EXISTS "product_price_history" (
   "field" varchar(20) NOT NULL,
   "old_price" numeric(10, 2),
   "new_price" numeric(10, 2) NOT NULL,
-  -- Where the change came from: 'card' (product form) or 'receipt' (a delivery
-  -- note's prices applied to the card). The receipt is kept so the row can be
-  -- read back to the document it came from.
+  -- Where the change came from:
+  --   'card'         the product form
+  --   'receipt'      a delivery note's price applied to the card
+  --   'receipt_line' the other direction — the card's price written back onto
+  --                  a delivery line that held a typo, so the document and the
+  --                  shelf agree. Such a row describes the DOCUMENT moving.
+  -- The receipt is kept so the row can be read back to the document.
   "source" varchar(20) NOT NULL DEFAULT 'card',
   "receipt_id" varchar(36),
   "cashier_id" varchar(36),

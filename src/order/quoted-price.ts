@@ -23,12 +23,12 @@
 
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
+import {displayAmount} from '../common/display-amount';
 
 /** Prices carry two decimals; below half a so'm is rounding, not a difference. */
 const EPSILON = 0.5;
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const money = (n: number) => n.toFixed(2);
 
 export interface QuotedPriceInput {
   /** What the till showed per unit, or null/undefined when it said nothing. */
@@ -77,8 +77,8 @@ export function resolveLinePrice(input: QuotedPriceInput): LinePrice {
     }
     throw new AppException(ErrorCode.ORDER_PRICE_NOT_BACKED, {
       name: input.productName,
-      quoted: money(quoted),
-      expected: money(expected),
+      quoted: displayAmount(quoted),
+      expected: displayAmount(expected),
     });
   }
 

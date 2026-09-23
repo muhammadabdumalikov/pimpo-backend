@@ -943,8 +943,8 @@ export class ProductService {
         saleCount: sql<number>`count(distinct ${orders.id})::int`,
         totalQuantity: sql<number>`coalesce(sum(${sold}), 0)::float8`,
         totalRevenue: sql<number>`coalesce(sum(${sold}::numeric * ${orderItems.priceOut}), 0)::float8`,
-        lastSoldAt: sql<Date | null>`max(${orders.createdAt})`,
-        firstSoldAt: sql<Date | null>`min(${orders.createdAt})`,
+        lastSoldAt: sql<Date | null>`max(${orders.createdAt}) AT TIME ZONE 'UTC'`,
+        firstSoldAt: sql<Date | null>`min(${orders.createdAt}) AT TIME ZONE 'UTC'`,
       })
       .from(orderItems)
       .innerJoin(orders, eq(orders.id, orderItems.orderId))

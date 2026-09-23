@@ -531,10 +531,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   // cashier re-ring rather than guess what went wrong.
   // The till quoted a price no lot behind the line carries — a screen left
   // open while prices moved, or a client naming a figure of its own.
+  // The till quoted a price the card no longer names — the shop repriced while
+  // this basket sat open. Worded for a cashier: not "unbacked", just old.
   [ErrorCode.ORDER_PRICE_NOT_BACKED]: {
     status: HttpStatus.BAD_REQUEST,
     message:
-      'Quoted price {quoted} for "{name}" is not a price these goods carry (current: {expected})',
+      'The price on screen for "{name}" ({quoted}) is out of date — it is now {expected}',
   },
   [ErrorCode.ORDER_UNDERPAID]: {
     status: HttpStatus.BAD_REQUEST,

@@ -825,7 +825,9 @@ export const productPriceHistory = pgTable(
     // Null when a tier is being set for the first time.
     oldPrice: decimal('old_price', {precision: 10, scale: 2}),
     newPrice: decimal('new_price', {precision: 10, scale: 2}).notNull(),
-    // 'card' (the product form) or 'receipt' (a delivery's prices applied).
+    // 'card' (the product form), 'receipt' (a delivery's price applied to the
+    // card), or 'receipt_line' (the card's price written back onto a delivery
+    // line that held a typo — that row describes the document moving).
     source: varchar('source', {length: 20}).notNull().default('card'),
     // The delivery note the price came from, when it came from one.
     receiptId: varchar('receipt_id', {length: 36}),

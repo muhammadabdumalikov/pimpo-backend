@@ -8,9 +8,17 @@ type Tx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 const PRICE_FIELDS = ['priceOut', 'priceWholesale', 'priceBundle'] as const;
 export type PriceField = (typeof PRICE_FIELDS)[number];
 
-/** Where a change came from, and the document behind it when there is one. */
+/**
+ * Where a change came from, and the document behind it when there is one.
+ *
+ * 'card'         — somebody edited the product card.
+ * 'receipt'      — a delivery note's price was applied to the card.
+ * 'receipt_line' — the other direction: the card's price was written back onto
+ *                  the delivery line, because the line held a typo. The row
+ *                  describes the DOCUMENT moving, not the shelf.
+ */
 export interface PriceChangeOrigin {
-  source: 'card' | 'receipt';
+  source: 'card' | 'receipt' | 'receipt_line';
   receiptId?: string | null;
 }
 
