@@ -66,9 +66,15 @@ export class ReceiptController {
     if (!createReceiptDto.draft) {
       await this.permissions.assert(account, 'receipt:receive');
     }
+    // Receiving puts the document's selling prices on the product cards, and
+    // changing a card's price is product:update — so only for an account that
+    // holds it; for anyone else the differences wait on the receipt page.
+    const applyPrices = await this.permissions.can(account, 'product:update');
     const receipt = await this.receiptService.create(
       business.id,
       createReceiptDto,
+      account,
+      applyPrices,
     );
     return { message: 'Receipt created successfully', receipt };
   }
@@ -293,9 +299,18 @@ export class ReceiptController {
   @ApiParam({ name: 'id', description: 'Receipt ID' })
   async receive(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
   ) {
-    const receipt = await this.receiptService.receiveReceipt(business.id, id);
+    // Same as on create: the selling prices go on the cards only for an
+    // account that may set them.
+    const applyPrices = await this.permissions.can(account, 'product:update');
+    const receipt = await this.receiptService.receiveReceipt(
+      business.id,
+      id,
+      account,
+      applyPrices,
+    );
     return { message: 'Receipt received', receipt };
   }
 

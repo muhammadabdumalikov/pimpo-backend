@@ -1,4 +1,4 @@
-import {Injectable, Inject} from '@nestjs/common';
+import {Injectable, Inject, Logger} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -174,6 +174,8 @@ function rank(s: PriceSuggestion): number {
 
 @Injectable()
 export class ReceiptService {
+  private readonly logger = new Logger(ReceiptService.name);
+
   constructor(
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
@@ -356,6 +358,10 @@ export class ReceiptService {
   async create(
     businessId: string,
     dto: CreateReceiptDto,
+    account?: IAccount,
+    // Put the lines' selling prices on the cards as the goods land. The
+    // controller says yes only for an account with product:update.
+    applyPricesOnReceive = false,
   ): Promise<ReceiptWithItems> {
     // Freeze inbound stock while a count is open — a receipt changes
     // products.quantity and opens a new batch, which would desync the count's
@@ -423,6 +429,12 @@ export class ReceiptService {
         await this.applyReceiptStockTx(tx, businessId, branchId, lines, received);
       }
     });
+
+    // Its own step, after the stock transaction: a price that cannot be
+    // written must never undo a delivery that was.
+    if (!draft && applyPricesOnReceive) {
+      await this.applyPricesOnReceive(businessId, receiptId, account);
+    }
 
     return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
   }
@@ -518,6 +530,8 @@ export class ReceiptService {
   async receiveReceipt(
     businessId: string,
     receiptId: string,
+    account?: IAccount,
+    applyPricesOnReceive = false,
   ): Promise<ReceiptWithItems> {
     const [receipt] = await this.dbService.db
       .select()
@@ -613,6 +627,11 @@ export class ReceiptService {
           ),
         );
     });
+
+    // See create: the selling prices follow the goods onto the shelf.
+    if (applyPricesOnReceive) {
+      await this.applyPricesOnReceive(businessId, receiptId, account);
+    }
 
     return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
   }
@@ -1765,6 +1784,56 @@ export class ReceiptService {
       throw new AppException(ErrorCode.RECEIPT_NO_PRICES_TO_APPLY);
     }
 
+    await this.writePrices(businessId, receiptId, toCard, toReceipt, account);
+
+    return {applied: toCard.length + toReceipt.length, toCard, toReceipt};
+  }
+
+  /**
+   * Put a receipt's selling prices on the cards as it is received — every
+   * product whose line names a price the card does not have.
+   *
+   * The form showed the card's price beside each line while it was typed,
+   * coloured by the direction of the change, and said that receiving would
+   * change some selling prices; this is that change. One exception: a card
+   * edited AFTER the line was written (`cardMoved`). Such a line carries the
+   * card's former price, not a new one, and writing it would undo the edit —
+   * the very thing that made "the price changes by itself" a bug. Those rows
+   * are left for the review dialog on the receipt page.
+   *
+   * Never throws: the goods are on the shelf, and a price that could not be
+   * written is shown there, not lost.
+   */
+  private async applyPricesOnReceive(
+    businessId: string,
+    receiptId: string,
+    account?: IAccount,
+  ): Promise<void> {
+    try {
+      const receipt = await this.findOne(businessId, receiptId);
+      if (!receipt || receipt.status === 'draft') return;
+      const suggestions = await this.buildPriceSuggestions(businessId, receipt);
+      const toCard = suggestions.filter((s) => !s.flags.includes('cardMoved'));
+      if (toCard.length === 0) return;
+      await this.writePrices(businessId, receiptId, toCard, [], account);
+    } catch (err) {
+      this.logger.error(
+        `Applying prices on receive failed for receipt ${receiptId}: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The one place a receipt's prices are written, both ways — by the review
+   * dialog and by receiving.
+   */
+  private async writePrices(
+    businessId: string,
+    receiptId: string,
+    toCard: PriceSuggestion[],
+    toReceipt: PriceSuggestion[],
+    account?: IAccount,
+  ): Promise<void> {
     const actor = await this.resolveCashier(account);
 
     await this.dbService.db.transaction(async (tx) => {
@@ -1842,8 +1911,6 @@ export class ReceiptService {
         });
       }
     });
-
-    return {applied: toCard.length + toReceipt.length, toCard, toReceipt};
   }
 
   /** Shared by the proposal and by applying it, so the two cannot drift. */
