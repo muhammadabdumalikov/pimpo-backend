@@ -403,6 +403,20 @@ export class ReceiptController {
     return this.receiptService.getReturns(business.id, id);
   }
 
+  @Get(':id/returnable')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary:
+      'How much of each product can still go back to the supplier on this receipt',
+  })
+  @ApiParam({ name: 'id', description: 'Receipt ID' })
+  async getReturnable(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    return this.receiptService.getReturnable(business.id, id);
+  }
+
   @Post(':id/returns')
   @RequirePermission('receipt:return')
   @HttpCode(HttpStatus.CREATED)

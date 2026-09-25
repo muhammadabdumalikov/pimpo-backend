@@ -25,6 +25,7 @@ import {ReceiptModule} from './receipt/receipt.module';
 import {ReceiptTemplateModule} from './receipt-template/receipt-template.module';
 import {ShiftModule} from './shift/shift.module';
 import {StockTakeModule} from './stock-take/stock-take.module';
+import {DefectiveModule} from './defective/defective.module';
 import {StockTransferModule} from './stock-transfer/stock-transfer.module';
 import {FinanceModule} from './finance/finance.module';
 import {PayrollModule} from './payroll/payroll.module';
@@ -37,6 +38,8 @@ import {PlatformModule} from './platform/platform.module';
 import {LoyaltyModule} from './loyalty/loyalty.module';
 import {ScaleModule} from './scale/scale.module';
 import {AiModule} from './ai/ai.module';
+import {FeatureModule} from './feature/feature.module';
+import {AnnouncementModule} from './announcement/announcement.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
@@ -105,6 +108,7 @@ class JwtGlobalModule {}
     ReceiptTemplateModule,
     ShiftModule,
     StockTakeModule,
+    DefectiveModule,
     StockTransferModule,
     FinanceModule,
     PayrollModule,
@@ -117,6 +121,8 @@ class JwtGlobalModule {}
     LoyaltyModule,
     ScaleModule,
     AiModule,
+    FeatureModule,
+    AnnouncementModule,
   ],
   controllers: [AppController],
   providers: [AppService],

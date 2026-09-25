@@ -18,7 +18,7 @@ const MENU_REQUIRED_PERMISSION: Record<string, string | string[]> = {
   'ecommerce.products': ['product:create', 'product:update', 'product:delete'],
   'ecommerce.addProduct': 'product:create',
   'ecommerce.categories': 'catalog:manage',
-  inventory: ['stocktake:manage', 'transfer:manage'],
+  inventory: ['stocktake:manage', 'transfer:manage', 'defective:manage'],
   suppliers: 'supplier:manage',
   receipts: 'receipt:read',
   checkout: 'sale:create',

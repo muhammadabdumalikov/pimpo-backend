@@ -27,8 +27,10 @@ import {
   branchStock,
   saleReturns,
   saleReturnItems,
+  defectiveMovements,
+  defectiveMovementItems,
 } from '../database/schema';
-import {eq, and, or, gte, lte, gt, ne, not, sql, desc} from 'drizzle-orm';
+import {eq, and, or, gte, lte, gt, ne, not, sql, desc, inArray} from 'drizzle-orm';
 import {capitalRow, liveRow} from '../finance/ledger-rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
@@ -444,11 +446,42 @@ export class ReportService {
       .where(
         and(
           eq(supplierReturnItems.businessId, businessId),
+          // Returns out of defective stock never touched sellable stock.
+          eq(supplierReturns.source, 'stock'),
           gt(supplierReturns.createdAt, cutoff),
         ),
       )
       .groupBy(supplierReturnItems.productId);
     returned.forEach((r) => add(r.productId, Number(r.qty)));
+
+    // Moves between sellable and defective stock after cutoff: into defective
+    // stock (reduced stock then) → add back; back on sale / swapped → remove.
+    const defective = await this.db
+      .select({
+        productId: defectiveMovementItems.productId,
+        type: defectiveMovements.type,
+        qty: sql<string>`COALESCE(SUM(${defectiveMovementItems.quantity}), 0)`,
+      })
+      .from(defectiveMovementItems)
+      .innerJoin(
+        defectiveMovements,
+        eq(defectiveMovementItems.movementId, defectiveMovements.id),
+      )
+      .where(
+        and(
+          eq(defectiveMovementItems.businessId, businessId),
+          inArray(defectiveMovements.type, [
+            'in_shelf',
+            'out_to_sale',
+            'out_exchange',
+          ]),
+          gt(defectiveMovements.createdAt, cutoff),
+        ),
+      )
+      .groupBy(defectiveMovementItems.productId, defectiveMovements.type);
+    defective.forEach((r) =>
+      add(r.productId, (r.type === 'in_shelf' ? 1 : -1) * Number(r.qty)),
+    );
 
     // Stock-take adjustments after cutoff (diffQty applied to stock) → remove.
     const adjusted = await this.db
@@ -529,11 +562,41 @@ export class ReportService {
         .where(
           and(
             eq(supplierReturnItems.businessId, businessId),
+            // Returns out of defective stock never touched sellable stock.
+            eq(supplierReturns.source, 'stock'),
             ...this.dateWhere(supplierReturns.createdAt, range),
           ),
         )
         .groupBy(supplierReturnItems.productId),
     );
+
+    // Sellable stock moved into the yaroqsiz tovarlar ombori (out), and
+    // defective goods put back on sale or swapped by the supplier (in).
+    const defectiveMoved = (types: string[]) =>
+      this.sumByProduct(
+        this.db
+          .select({
+            productId: defectiveMovementItems.productId,
+            name: sql<string>`MAX(${defectiveMovementItems.productName})`,
+            qty: sql<string>`COALESCE(SUM(${defectiveMovementItems.quantity}), 0)`,
+          })
+          .from(defectiveMovementItems)
+          .innerJoin(
+            defectiveMovements,
+            eq(defectiveMovementItems.movementId, defectiveMovements.id),
+          )
+          .where(
+            and(
+              eq(defectiveMovementItems.businessId, businessId),
+              inArray(defectiveMovements.type, types),
+              ...this.dateWhere(defectiveMovements.createdAt, range),
+              ...this.branchWhere(defectiveMovements.branchId, range),
+            ),
+          )
+          .groupBy(defectiveMovementItems.productId),
+      );
+    const toDefective = await defectiveMoved(['in_shelf']);
+    const fromDefective = await defectiveMoved(['out_to_sale', 'out_exchange']);
 
     // Customer returns that went back on the shelf in range (a defective
     // line never re-entered stock, so it doesn't move the balance).
@@ -590,9 +653,15 @@ export class ReportService {
 
     const ids = new Set<string>();
     catalog.forEach((c) => ids.add(c.productId));
-    [received, sold, returned, writtenOff, customerReturned].forEach((m) =>
-      m.forEach((_v, k) => ids.add(k)),
-    );
+    [
+      received,
+      sold,
+      returned,
+      writtenOff,
+      customerReturned,
+      toDefective,
+      fromDefective,
+    ].forEach((m) => m.forEach((_v, k) => ids.add(k)));
 
     const nameOf = (id: string) =>
       catalog.find((c) => c.productId === id)?.name ??
@@ -601,6 +670,8 @@ export class ReportService {
       returned.get(id)?.name ??
       writtenOff.get(id)?.name ??
       customerReturned.get(id)?.name ??
+      toDefective.get(id)?.name ??
+      fromDefective.get(id)?.name ??
       '—';
 
     const items = Array.from(ids).map((id) => {
@@ -610,9 +681,12 @@ export class ReportService {
       const ret = returned.get(id)?.qty ?? 0;
       const wof = writtenOff.get(id)?.qty ?? 0;
       const cret = customerReturned.get(id)?.qty ?? 0;
+      const tdef = toDefective.get(id)?.qty ?? 0;
+      const fdef = fromDefective.get(id)?.qty ?? 0;
       const closing = cat?.closing ?? 0;
-      // opening = closing − received + sold + returned + writtenOff − customerReturned
-      const opening = closing - rec + sld + ret + wof - cret;
+      // opening = closing − received + sold + returned + writtenOff
+      //           − customerReturned + toDefective − fromDefective
+      const opening = closing - rec + sld + ret + wof - cret + tdef - fdef;
       return {
         productId: id,
         name: nameOf(id),
@@ -624,6 +698,10 @@ export class ReportService {
         writtenOff: wof,
         // Brought back by customers and restocked (supplier returns are `returned`).
         customerReturned: cret,
+        // Moved from sellable stock into the yaroqsiz tovarlar ombori, and
+        // back out of it onto the shelf (put back on sale / swapped).
+        toDefective: tdef,
+        fromDefective: fdef,
         closing,
       };
     });
@@ -902,6 +980,7 @@ export class ReportService {
         totalAmount: supplierReturns.totalAmount,
         currency: supplierReturns.currency,
         itemCount: supplierReturns.itemCount,
+        source: supplierReturns.source,
         createdAt: supplierReturns.createdAt,
       })
       .from(supplierReturns)
@@ -919,12 +998,41 @@ export class ReportService {
       )
       .orderBy(desc(supplierReturns.createdAt));
 
+    // Reason codes per return (a return's lines may go back for different
+    // reasons); null = a line from before codes existed.
+    const reasonRows = rows.length
+      ? await this.db
+          .selectDistinct({
+            returnId: supplierReturnItems.returnId,
+            code: supplierReturnItems.reasonCode,
+          })
+          .from(supplierReturnItems)
+          .where(
+            and(
+              eq(supplierReturnItems.businessId, businessId),
+              inArray(
+                supplierReturnItems.returnId,
+                rows.map((r) => r.id),
+              ),
+            ),
+          )
+      : [];
+    const reasonsByReturn = new Map<string, (string | null)[]>();
+    for (const r of reasonRows) {
+      const list = reasonsByReturn.get(r.returnId) ?? [];
+      list.push(r.code);
+      reasonsByReturn.set(r.returnId, list);
+    }
+
     const items = rows.map((r) => ({
       id: r.id,
       supplierName: r.supplierName ?? '—',
       totalAmount: Number(r.totalAmount),
       currency: r.currency,
       itemCount: r.itemCount,
+      reasons: reasonsByReturn.get(r.id) ?? [],
+      // 'defective' = sent back out of the yaroqsiz tovarlar ombori.
+      source: r.source,
       createdAt: r.createdAt,
     }));
 
@@ -2529,7 +2637,8 @@ export class ReportService {
       .select({
         key: retKey,
         revenue: sql<string>`COALESCE(SUM(${saleReturnItems.lineTotal}), 0)`,
-        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
+        // Back on the shelf or into the yaroqsiz tovarlar ombori — both leave COGS.
+        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} OR ${saleReturnItems.disposition} = 'defective_stock' THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
         units: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
       })
       .from(saleReturnItems)

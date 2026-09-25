@@ -49,6 +49,12 @@ export enum ErrorCode {
 
   // ── Plan / feature gating ──────────────────────────────────────────────────
   PLAN_UPGRADE_REQUIRED = 'PLAN_UPGRADE_REQUIRED',
+  FEATURE_NOT_ENABLED = 'FEATURE_NOT_ENABLED',
+  FEATURE_NOT_FOUND = 'FEATURE_NOT_FOUND',
+
+  // ── Announcements (platform news) ──────────────────────────────────────────
+  ANNOUNCEMENT_NOT_FOUND = 'ANNOUNCEMENT_NOT_FOUND',
+  ANNOUNCEMENT_AUDIENCE_INVALID = 'ANNOUNCEMENT_AUDIENCE_INVALID',
 
   // ── Brand ──────────────────────────────────────────────────────────────────
   BRAND_NOT_FOUND = 'BRAND_NOT_FOUND',
@@ -202,6 +208,17 @@ export enum ErrorCode {
   RECEIPT_FROZEN_STOCK_TAKE = 'RECEIPT_FROZEN_STOCK_TAKE',
   WRITE_OFF_EMPTY = 'WRITE_OFF_EMPTY',
   WRITE_OFF_EXCEEDS_STOCK = 'WRITE_OFF_EXCEEDS_STOCK',
+  // A write-off / return reason of 'other' sent without a note.
+  REASON_NOTE_REQUIRED = 'REASON_NOTE_REQUIRED',
+
+  // ── Yaroqsiz tovarlar ombori (defective stock) ─────────────────────────────
+  DEFECTIVE_EMPTY = 'DEFECTIVE_EMPTY',
+  DEFECTIVE_EXCEEDS_STOCK = 'DEFECTIVE_EXCEEDS_STOCK',
+  DEFECTIVE_SHELF_EXCEEDS_STOCK = 'DEFECTIVE_SHELF_EXCEEDS_STOCK',
+  DEFECTIVE_OPENING_OWNER_ONLY = 'DEFECTIVE_OPENING_OWNER_ONLY',
+  DEFECTIVE_OPENING_CLOSED = 'DEFECTIVE_OPENING_CLOSED',
+  DEFECTIVE_RECEIPT_NO_DEBT = 'DEFECTIVE_RECEIPT_NO_DEBT',
+  DEFECTIVE_RETURN_EXCEEDS_DEBT = 'DEFECTIVE_RETURN_EXCEEDS_DEBT',
 
   // ── Stock transfer (filiallararo ko'chirish) ───────────────────────────────
   TRANSFER_EMPTY = 'TRANSFER_EMPTY',
@@ -394,6 +411,24 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.PLAN_UPGRADE_REQUIRED]: {
     status: HttpStatus.FORBIDDEN,
     message: 'This feature requires a higher plan',
+  },
+  [ErrorCode.FEATURE_NOT_ENABLED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'This feature is not enabled for your business yet',
+  },
+  [ErrorCode.FEATURE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Unknown feature: {feature}',
+  },
+
+  // Announcements
+  [ErrorCode.ANNOUNCEMENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Announcement not found',
+  },
+  [ErrorCode.ANNOUNCEMENT_AUDIENCE_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: "The '{audience}' audience needs {field}",
   },
 
   // Brand
@@ -963,6 +998,40 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.WRITE_OFF_EXCEEDS_STOCK]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Cannot write off {qty} of "{name}"; only {available} in stock',
+  },
+  [ErrorCode.REASON_NOTE_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A reason of "other" needs a note saying what happened',
+  },
+
+  // Yaroqsiz tovarlar ombori
+  [ErrorCode.DEFECTIVE_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Add at least one item',
+  },
+  [ErrorCode.DEFECTIVE_EXCEEDS_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only {available} of "{name}" is in defective stock, not {qty}',
+  },
+  [ErrorCode.DEFECTIVE_SHELF_EXCEEDS_STOCK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Cannot move {qty} of "{name}" to defective stock; only {available} in stock',
+  },
+  [ErrorCode.DEFECTIVE_OPENING_OWNER_ONLY]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'Only the owner can enter opening defective stock',
+  },
+  [ErrorCode.DEFECTIVE_OPENING_CLOSED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Opening defective stock could be entered until {until}',
+  },
+  [ErrorCode.DEFECTIVE_RECEIPT_NO_DEBT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Nothing is owed on this receipt, so a return cannot reduce it',
+  },
+  [ErrorCode.DEFECTIVE_RETURN_EXCEEDS_DEBT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This return is worth {value} {currency} but only {outstanding} is owed on the receipt',
   },
 
   // Stock transfer

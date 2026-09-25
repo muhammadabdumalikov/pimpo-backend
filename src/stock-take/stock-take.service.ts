@@ -30,6 +30,7 @@ import {CountItemsDto} from './dto/count-items.dto';
 import {CheckItemsDto} from './dto/check-items.dto';
 import {CompleteStockTakeDto} from './dto/complete-stock-take.dto';
 import {CreateWriteOffDto} from './dto/create-write-off.dto';
+import {assertReasonNote} from '../common/loss-reasons';
 
 // The transaction handle type, same one db.transaction hands its callback.
 type Tx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
@@ -715,6 +716,16 @@ export class StockTakeService {
     if (!dto.items?.length) {
       throw new AppException(ErrorCode.WRITE_OFF_EMPTY);
     }
+    // A line's reason code / note fall back to the document's; 'other' needs a
+    // note to mean anything. Checked up front so nothing is half-written.
+    const reasonOf = (line: CreateWriteOffDto['items'][number]) => ({
+      code: line.reasonCode ?? dto.reasonCode ?? null,
+      note: line.reason?.trim() || dto.reason?.trim() || null,
+    });
+    for (const line of dto.items) {
+      const r = reasonOf(line);
+      assertReasonNote(r.code, r.note);
+    }
     if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
       throw new AppException(ErrorCode.STOCK_TAKE_IN_PROGRESS);
     }
@@ -805,7 +816,9 @@ export class StockTakeService {
           diffQty: -line.qty,
           unitCost: costing.costIn.toFixed(2),
           diffValue: diffValue.toFixed(2),
-          reason: line.reason ?? dto.reason ?? null,
+          reason: reasonOf(line).note,
+          reasonCode: reasonOf(line).code,
+          branchId,
         });
 
         await applyBranchStockDelta(

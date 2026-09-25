@@ -705,6 +705,11 @@ export const supplierReturns = pgTable('supplier_returns', {
   note: varchar('note', {length: 500}),
   cashierId: varchar('cashier_id', {length: 36}),
   cashierName: varchar('cashier_name', {length: 255}),
+  // Where the goods came from: 'stock' = the receipt's own unsold lots (stock
+  // and lots reversed); 'defective' = the yaroqsiz tovarlar ombori (only the
+  // defective lots move — sellable stock and the receipt's lots are untouched).
+  // Stock reports must skip 'defective' rows.
+  source: varchar('source', {length: 12}).notNull().default('stock'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -723,6 +728,11 @@ export const supplierReturnItems = pgTable('supplier_return_items', {
   // doublePrecision: weighed goods can be returned in fractional kg.
   quantity: doublePrecision('quantity').notNull(),
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
+  // Why this line went back — a SUPPLIER_RETURN_REASONS code
+  // (common/loss-reasons.ts); null on returns made before codes existed.
+  reasonCode: varchar('reason_code', {length: 20}),
+  // Free-text detail for the line (required when reasonCode is 'other').
+  note: varchar('note', {length: 255}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -1845,8 +1855,14 @@ export const stockTakeItems = pgTable(
     diffQty: doublePrecision('diff_qty').notNull(), // counted - book
     unitCost: decimal('unit_cost', {precision: 10, scale: 2}), // tannarx (COGS)
     diffValue: decimal('diff_value', {precision: 12, scale: 2}),
-    // Kamomad/hisobdan chiqarish sababi (o'g'irlik/buzilish/muddat...). Ixtiyoriy.
+    // Kamomad/hisobdan chiqarish izohi (erkin matn). Ixtiyoriy.
     reason: varchar('reason', {length: 255}),
+    // Hisobdan chiqarish sababi — WRITE_OFF_REASONS kodi (common/loss-reasons.ts).
+    // Sanoq qatorlarida va kodlardan oldingi yozuvlarda null.
+    reasonCode: varchar('reason_code', {length: 20}),
+    // Qoldiq qaysi filialdan yechilgan (hisobdan chiqarish qatorlari). Sanoq
+    // qatorlarida null — ularning filiali stock_takes.store_id.
+    branchId: varchar('branch_id', {length: 36}),
     // Sanoqchi bu mahsulotni ko'zdan kechirdimi ("tekshirildi/tekshirilmadi").
     // Sanoq davomida qaysi tovarlar hali qolganini kuzatish + filtrlash uchun.
     // Sanalgan miqdordan mustaqil — 0 ham "tekshirilgan" bo'lishi mumkin.
@@ -2727,7 +2743,11 @@ export const saleReturns = pgTable(
       onDelete: 'set null',
     }),
     customerName: varchar('customer_name', {length: 255}),
+    // Free-text note on why the goods came back.
     reason: varchar('reason', {length: 500}),
+    // The same, as a SALE_RETURN_REASONS code (common/loss-reasons.ts); null
+    // on returns that predate codes and weren't a known quick-reason text.
+    reasonCode: varchar('reason_code', {length: 20}),
     // Same "pieces, a weighed line counts as one" rule as orders.item_count.
     itemCount: integer('item_count').notNull().default(0),
     // Returned lines at their sale price, the share of the order discount
@@ -2800,6 +2820,10 @@ export const saleReturnItems = pgTable(
     // true = back on the shelf (stock + a new batch at the sale cost);
     // false = defective ("yaroqsiz"), not restocked.
     restock: boolean('restock').notNull().default(true),
+    // Where the line went: 'shelf' | 'defective_stock' (a defective line put in
+    // the yaroqsiz tovarlar ombori). Null on returns made before that existed —
+    // a defective line then just left the books as a loss.
+    disposition: varchar('disposition', {length: 20}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -2813,3 +2837,235 @@ export const saleReturnItems = pgTable(
 
 export type SaleReturn = typeof saleReturns.$inferSelect;
 export type SaleReturnItem = typeof saleReturnItems.$inferSelect;
+
+// ─── Yaroqsiz tovarlar ombori (defective stock) ─────────────────────────────
+// Defective goods kept apart from sellable stock, per branch, until the shop
+// decides: back to the supplier (debt down, or swapped for good units), written
+// off (the loss is booked then), or back on sale. None of this is in
+// branch_stock / products.quantity / inventory_batches, so checkout, the
+// catalogue, stock-takes and stock reports never see it. See YOQOTISHLAR.md.
+
+// FIFO lots of defective stock with the cost they carry (base UZS).
+export const defectiveLots = pgTable(
+  'defective_lots',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    branchId: varchar('branch_id', {length: 36}).notNull(),
+    unitCost: decimal('unit_cost', {precision: 12, scale: 2}).notNull(),
+    qtyIn: doublePrecision('qty_in').notNull(),
+    qtyRemaining: doublePrecision('qty_remaining').notNull(),
+    // 'customer_return' | 'shelf' | 'opening'. Opening lots were already a loss
+    // before this existed, so writing them off books no second expense.
+    source: varchar('source', {length: 20}).notNull(),
+    movementId: varchar('movement_id', {length: 36}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    stockIdx: index('defective_lots_stock_idx').on(
+      table.businessId,
+      table.productId,
+      table.branchId,
+    ),
+  }),
+);
+
+// One document per move in or out of defective stock.
+export const defectiveMovements = pgTable(
+  'defective_movements',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    branchId: varchar('branch_id', {length: 36}).notNull(),
+    // in_return | in_shelf | in_opening | out_supplier | out_exchange |
+    // out_writeoff | out_to_sale (DEFECTIVE_MOVEMENT_TYPES)
+    type: varchar('type', {length: 20}).notNull(),
+    // Document-level default; each line may carry its own.
+    reasonCode: varchar('reason_code', {length: 20}),
+    note: varchar('note', {length: 500}),
+    saleReturnId: varchar('sale_return_id', {length: 36}),
+    receiptId: varchar('receipt_id', {length: 36}),
+    supplierReturnId: varchar('supplier_return_id', {length: 36}),
+    supplierId: varchar('supplier_id', {length: 36}),
+    supplierName: varchar('supplier_name', {length: 255}),
+    itemCount: integer('item_count').notNull().default(0),
+    // Cost moved (base UZS) and, for a write-off, the part booked as an expense.
+    totalCost: decimal('total_cost', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    lossValue: decimal('loss_value', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    // out_supplier: what the supplier took off the debt, in the receipt currency.
+    creditValue: decimal('credit_value', {precision: 14, scale: 2}),
+    currency: varchar('currency', {length: 3}),
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('defective_movements_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const defectiveMovementItems = pgTable(
+  'defective_movement_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    movementId: varchar('movement_id', {length: 36})
+      .notNull()
+      .references(() => defectiveMovements.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    quantity: doublePrecision('quantity').notNull(),
+    unitCost: decimal('unit_cost', {precision: 12, scale: 2}).notNull(),
+    costTotal: decimal('cost_total', {precision: 14, scale: 2}).notNull(),
+    lossValue: decimal('loss_value', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    reasonCode: varchar('reason_code', {length: 20}),
+    note: varchar('note', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    movementIdx: index('defective_movement_items_movement_idx').on(
+      table.movementId,
+    ),
+    productIdx: index('defective_movement_items_product_idx').on(
+      table.businessId,
+      table.productId,
+    ),
+  }),
+);
+
+export type DefectiveLot = typeof defectiveLots.$inferSelect;
+export type DefectiveMovement = typeof defectiveMovements.$inferSelect;
+export type DefectiveMovementItem = typeof defectiveMovementItems.$inferSelect;
+
+// ─── Feature flags ───────────────────────────────────────────────────────────
+// Which do'konlar see a feature that is still rolling out. The flag KEYS live in
+// code (src/feature/feature.catalog.ts) — a flag no code checks is a switch
+// wired to nothing — so this table only holds the platform-set state of each.
+// A catalog key with no row here is 'off'.
+export const featureFlags = pgTable('feature_flags', {
+  key: varchar('key', {length: 64}).primaryKey().notNull(),
+  // 'off'      nobody, whatever the list says — the kill switch
+  // 'selected' only the businesses with an enabled override below
+  // 'all'      everybody, except businesses with a disabled override
+  rollout: varchar('rollout', {length: 16}).notNull().default('off'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Per-business exceptions to a flag's rollout: the beta list under 'selected',
+// the exclusion list under 'all'. No FK to feature_flags — a key may be
+// targeted before its rollout was ever touched; keys are checked against the
+// catalog on write instead.
+export const businessFeatureFlags = pgTable(
+  'business_feature_flags',
+  {
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    featureKey: varchar('feature_key', {length: 64}).notNull(),
+    enabled: boolean('enabled').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({columns: [table.businessId, table.featureKey]}),
+    featureIdx: index('business_feature_flags_feature_idx').on(
+      table.featureKey,
+    ),
+  }),
+);
+
+export type FeatureFlag = typeof featureFlags.$inferSelect;
+export type BusinessFeatureFlag = typeof businessFeatureFlags.$inferSelect;
+
+// ─── Announcements (platform news) ──────────────────────────────────────────
+// "Yangiliklar" written in the platform console and shown inside the app.
+// Title/body are per-locale maps; `uz` is required and is the fallback.
+export type LocalizedText = {uz: string; ru?: string; en?: string};
+
+export const announcements = pgTable(
+  'announcements',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    // 'feature' | 'improvement' | 'fix' | 'notice' — only picks the badge.
+    kind: varchar('kind', {length: 16}).notNull().default('feature'),
+    title: jsonb('title').$type<LocalizedText>().notNull(),
+    body: jsonb('body').$type<LocalizedText>().notNull(),
+    // In-app path ("/reports/losses") or an https:// URL for the CTA button.
+    linkUrl: varchar('link_url', {length: 500}),
+    // Who sees it:
+    //   'all'      every business
+    //   'tier'     businesses whose effective tier is at least min_tier
+    //   'selected' the businesses in announcement_targets
+    //   'feature'  the businesses feature_key is enabled for — so a beta's
+    //              release note follows the beta list without a second list
+    audience: varchar('audience', {length: 16}).notNull().default('all'),
+    minTier: varchar('min_tier', {length: 16}),
+    featureKey: varchar('feature_key', {length: 64}),
+    // Open as a modal on the next app load instead of waiting in the bell.
+    popup: boolean('popup').notNull().default(false),
+    // Null = draft. A future value schedules it.
+    publishedAt: timestamp('published_at'),
+    expiresAt: timestamp('expires_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    publishedIdx: index('announcements_published_idx').on(table.publishedAt),
+  }),
+);
+
+export const announcementTargets = pgTable(
+  'announcement_targets',
+  {
+    announcementId: varchar('announcement_id', {length: 36})
+      .notNull()
+      .references(() => announcements.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+  },
+  (table) => ({
+    pk: primaryKey({columns: [table.announcementId, table.businessId]}),
+    businessIdx: index('announcement_targets_business_idx').on(
+      table.businessId,
+    ),
+  }),
+);
+
+// Read receipts per ACCOUNT (IAccount.id: business.id for the owner, staff.id
+// for staff) — every cashier sees a release note once, not once per shop.
+export const announcementReads = pgTable(
+  'announcement_reads',
+  {
+    announcementId: varchar('announcement_id', {length: 36})
+      .notNull()
+      .references(() => announcements.id, {onDelete: 'cascade'}),
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    readAt: timestamp('read_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({columns: [table.announcementId, table.accountId]}),
+  }),
+);
+
+export type Announcement = typeof announcements.$inferSelect;

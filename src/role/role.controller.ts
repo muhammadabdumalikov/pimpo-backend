@@ -31,6 +31,7 @@ import { PERMISSION_CATALOG } from '../permission/permission.catalog';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import { PermissionService } from '../permission/permission.service';
+import { FeatureService } from '../feature/feature.service';
 import { CurrentAccount } from '../business/decorators/current-account.decorator';
 import { IAccount } from '../business/types';
 
@@ -43,6 +44,7 @@ export class RoleController {
   constructor(
     private readonly roleService: RoleService,
     private readonly permissions: PermissionService,
+    private readonly featureService: FeatureService,
   ) {}
 
   @Get()
@@ -58,11 +60,13 @@ export class RoleController {
     summary: 'The action-permission catalogue the roles UI renders',
   })
   @ApiResponse({ status: 200, description: 'List of {key, group}' })
-  permissionCatalog() {
+  async permissionCatalog(@CurrentBusiness() business: IBusiness) {
     // Served from the server so the checkboxes a shop sees can never drift from
     // the keys the guards actually enforce. Declared BEFORE @Get(':id') — Nest
     // matches in declaration order and ':id' would otherwise swallow it.
-    return PERMISSION_CATALOG;
+    // Keys of a feature still rolling out are left out for shops without it.
+    const enabled = new Set(await this.featureService.enabledFor(business.id));
+    return PERMISSION_CATALOG.filter((p) => !p.feature || enabled.has(p.feature));
   }
 
   @Get(':id')

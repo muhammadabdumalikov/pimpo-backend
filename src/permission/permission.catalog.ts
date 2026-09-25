@@ -1,3 +1,5 @@
+import type {FeatureKey} from '../feature/feature.catalog';
+
 /**
  * The canonical list of ACTION permissions.
  *
@@ -39,6 +41,12 @@ export type PermissionGroup =
 export interface PermissionDefinition {
   key: string;
   group: PermissionGroup;
+  /**
+   * Only offered in the roles UI to shops this feature flag is on for — a
+   * checkbox for a screen the shop cannot see would only confuse. The guard
+   * itself does not care: the flagged endpoints refuse the shop anyway.
+   */
+  feature?: FeatureKey;
 }
 
 export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
@@ -89,6 +97,8 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   // ── Ombor ────────────────────────────────────────────────────────────────
   {key: 'stocktake:manage', group: 'inventory'},
   {key: 'transfer:manage', group: 'inventory'},
+  // Yaroqsiz tovarlar ombori: move goods in/out, write off, return to supplier.
+  {key: 'defective:manage', group: 'inventory', feature: 'defective_store'},
 
   // ── Moliya ───────────────────────────────────────────────────────────────
   {key: 'finance:read', group: 'finance'},

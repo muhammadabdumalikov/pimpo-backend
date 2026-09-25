@@ -36,8 +36,11 @@ export const SCHEMA_DOC_NOTES = `
   sale_returns.created_at. The original order is NOT changed by a return, so
   any revenue figure must subtract returns in the same date range:
     net revenue = SUM(orders.total_amount) - SUM(sale_returns.total_amount)
-  Per product use sale_return_items.quantity / line_total; COGS drops only by
-  sale_return_items.cost_total where restock = true. Per seller, returns are
+  Per product use sale_return_items.quantity / line_total; COGS drops by
+  sale_return_items.cost_total where restock = true OR disposition =
+  'defective_stock' (sale_returns.restocked_cost already sums exactly that).
+  A defective line with disposition NULL predates the defective-stock store
+  and stayed a loss. Per seller, returns are
   credited to sale_returns.credited_staff_id. orders.receipt_no is the receipt
   number people quote ("chek #1245").
 - A customer's remaining debt is user_debts.amount minus the sum of that debt's
@@ -68,6 +71,13 @@ export const SCHEMA_DOC_NOTES = `
   products.quantity is the denormalised total across all branches.
 - inventory_batches is the FIFO lot ledger: SUM(qty_remaining) per product
   equals products.quantity.
+- Defective goods ("yaroqsiz tovarlar ombori") are NOT in branch_stock,
+  products.quantity or inventory_batches: they sit in defective_lots
+  (qty_remaining per product and branch, unit_cost), with every move in or out
+  documented in defective_movements (type in_return | in_shelf | in_opening |
+  out_supplier | out_exchange | out_writeoff | out_to_sale) and
+  defective_movement_items. supplier_returns.source = 'defective' marks a
+  supplier return out of defective stock — it did not reduce sellable stock.
 - The selling price is products.price_out (with price_wholesale / price_bundle
   for the other tiers). inventory_batches.price_out and
   goods_receipt_items.price_out are historical: the price written on the

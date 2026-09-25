@@ -19,6 +19,11 @@ export const TTL = {
   SUPPLIERS: 5 * 60 * 1000, // 5m
   SETTINGS: 15 * 60 * 1000, // 15m — receipt settings
   LOYALTY: 15 * 60 * 1000, // 15m — loyalty program settings (write-invalidated)
+  // Feature flags: the whole platform-wide state (rollout per flag + the
+  // per-business overrides) in ONE key — a rollout change touches every
+  // business, and one key is the only thing a single cache.del can reach.
+  // Write-invalidated from the platform console; the TTL is a safety net.
+  FEATURES: 10 * 60 * 1000, // 10m
   // Telegram notification toggles — read on every notifiable event (checkout,
   // shift open/close, cash movement), write-invalidated on the settings PUT.
   TELEGRAM_SETTINGS: 15 * 60 * 1000, // 15m
@@ -108,6 +113,8 @@ export const CacheKeys = {
   // A group
   plansAll: () => 'plans:all',
   planById: (id: string) => `plans:id:${id}`,
+  // Platform-wide, deliberately NOT per business — see TTL.FEATURES.
+  featureState: () => 'features:state',
   subscriptionCurrent: (businessId: string) => `sub:current:${businessId}`,
   subscriptionLimits: (businessId: string) => `sub:limits:${businessId}`,
   subscriptionBilling: (businessId: string) => `sub:billing:${businessId}`,

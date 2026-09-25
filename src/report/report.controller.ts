@@ -4,10 +4,32 @@ import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {IBusiness} from '../business/types';
 import {ReportService} from './report.service';
+import {
+  LossesReportService,
+  type LossCondition,
+  type LossSection,
+} from './losses-report.service';
+import {DEFECTIVE_MOVEMENT_TYPES} from '../common/defective-stock';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+
+const LOSS_SECTIONS = [
+  'customer',
+  'supplier',
+  'writeoff',
+  'count',
+  'defective',
+] as const;
+const LOSS_CONDITIONS = [
+  'restocked',
+  'defective',
+  'defective_stock',
+  'shortage',
+  'surplus',
+  ...DEFECTIVE_MOVEMENT_TYPES,
+] as const;
 
 // Reports split by plan (see NARX-DRAFT / pricing tiers):
 //   • basic  — operational reports (the class-level default below)
@@ -23,7 +45,10 @@ import { RequirePermission } from '../permission/permission.decorator';
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class ReportController {
-  constructor(private readonly reportService: ReportService) {}
+  constructor(
+    private readonly reportService: ReportService,
+    private readonly lossesReportService: LossesReportService,
+  ) {}
 
   @Get('pnl')
   @RequirePermission('report:profit:view')
@@ -126,6 +151,61 @@ export class ReportController {
     @Query('branchId') branchId?: string,
   ) {
     return this.reportService.getSupplierReturns(business.id, {from, to, branchId});
+  }
+
+  @Get('losses')
+  @RequirePermission('report:view')
+  @ApiOperation({
+    summary:
+      "Qaytarish va yo'qotishlar: customer/supplier returns, write-offs and count differences by reason",
+  })
+  @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
+  async getLosses(
+    @CurrentBusiness() business: IBusiness,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.lossesReportService.getSummary(business.id, {from, to, branchId});
+  }
+
+  @Get('losses/lines')
+  @RequirePermission('report:view')
+  @ApiOperation({summary: "Line-level rows behind the losses report (drill-down / Excel)"})
+  @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
+  @ApiQuery({name: 'section', required: false, enum: LOSS_SECTIONS})
+  @ApiQuery({name: 'reason', required: false, description: "Reason code, or 'none' for lines without one"})
+  @ApiQuery({name: 'condition', required: false, enum: LOSS_CONDITIONS})
+  @ApiQuery({name: 'limit', required: false, description: 'Max lines (default 500, max 5000)'})
+  async getLossLines(
+    @CurrentBusiness() business: IBusiness,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('branchId') branchId?: string,
+    @Query('section') section?: string,
+    @Query('reason') reason?: string,
+    @Query('condition') condition?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.lossesReportService.getLines(business.id, {
+      from,
+      to,
+      branchId,
+      // Unknown values are dropped rather than rejected: a filter that doesn't
+      // apply just widens the list.
+      section: (LOSS_SECTIONS as readonly string[]).includes(section ?? '')
+        ? (section as LossSection)
+        : undefined,
+      reason: reason && /^[a-z_]{1,20}$/.test(reason) ? reason : undefined,
+      condition: (LOSS_CONDITIONS as readonly string[]).includes(condition ?? '')
+        ? (condition as LossCondition)
+        : undefined,
+      limit: limit ? Number(limit) || undefined : undefined,
+    });
   }
 
   @Get('stock-takes')

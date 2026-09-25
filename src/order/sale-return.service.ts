@@ -34,7 +34,14 @@ import {ErrorCode} from '../common/errors/error-codes';
 import {applyBranchStockDelta} from '../common/branch-stock';
 import {businessDayEnd, businessDayStart} from '../common/business-time';
 import {generateId} from '../utils/uuid';
+import {assertReasonNote} from '../common/loss-reasons';
+import {
+  addDefectiveLotTx,
+  insertDefectiveMovementTx,
+  type DefectiveMovementLine,
+} from '../common/defective-stock';
 import {IAccount} from '../business/types';
+import {FeatureService} from '../feature/feature.service';
 import {OrderService} from './order.service';
 import {computeReturn, ReturnResult} from './return-math';
 import {CreateSaleReturnDto, PreviewSaleReturnDto} from './dto/sale-return.dto';
@@ -92,6 +99,7 @@ export class SaleReturnService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly orderService: OrderService,
+    private readonly featureService: FeatureService,
   ) {}
 
   private get db() {
@@ -182,6 +190,15 @@ export class SaleReturnService {
     dto: CreateSaleReturnDto,
     account?: IAccount,
   ): Promise<SaleReturnWithItems> {
+    const note = dto.reason?.trim() || null;
+    assertReasonNote(dto.reasonCode, note);
+    // The yaroqsiz tovarlar ombori rolls out per shop. Without the flag a
+    // defective line leaves the books as a loss, exactly as before the store
+    // existed; read once, outside the transaction.
+    const defectiveStore = await this.featureService.isEnabled(
+      businessId,
+      'defective_store',
+    );
     // Same freeze as sales: a count in progress relies on stable stock.
     await this.orderService.assertNoStockTakeInProgress(businessId);
     const cashier = await this.orderService.resolveCashier(account);
@@ -216,7 +233,8 @@ export class SaleReturnService {
         creditedStaffName: order.sellerId ? order.sellerName : order.cashierName,
         userId: order.userId,
         customerName: order.customerName,
-        reason: dto.reason?.trim() || null,
+        reason: note,
+        reasonCode: dto.reasonCode ?? null,
         itemCount: result.itemCount,
         grossAmount: money(result.grossAmount),
         discountAmount: money(result.discountAmount),
@@ -227,12 +245,35 @@ export class SaleReturnService {
         refundAmount: money(result.refundAmount),
         refunds,
         costTotal: money(result.costTotal),
+        // Cost that went back into stock — the shelf or the yaroqsiz tovarlar
+        // ombori — and so leaves COGS. A defective unit is only a loss once
+        // it is written off from defective stock. Settled below, once the
+        // defective lines are known.
         restockedCost: money(result.restockedCost),
       });
 
+      // Defective lines go into the yaroqsiz tovarlar ombori (one document per
+      // return), unless the shop is not on the `defective_store` flag or the
+      // product no longer exists — then, as before, the line simply leaves the
+      // books as a loss.
+      const defectiveLines: DefectiveMovementLine[] = [];
+      let defectiveItemCount = 0;
       for (const line of result.lines) {
         const item = byId.get(line.orderItemId)!;
         const unitCost = item.quantity > 0 ? Number(item.costTotal) / item.quantity : 0;
+        const kind = item.productId ? state.kinds.get(item.productId) : undefined;
+        const toDefective =
+          defectiveStore && !line.restock && !!item.productId && !!kind?.exists;
+        if (toDefective) {
+          defectiveLines.push({
+            productId: item.productId,
+            productName: item.productName,
+            quantity: line.quantity,
+            unitCost: Math.round(unitCost * 100) / 100,
+            costTotal: line.costTotal,
+          });
+          defectiveItemCount += kind?.isKg ? 1 : line.quantity;
+        }
         await tx.insert(saleReturnItems).values({
           id: generateId(),
           returnId,
@@ -247,6 +288,11 @@ export class SaleReturnService {
           costIn: money(unitCost),
           costTotal: money(line.costTotal),
           restock: line.restock,
+          disposition: line.restock
+            ? 'shelf'
+            : toDefective
+              ? 'defective_stock'
+              : null,
         });
         await tx
           .update(orderItems)
@@ -257,7 +303,6 @@ export class SaleReturnService {
 
         // Back on the shelf: a fresh lot at the line's own cost/price snapshot
         // (FIFO can't hand back the exact lot it drew from), in this store.
-        const kind = item.productId ? state.kinds.get(item.productId) : undefined;
         if (line.restock && item.productId && kind?.exists) {
           await tx.insert(inventoryBatches).values({
             id: generateId(),
@@ -278,6 +323,44 @@ export class SaleReturnService {
             line.quantity,
           );
         }
+      }
+
+      if (defectiveLines.length) {
+        const movementId = await insertDefectiveMovementTx(
+          tx,
+          {
+            businessId,
+            branchId,
+            type: 'in_return',
+            reasonCode: dto.reasonCode ?? null,
+            note,
+            saleReturnId: returnId,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+          },
+          defectiveLines,
+          defectiveItemCount,
+        );
+        for (const l of defectiveLines) {
+          await addDefectiveLotTx(tx, {
+            businessId,
+            productId: l.productId!,
+            branchId,
+            qty: l.quantity,
+            unitCost: l.unitCost,
+            source: 'customer_return',
+            movementId,
+          });
+        }
+        const defectiveCost = defectiveLines.reduce((s, l) => s + l.costTotal, 0);
+        await tx
+          .update(saleReturns)
+          .set({
+            restockedCost: money(
+              Math.round((result.restockedCost + defectiveCost) * 100) / 100,
+            ),
+          })
+          .where(eq(saleReturns.id, returnId));
       }
 
       await tx

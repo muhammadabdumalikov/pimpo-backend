@@ -1968,7 +1968,8 @@ export class OrderService {
         productId: saleReturnItems.productId,
         units: sql<string>`COALESCE(SUM(${saleReturnItems.quantity}), 0)`,
         revenue: sql<string>`COALESCE(SUM(${saleReturnItems.lineTotal}), 0)`,
-        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
+        // Back on the shelf or into the yaroqsiz tovarlar ombori — both leave COGS.
+        restockedCost: sql<string>`COALESCE(SUM(CASE WHEN ${saleReturnItems.restock} OR ${saleReturnItems.disposition} = 'defective_stock' THEN ${saleReturnItems.costTotal} ELSE 0 END), 0)`,
       })
       .from(saleReturnItems)
       .innerJoin(saleReturns, eq(saleReturnItems.returnId, saleReturns.id))

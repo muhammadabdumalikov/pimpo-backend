@@ -3,6 +3,7 @@ import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {isStockTakeActive} from '../common/stock-take-lock';
+import {assertReasonNote} from '../common/loss-reasons';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {DatabaseService} from '../database/database.service';
 import {
@@ -24,6 +25,7 @@ import {
   type GoodsReceiptItem,
   type SupplierPayment,
   type SupplierReturn,
+  type SupplierReturnItem,
 } from '../database/schema';
 import {
   eq,
@@ -63,7 +65,7 @@ function money(value: number): string {
  * money does, so every caller passes both. Compared in whole cents: USD lines
  * sum in floating point, and 99.99999 must still read as paid.
  */
-function paymentStatusOf(settled: number, total: number): string {
+export function paymentStatusOf(settled: number, total: number): string {
   const settledCents = Math.round(settled * 100);
   if (settledCents <= 0) return 'unpaid';
   if (settledCents >= Math.round(total * 100)) return 'paid';
@@ -71,7 +73,7 @@ function paymentStatusOf(settled: number, total: number): string {
 }
 
 /** What is still owed on a receipt, never below zero, to the cent. */
-function outstandingOf(receipt: GoodsReceipt): number {
+export function outstandingOf(receipt: GoodsReceipt): number {
   const cents =
     Math.round(Number(receipt.totalAmount) * 100) -
     Math.round(Number(receipt.paidAmount) * 100) -
@@ -2088,12 +2090,12 @@ export class ReceiptService {
 
   // ─── Supplier returns (T3) ────────────────────────────────────────────────
 
-  /** Returns made against a receipt, newest first. */
+  /** Returns made against a receipt, newest first, each with its lines. */
   async getReturns(
     businessId: string,
     receiptId: string,
-  ): Promise<SupplierReturn[]> {
-    return this.dbService.db
+  ): Promise<(SupplierReturn & {items: SupplierReturnItem[]})[]> {
+    const rows = await this.dbService.db
       .select()
       .from(supplierReturns)
       .where(
@@ -2103,6 +2105,75 @@ export class ReceiptService {
         ),
       )
       .orderBy(desc(supplierReturns.createdAt));
+    const items = rows.length
+      ? await this.dbService.db
+          .select()
+          .from(supplierReturnItems)
+          .where(
+            and(
+              eq(supplierReturnItems.businessId, businessId),
+              inArray(
+                supplierReturnItems.returnId,
+                rows.map((r) => r.id),
+              ),
+            ),
+          )
+          .orderBy(asc(supplierReturnItems.createdAt))
+      : [];
+    const byReturn = new Map<string, SupplierReturnItem[]>();
+    for (const it of items) {
+      const list = byReturn.get(it.returnId) ?? [];
+      list.push(it);
+      byReturn.set(it.returnId, list);
+    }
+    return rows.map((r) => ({...r, items: byReturn.get(r.id) ?? []}));
+  }
+
+  /**
+   * How much of each product can still go back to the supplier on this
+   * receipt: what is left in the lots the receipt opened. Units already sold,
+   * written off, moved to another branch or returned are gone from those lots,
+   * so they can't be returned here — the same figure createReturn enforces.
+   */
+  async getReturnable(
+    businessId: string,
+    receiptId: string,
+  ): Promise<{items: {productId: string; returnable: number}[]}> {
+    const [receipt] = await this.dbService.db
+      .select({id: goodsReceipts.id})
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    const rows = await this.dbService.db
+      .select({
+        productId: inventoryBatches.productId,
+        returnable: sql<string>`COALESCE(SUM(${inventoryBatches.qtyRemaining}), 0)`,
+      })
+      .from(inventoryBatches)
+      .innerJoin(
+        goodsReceiptItems,
+        eq(inventoryBatches.receiptItemId, goodsReceiptItems.id),
+      )
+      .where(
+        and(
+          eq(inventoryBatches.businessId, businessId),
+          eq(goodsReceiptItems.receiptId, receiptId),
+          gt(inventoryBatches.qtyRemaining, 0),
+        ),
+      )
+      .groupBy(inventoryBatches.productId);
+    return {
+      items: rows.map((r) => ({
+        productId: r.productId,
+        returnable: Math.round(Number(r.returnable) * 1000) / 1000,
+      })),
+    };
   }
 
   /**
@@ -2133,17 +2204,35 @@ export class ReceiptService {
       throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN);
     }
 
-    // Aggregate requested quantities per product (sum duplicate lines).
+    // Aggregate requested quantities per product (sum duplicate lines) — stock
+    // and lots move per product — but keep each line, since two lines of one
+    // product may go back for different reasons.
     const requested = new Map<string, number>();
+    const linesByProduct = new Map<
+      string,
+      {quantity: number; reasonCode: string | null; note: string | null}[]
+    >();
     for (const line of dto.items) {
       if (line.quantity <= 0) continue;
+      const reasonCode = line.reasonCode ?? dto.reasonCode ?? null;
+      const note = line.note?.trim() || null;
+      // 'other' is explained by the line's note, else the return's own note.
+      assertReasonNote(reasonCode, note ?? dto.note);
       requested.set(
         line.productId,
         (requested.get(line.productId) ?? 0) + line.quantity,
       );
+      const list = linesByProduct.get(line.productId) ?? [];
+      list.push({quantity: line.quantity, reasonCode, note});
+      linesByProduct.set(line.productId, list);
     }
     if (requested.size === 0) {
       throw new AppException(ErrorCode.RECEIPT_NOTHING_TO_RETURN);
+    }
+    // Same freeze as receiving: a count relies on a stable book snapshot, and a
+    // return takes stock off the shelf just as a receipt puts it on.
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.RECEIPT_FROZEN_STOCK_TAKE);
     }
 
     // Receipt lines (product names) + the receipt's open batches for reversal.
@@ -2227,6 +2316,8 @@ export class ReceiptService {
         quantity: number;
         priceIn: string;
         lineTotal: string;
+        reasonCode: string | null;
+        note: string | null;
       }[] = [];
       const batchUpdates: {id: string; take: number}[] = [];
       let returnTotal = 0;
@@ -2263,12 +2354,26 @@ export class ReceiptService {
         }
         returnTotal += lineValue;
         returnedQty += qtyTypeByProduct.get(productId) === 'kg' ? 1 : qty;
-        returnLines.push({
-          productId,
-          productName: name,
-          quantity: qty,
-          priceIn: money(qty > 0 ? lineValue / qty : 0),
-          lineTotal: money(lineValue),
+        // One row per requested line, all at the product's blended unit cost;
+        // the last row takes the rounding remainder so rows sum to lineValue.
+        const unit = qty > 0 ? lineValue / qty : 0;
+        const parts = linesByProduct.get(productId) ?? [];
+        let allotted = 0;
+        parts.forEach((part, i) => {
+          const value =
+            i === parts.length - 1
+              ? lineValue - allotted
+              : Number(money(part.quantity * unit));
+          allotted += value;
+          returnLines.push({
+            productId,
+            productName: name,
+            quantity: part.quantity,
+            priceIn: money(unit),
+            lineTotal: money(value),
+            reasonCode: part.reasonCode,
+            note: part.note,
+          });
         });
       }
 
@@ -2299,6 +2404,8 @@ export class ReceiptService {
           priceIn: l.priceIn,
           quantity: l.quantity,
           lineTotal: l.lineTotal,
+          reasonCode: l.reasonCode,
+          note: l.note,
         })),
       );
 

@@ -1,6 +1,7 @@
 import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {Type} from 'class-transformer';
 import {
+  IsIn,
   IsString,
   IsOptional,
   IsArray,
@@ -10,6 +11,10 @@ import {
   ValidateNested,
   MaxLength,
 } from 'class-validator';
+import {
+  SUPPLIER_RETURN_REASONS,
+  SupplierReturnReason,
+} from '../../common/loss-reasons';
 
 export class ReturnItemDto {
   @ApiProperty({description: 'Product id (must be on the receipt)'})
@@ -23,6 +28,22 @@ export class ReturnItemDto {
   @IsNumber({maxDecimalPlaces: 3})
   @Min(0.001)
   quantity: number;
+
+  @ApiPropertyOptional({
+    enum: SUPPLIER_RETURN_REASONS,
+    description: 'Why this line goes back (overrides the document reasonCode)',
+  })
+  @IsIn(SUPPLIER_RETURN_REASONS)
+  @IsOptional()
+  reasonCode?: SupplierReturnReason;
+
+  @ApiPropertyOptional({
+    description: "Line note; required when the line's reason code is 'other'",
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(255)
+  note?: string;
 }
 
 /** Return received goods back to the supplier, against a goods receipt. */
@@ -33,6 +54,14 @@ export class CreateReturnDto {
   @ValidateNested({each: true})
   @Type(() => ReturnItemDto)
   items: ReturnItemDto[];
+
+  @ApiPropertyOptional({
+    enum: SUPPLIER_RETURN_REASONS,
+    description: 'Default reason code for lines without one',
+  })
+  @IsIn(SUPPLIER_RETURN_REASONS)
+  @IsOptional()
+  reasonCode?: SupplierReturnReason;
 
   @ApiPropertyOptional({description: 'Note'})
   @IsString()

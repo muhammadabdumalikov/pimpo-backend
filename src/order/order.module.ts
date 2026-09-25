@@ -8,9 +8,10 @@ import { UserModule } from '../user/user.module';
 import { SubscriptionModule } from '../subscription/subscription.module';
 import { BranchModule } from '../branch/branch.module';
 import { TelegramModule } from '../telegram/telegram.module';
+import { FeatureModule } from '../feature/feature.module';
 
 @Module({
-  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule],
+  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule],
   controllers: [OrderController, SaleReturnController],
   providers: [OrderService, SaleReturnService, BusinessService],
   exports: [OrderService, SaleReturnService],

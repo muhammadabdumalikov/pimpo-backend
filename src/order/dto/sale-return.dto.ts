@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -12,6 +13,10 @@ import {
   ValidateNested,
 } from 'class-validator';
 import {PaymentSplitDto} from './create-order.dto';
+import {
+  SALE_RETURN_REASONS,
+  SaleReturnReason,
+} from '../../common/loss-reasons';
 
 export class ReturnItemDto {
   @ApiProperty({description: 'order_items.id of the line coming back'})
@@ -64,7 +69,17 @@ export class CreateSaleReturnDto extends PreviewSaleReturnDto {
   @Type(() => PaymentSplitDto)
   refunds?: PaymentSplitDto[];
 
-  @ApiPropertyOptional({description: 'Why the goods came back'})
+  @ApiPropertyOptional({
+    enum: SALE_RETURN_REASONS,
+    description: 'Why the goods came back, as a code',
+  })
+  @IsIn(SALE_RETURN_REASONS)
+  @IsOptional()
+  reasonCode?: SaleReturnReason;
+
+  @ApiPropertyOptional({
+    description: "Free-text note on the return; required when reasonCode is 'other'",
+  })
   @IsString()
   @IsOptional()
   @MaxLength(500)
