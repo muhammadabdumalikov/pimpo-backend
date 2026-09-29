@@ -37,6 +37,17 @@ export const FEATURE_CATALOG = [
       'hisobdan chiqariladi, sotuvga qaytadi yoki yetkazib beruvchiga ' +
       "qaytariladi. O'chiq do'konda yaroqsiz qaytarish avvalgidek zarar.",
   },
+  {
+    key: 'live_scale',
+    name: 'Jonli tarozi',
+    description:
+      "Kassa kompyuteriga ulangan tarozi (RS-232 / USB, Chrome yoki Edge'da " +
+      "Web Serial orqali) kilogramlik mahsulot og'irligini o'zi yozadi. " +
+      "Sozlamalar → Tarozi'da «Shu kompyuterdagi tarozi» bo'limi va kassada " +
+      "tarozi belgisi paydo bo'ladi. O'chiq do'konda og'irlik avvalgidek " +
+      "qo'lda kiritiladi. Tekshiruv faqat UI'da: server og'irlik manbasini " +
+      "flag holatidan qat'i nazar saqlaydi.",
+  },
 ] as const satisfies readonly FeatureDefinition[];
 
 /** Every key the code may check. `never` while the catalogue is empty. */

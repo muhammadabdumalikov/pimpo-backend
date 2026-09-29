@@ -109,6 +109,12 @@ export class OrderController {
   @ApiQuery({name: 'minAmount', required: false})
   @ApiQuery({name: 'maxAmount', required: false})
   @ApiQuery({
+    name: 'manualWeight',
+    required: false,
+    description:
+      "'true' = only sales with a kilogram line typed by hand on a till that has a live scale",
+  })
+  @ApiQuery({
     name: 'cursor',
     required: false,
     description:
@@ -133,6 +139,7 @@ export class OrderController {
     @Query('sellerId') sellerId?: string,
     @Query('minAmount') minAmount?: string,
     @Query('maxAmount') maxAmount?: string,
+    @Query('manualWeight') manualWeight?: string,
     @Query('cursor') cursor?: string,
     @Query('withTotal') withTotal?: string,
   ) {
@@ -154,6 +161,7 @@ export class OrderController {
       sellerId,
       minAmount: num(minAmount),
       maxAmount: num(maxAmount),
+      manualWeight: manualWeight === 'true',
       cursor: cursor || undefined,
       withTotal: withTotal !== 'false',
     });

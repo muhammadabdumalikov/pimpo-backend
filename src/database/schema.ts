@@ -564,6 +564,10 @@ export const orderItems = pgTable(
     // Quantity already brought back by customers (sum of sale_return_items).
     // quantity − returnedQuantity is what can still be returned.
     returnedQuantity: doublePrecision('returned_quantity').notNull().default(0),
+    // Where a kilogram line's amount came from: 'scale' | 'label' | 'manual',
+    // null = no live scale at that till (order/weight-source.ts). Audit only —
+    // nothing prices or costs off it.
+    weightSource: varchar('weight_source', {length: 10}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -575,6 +579,12 @@ export const orderItems = pgTable(
       table.businessId,
       table.productId,
     ),
+    // The sales list's "hand-changed weight" filter. Partial, because manual
+    // lines are the exception — the index stays tiny while the ledger grows.
+    // Created by hand as 0084_order_items_weight_source.sql (CONCURRENTLY).
+    manualWeightIdx: index('order_items_manual_weight_idx')
+      .on(table.businessId, table.orderId)
+      .where(sql`${table.weightSource} = 'manual'`),
   }),
 );
 

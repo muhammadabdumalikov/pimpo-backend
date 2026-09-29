@@ -70,6 +70,7 @@ import {HoldOrderDto} from './dto/hold-order.dto';
 import {UpdateOrderDto} from './dto/update-order.dto';
 import {IAccount} from '../business/types';
 import {consumeBatches, type CostingMethod} from './costing';
+import {weightSourceFor, type WeightSource} from './weight-source';
 
 // Drizzle transaction handle (parameter of db.transaction's callback).
 type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
@@ -439,6 +440,7 @@ export class OrderService {
       // What the till showed for this line, to be honoured if the lots back it
       // (see quoted-price.ts). Null when the client quoted nothing.
       quotedPrice: number | null;
+      weightSource: WeightSource | null;
     }[] = [];
     let itemCount = 0;
 
@@ -494,6 +496,11 @@ export class OrderService {
         // A tier already names the price for the whole line; a quote only
         // speaks for the default unit price.
         quotedPrice: priceOverride == null ? (item.quotedPrice ?? null) : null,
+        // A storefront shopper has no scale; only the till speaks for one.
+        weightSource:
+          dto.source === 'store'
+            ? null
+            : weightSourceFor(product, item.weightSource),
       });
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
@@ -544,6 +551,7 @@ export class OrderService {
           lineTotal: string;
           costIn: string;
           costTotal: string;
+          weightSource: WeightSource | null;
         }[] = [];
         let total = 0;
 
@@ -584,6 +592,7 @@ export class OrderService {
             lineTotal: money(settledLine.revenueTotal),
             costIn: money(c.costIn),
             costTotal: money(c.costTotal),
+            weightSource: p.weightSource,
           });
         }
 
@@ -746,6 +755,7 @@ export class OrderService {
             lineTotal: line.lineTotal,
             costIn: line.costIn,
             costTotal: line.costTotal,
+            weightSource: line.weightSource,
           })),
         );
 
@@ -954,6 +964,7 @@ export class OrderService {
       priceType: string;
       quantity: number;
       lineTotal: string;
+      weightSource: WeightSource | null;
     }[] = [];
     let subtotal = 0;
     let itemCount = 0;
@@ -996,6 +1007,9 @@ export class OrderService {
         priceType,
         quantity: item.quantity,
         lineTotal: money(lineTotal),
+        // Travels with the draft so a resumed cart still knows which lines
+        // the scale weighed.
+        weightSource: weightSourceFor(product, item.weightSource),
       });
     }
 
@@ -1090,6 +1104,7 @@ export class OrderService {
           lineTotal: line.lineTotal,
           costIn: money(0),
           costTotal: money(0),
+          weightSource: line.weightSource,
         })),
       );
     });
@@ -1197,6 +1212,9 @@ export class OrderService {
       sellerId?: string;
       minAmount?: number;
       maxAmount?: number;
+      // Only sales with a kilogram line typed on a till that has a live scale
+      // (weight_source = 'manual') — the owner's audit view.
+      manualWeight?: boolean;
       // Keyset pagination (common/cursor.ts): the `nextCursor` of the page
       // before this one. Sales are the list that grows forever and is read
       // newest-first, so offset paging both slows down and shifts under the
@@ -1255,6 +1273,24 @@ export class OrderService {
     if (options?.maxAmount != null) {
       where.push(lte(orders.totalAmount, money(options.maxAmount)));
     }
+    if (options?.manualWeight) {
+      // The literal (not a bound parameter) is what lets the planner match
+      // the partial order_items_manual_weight_idx.
+      where.push(
+        inArray(
+          orders.id,
+          this.dbService.db
+            .select({id: orderItems.orderId})
+            .from(orderItems)
+            .where(
+              and(
+                eq(orderItems.businessId, businessId),
+                sql`${orderItems.weightSource} = 'manual'`,
+              ),
+            ),
+        ),
+      );
+    }
     if (options?.search) {
       where.push(
         or(
@@ -1299,20 +1335,31 @@ export class OrderService {
     const {rows, nextCursor} = takePage(fetched, limit, keys);
 
     // Distinct-product ("tur") count per order — the number of line items, not
-    // the summed quantity. Fetched in one grouped query for the whole page.
+    // the summed quantity — plus how many of those lines had their weight
+    // typed on a scale till, so the list can flag them. One grouped query for
+    // the whole page.
     const ids = rows.map((r) => r.id);
     const typeCounts = new Map<string, number>();
+    const manualCounts = new Map<string, number>();
     if (ids.length > 0) {
       const counts = await this.dbService.db
-        .select({orderId: orderItems.orderId, types: count()})
+        .select({
+          orderId: orderItems.orderId,
+          types: count(),
+          manual: sql<string>`count(*) filter (where ${orderItems.weightSource} = 'manual')`,
+        })
         .from(orderItems)
         .where(inArray(orderItems.orderId, ids))
         .groupBy(orderItems.orderId);
-      for (const c of counts) typeCounts.set(c.orderId, Number(c.types));
+      for (const c of counts) {
+        typeCounts.set(c.orderId, Number(c.types));
+        manualCounts.set(c.orderId, Number(c.manual));
+      }
     }
     const withTypes = rows.map((r) => ({
       ...r,
       itemTypes: typeCounts.get(r.id) ?? 0,
+      manualWeightLines: manualCounts.get(r.id) ?? 0,
     }));
 
     return {orders: withTypes, total, page, limit, nextCursor};

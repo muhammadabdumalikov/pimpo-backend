@@ -8,6 +8,10 @@ import { eq, and, asc, desc, isNull, or, sql } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { CacheKeys, TTL } from '../cache/cache.util';
 
+// The one unit a scale reads in. Litres and metres are fractional too, but
+// only this id means "weighed".
+export const SYSTEM_KG_UNIT_ID = 'unit-system-kg';
+
 // Global system units (businessId NULL): exist for every business out of the
 // box, immutable from the API (update/delete only match business-owned rows).
 // Fixed ids so the insert is idempotent (also seeded by migration 0039).
@@ -15,7 +19,7 @@ const SYSTEM_UNITS: Array<
   Pick<Unit, 'id' | 'name' | 'shortName' | 'precision'>
 > = [
   { id: 'unit-system-dona', name: 'Dona', shortName: 'dona', precision: 0 },
-  { id: 'unit-system-kg', name: 'Kilogramm', shortName: 'kg', precision: 3 },
+  { id: SYSTEM_KG_UNIT_ID, name: 'Kilogramm', shortName: 'kg', precision: 3 },
 ];
 
 // Seeded once per business, on the first list. Deleting them later is fine —

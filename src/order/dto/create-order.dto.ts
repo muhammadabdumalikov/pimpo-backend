@@ -13,6 +13,7 @@ import {
   IsIn,
   IsUUID,
 } from 'class-validator';
+import {WEIGHT_SOURCES, type WeightSource} from '../weight-source';
 
 export class OrderItemDto {
   @ApiProperty({description: 'Product id'})
@@ -55,6 +56,18 @@ export class OrderItemDto {
   @IsNumber()
   @Min(0)
   quotedPrice?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "Where a kilogram line's amount came from: 'scale' (the till's live " +
+      "scale), 'label' (a scale label's barcode) or 'manual' (typed on a till " +
+      'that has a live scale). Omit when the till has no live scale. Stored ' +
+      'for the owner to audit; ignored on anything not sold in kilograms.',
+    enum: WEIGHT_SOURCES,
+  })
+  @IsOptional()
+  @IsIn(WEIGHT_SOURCES)
+  weightSource?: WeightSource;
 }
 
 export class PaymentSplitDto {
