@@ -219,6 +219,8 @@ export enum ErrorCode {
   DEFECTIVE_OPENING_CLOSED = 'DEFECTIVE_OPENING_CLOSED',
   DEFECTIVE_RECEIPT_NO_DEBT = 'DEFECTIVE_RECEIPT_NO_DEBT',
   DEFECTIVE_RETURN_EXCEEDS_DEBT = 'DEFECTIVE_RETURN_EXCEEDS_DEBT',
+  DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER = 'DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER',
+  DEFECTIVE_PRODUCT_NO_PRICE = 'DEFECTIVE_PRODUCT_NO_PRICE',
 
   // ── Stock transfer (filiallararo ko'chirish) ───────────────────────────────
   TRANSFER_EMPTY = 'TRANSFER_EMPTY',
@@ -1032,6 +1034,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.DEFECTIVE_RETURN_EXCEEDS_DEBT]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'This return is worth {value} {currency} but only {outstanding} is owed on the receipt',
+  },
+  [ErrorCode.DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '{product} is neither assigned to nor delivered by this receipt\'s supplier',
+  },
+  [ErrorCode.DEFECTIVE_PRODUCT_NO_PRICE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '{product} has no delivery price from this supplier and no purchase price on its card',
   },
 
   // Stock transfer

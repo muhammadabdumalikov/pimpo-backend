@@ -25,7 +25,12 @@ import {
   suppliers,
 } from '../database/schema';
 import {businessDayEnd, businessDayStart} from '../common/business-time';
-import {productOfSupplier} from './supplier-attribution';
+import {
+  offReceiptPrices,
+  priceInReceiptCurrency,
+  productOfSupplier,
+  type OffReceiptPrice,
+} from './supplier-attribution';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -51,11 +56,17 @@ export interface SupplierDefectiveRow {
   received: boolean;
   /** Other active suppliers the product also belongs to. */
   otherSuppliers: {id: string; name: string}[];
-  /** This supplier's receipts that list the product and still carry debt. */
+  /**
+   * This supplier's receipts that still carry debt and can take the product:
+   * those listing it, plus (S14) their other open receipts when the product
+   * has a price to go back at. 0 = "Ochiq qarzli nakladnoy yo'q".
+   */
   openReceipts: number;
+  /** How many of those list the product; 0 with openReceipts > 0 = off another receipt's debt. */
+  openReceiptsListing: number;
   /** What those receipts' debt can take back now (see returnable()). */
   returnableQty: number;
-  /** returnableQty at the receipt lines' prices, in base UZS. */
+  /** returnableQty at the prices it would go back at, in base UZS. */
   returnableValue: number;
 }
 
@@ -89,6 +100,8 @@ interface LotRow {
 
 interface OpenReceipt {
   supplierId: string;
+  currency: string;
+  usdRate: string | null;
   /** Receipt currency → base UZS. */
   rate: number;
   /** Still owed, in the receipt currency. */
@@ -97,10 +110,14 @@ interface OpenReceipt {
 
 interface OpenLines {
   receipts: Map<string, OpenReceipt>;
+  /** supplierId → every open receipt of theirs, newest first. */
+  bySupplier: Map<string, string[]>;
   /** `${receiptId}:${productId}` → unit price in the receipt currency. */
   price: Map<string, number>;
-  /** `${supplierId}:${productId}` → open receipt ids, newest first. */
+  /** `${supplierId}:${productId}` → open receipts listing it, newest first. */
   bySupplierProduct: Map<string, string[]>;
+  /** `${supplierId}:${productId}` → price off a receipt that doesn't list it (S14). */
+  offPrice: Map<string, OffReceiptPrice>;
 }
 
 /** Who a product belongs to: supplierId → how. Active suppliers only. */
@@ -116,8 +133,9 @@ type Owners = Map<
  *
  * Attribution is per product (supplier-attribution.ts). What can go back now is
  * worked out the way a return would go: against this supplier's receipts that
- * list the product and still carry debt, newest first, each up to what is
- * still owed on it — the same receipt the return drawer suggests first.
+ * still carry debt — those listing the product first, at their line price,
+ * then (S14) their other open receipts at the off-receipt price — each up to
+ * what is still owed on it, in the order the return drawer suggests them.
  *
  * Read-only. Visible to anyone who can see suppliers when `defective_store` is
  * on; acting on it goes through /defective-stock (defective:manage).
@@ -476,7 +494,10 @@ export class SupplierDefectiveService {
     return owners;
   }
 
-  /** These suppliers' receipts that list these products and still carry debt. */
+  /**
+   * These suppliers' receipts that still carry debt, the lines on them for
+   * these products, and each product's off-receipt price per supplier.
+   */
   private async openLines(
     businessId: string,
     productIds: string[],
@@ -484,60 +505,86 @@ export class SupplierDefectiveService {
   ): Promise<OpenLines> {
     const open: OpenLines = {
       receipts: new Map(),
+      bySupplier: new Map(),
       price: new Map(),
       bySupplierProduct: new Map(),
+      offPrice: new Map(),
     };
     if (!productIds.length || !supplierIds.length) return open;
-    const rows = await this.db
+    const receipts = await this.db
       .select({
-        receiptId: goodsReceipts.id,
+        id: goodsReceipts.id,
         supplierId: goodsReceipts.supplierId,
         currency: goodsReceipts.currency,
         usdRate: goodsReceipts.usdRate,
         totalAmount: goodsReceipts.totalAmount,
         paidAmount: goodsReceipts.paidAmount,
         returnedAmount: goodsReceipts.returnedAmount,
-        productId: goodsReceiptItems.productId,
-        priceIn: goodsReceiptItems.priceIn,
       })
-      .from(goodsReceiptItems)
-      .innerJoin(goodsReceipts, eq(goodsReceipts.id, goodsReceiptItems.receiptId))
+      .from(goodsReceipts)
       .where(
         and(
           eq(goodsReceipts.businessId, businessId),
           ne(goodsReceipts.status, 'draft'),
           inArray(goodsReceipts.supplierId, supplierIds),
-          inArray(goodsReceiptItems.productId, productIds),
           // Same test as the return drawer's candidates.
           sql`${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount} > 0.004`,
         ),
       )
-      .orderBy(
-        desc(goodsReceipts.createdAt),
-        desc(goodsReceiptItems.createdAt),
-      );
+      .orderBy(desc(goodsReceipts.createdAt));
+    for (const r of receipts) {
+      if (!r.supplierId) continue;
+      open.receipts.set(r.id, {
+        supplierId: r.supplierId,
+        currency: r.currency,
+        usdRate: r.usdRate,
+        rate: r.currency === 'USD' ? Number(r.usdRate ?? 1) || 1 : 1,
+        outstanding:
+          Number(r.totalAmount) - Number(r.paidAmount) - Number(r.returnedAmount),
+      });
+      const list = open.bySupplier.get(r.supplierId) ?? [];
+      list.push(r.id);
+      open.bySupplier.set(r.supplierId, list);
+    }
+    if (!open.receipts.size) return open;
 
-    for (const r of rows) {
-      if (!r.productId || !r.supplierId) continue;
-      if (!open.receipts.has(r.receiptId)) {
-        open.receipts.set(r.receiptId, {
-          supplierId: r.supplierId,
-          rate: r.currency === 'USD' ? Number(r.usdRate ?? 1) || 1 : 1,
-          outstanding:
-            Number(r.totalAmount) -
-            Number(r.paidAmount) -
-            Number(r.returnedAmount),
-        });
-      }
+    const [lines, offPrice] = await Promise.all([
+      this.db
+        .select({
+          receiptId: goodsReceiptItems.receiptId,
+          productId: goodsReceiptItems.productId,
+          priceIn: goodsReceiptItems.priceIn,
+        })
+        .from(goodsReceiptItems)
+        .where(
+          and(
+            inArray(goodsReceiptItems.receiptId, [...open.receipts.keys()]),
+            inArray(goodsReceiptItems.productId, productIds),
+          ),
+        )
+        .orderBy(desc(goodsReceiptItems.createdAt)),
+      offReceiptPrices(this.db, businessId, supplierIds, productIds),
+    ]);
+    open.offPrice = offPrice;
+    for (const l of lines) {
+      if (!l.productId) continue;
       // A receipt listing the product twice: the newest line's price wins,
       // as in the return itself.
-      const key = `${r.receiptId}:${r.productId}`;
+      const key = `${l.receiptId}:${l.productId}`;
       if (open.price.has(key)) continue;
-      open.price.set(key, Number(r.priceIn));
-      const sp = `${r.supplierId}:${r.productId}`;
-      const list = open.bySupplierProduct.get(sp) ?? [];
-      list.push(r.receiptId);
-      open.bySupplierProduct.set(sp, list);
+      open.price.set(key, Number(l.priceIn));
+    }
+    // Newest receipt first, as the candidates list orders them.
+    for (const [supplierId, ids] of open.bySupplier) {
+      for (const receiptId of ids) {
+        for (const productId of productIds) {
+          if (!open.price.has(`${receiptId}:${productId}`)) continue;
+          const sp = `${supplierId}:${productId}`;
+          const list = open.bySupplierProduct.get(sp) ?? [];
+          list.push(receiptId);
+          open.bySupplierProduct.set(sp, list);
+        }
+      }
     }
     return open;
   }
@@ -545,51 +592,82 @@ export class SupplierDefectiveService {
   /**
    * How much of each row this supplier's open receipts can take back now.
    *
-   * Rows go largest value first; each takes from the product's receipts newest
-   * first, each receipt up to its remaining debt, which the rows share — two
-   * products on one receipt cannot both spend the same debt. A unit product
-   * goes back whole, so the quantity rounds down; a weighed one to the gram.
+   * Two passes over the rows, largest value first. The first spends the
+   * receipts that list the product (newest first, at their line price); the
+   * second what is left on the supplier's other open receipts (S14, at the
+   * off-receipt price). Each receipt gives up to its remaining debt, which
+   * the rows share — two products cannot both spend the same debt — and a
+   * product's own receipts are never crowded out by another's off-receipt
+   * share. A unit product goes back whole, so the quantity rounds down; a
+   * weighed one to the gram.
    */
   private returnable(
     supplierId: string,
     rows: LotRow[],
     open: OpenLines,
   ): {
-    perRow: {openReceipts: number; returnableQty: number; returnableValue: number}[];
+    perRow: {
+      openReceipts: number;
+      openReceiptsListing: number;
+      returnableQty: number;
+      returnableValue: number;
+    }[];
     totals: SupplierDefectiveTotals;
   } {
     const debtLeft = new Map<string, number>();
     for (const [id, r] of open.receipts) {
       if (r.supplierId === supplierId) debtLeft.set(id, r.outstanding);
     }
-    const perRow = rows.map((row) => {
-      const receiptIds =
+    const all = open.bySupplier.get(supplierId) ?? [];
+    const plan = rows.map((row) => {
+      const listing =
         open.bySupplierProduct.get(`${supplierId}:${row.productId}`) ?? [];
-      const weighed = row.quantityType === 'kg';
-      let left = row.qty;
-      let qty = 0;
-      let value = 0;
-      for (const receiptId of receiptIds) {
-        if (left <= 0) break;
-        const debt = debtLeft.get(receiptId) ?? 0;
-        if (debt <= 0.004) continue;
-        const price = open.price.get(`${receiptId}:${row.productId}`) ?? 0;
-        const fits = price > 0 ? Math.min(left, debt / price) : left;
-        const take = weighed
+      const listed = new Set(listing);
+      const ref = open.offPrice.get(`${supplierId}:${row.productId}`);
+      const others = ref ? all.filter((id) => !listed.has(id)) : [];
+      return {row, listing, others, ref, left: row.qty, qty: 0, value: 0};
+    });
+
+    const take = (
+      p: (typeof plan)[number],
+      receiptId: string,
+      price: number,
+    ) => {
+      if (p.left <= 0) return;
+      const debt = debtLeft.get(receiptId) ?? 0;
+      if (debt <= 0.004) return;
+      const fits = price > 0 ? Math.min(p.left, debt / price) : p.left;
+      const n =
+        p.row.quantityType === 'kg'
           ? Math.floor(fits * 1000 + 1e-6) / 1000
           : Math.floor(fits + 1e-9);
-        if (take <= 0) continue;
-        debtLeft.set(receiptId, debt - take * price);
-        left = round3(left - take);
-        qty += take;
-        value += take * price * (open.receipts.get(receiptId)?.rate ?? 1);
+      if (n <= 0) return;
+      debtLeft.set(receiptId, debt - n * price);
+      p.left = round3(p.left - n);
+      p.qty += n;
+      p.value += n * price * (open.receipts.get(receiptId)?.rate ?? 1);
+    };
+
+    for (const p of plan) {
+      for (const receiptId of p.listing) {
+        take(p, receiptId, open.price.get(`${receiptId}:${p.row.productId}`) ?? 0);
       }
-      return {
-        openReceipts: receiptIds.length,
-        returnableQty: round3(qty),
-        returnableValue: round2(value),
-      };
-    });
+    }
+    for (const p of plan) {
+      if (!p.ref) continue;
+      for (const receiptId of p.others) {
+        const r = open.receipts.get(receiptId);
+        if (!r) continue;
+        take(p, receiptId, priceInReceiptCurrency(p.ref, r));
+      }
+    }
+
+    const perRow = plan.map((p) => ({
+      openReceipts: p.listing.length + p.others.length,
+      openReceiptsListing: p.listing.length,
+      returnableQty: round3(p.qty),
+      returnableValue: round2(p.value),
+    }));
 
     const totals: SupplierDefectiveTotals = {
       products: new Set(rows.map((r) => r.productId)).size,

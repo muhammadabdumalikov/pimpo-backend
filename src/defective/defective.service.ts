@@ -50,7 +50,12 @@ import {
   type DefectiveMovementType,
 } from '../common/defective-stock';
 import {outstandingOf, paymentStatusOf} from '../receipt/receipt.service';
-import {productOfSupplier} from './supplier-attribution';
+import {
+  offReceiptPrices,
+  priceInReceiptCurrency,
+  productOfSupplier,
+  supplierLinks,
+} from './supplier-attribution';
 import {
   DefectiveSupplierReturnDto,
   ExchangeDefectiveDto,
@@ -92,12 +97,21 @@ export interface SupplierCandidate {
   supplierId: string | null;
   supplierName: string | null;
   receivedAt: string;
-  /** The receipt line's unit cost, in the receipt currency. */
+  /** The unit price the return is valued at, in the receipt currency. */
   priceIn: number;
   currency: string;
   usdRate: number | null;
   /** Still owed on the receipt, in its currency. */
   outstanding: number;
+  /** The receipt lists the product. False = off another receipt's debt (S14). */
+  onReceipt: boolean;
+  /**
+   * Where priceIn comes from: this receipt's line, the supplier's last
+   * delivery of the product, or the card's purchase price.
+   */
+  priceSource: 'receipt' | 'last_delivery' | 'card';
+  /** last_delivery: when that delivery came in. */
+  priceFrom: string | null;
 }
 
 /**
@@ -333,9 +347,13 @@ export class DefectiveService {
   }
 
   /**
-   * Receipts a defective product can go back against: non-draft receipts that
-   * brought it in and still carry debt, newest first — the first is the
-   * suggestion. Price is that receipt line's unit cost in its currency.
+   * Receipts a defective product can go back against, the first being the
+   * suggestion. Receipts that list the product come first (newest first),
+   * priced at their line. After them (S14), the other open receipts of the
+   * suppliers the product belongs to (supplier-attribution.ts): the supplier
+   * takes it back off whatever they are still owed, at their own last
+   * delivery price for it, or the card's purchase price if they never
+   * delivered it — converted to that receipt's currency.
    */
   async supplierCandidates(
     businessId: string,
@@ -345,6 +363,7 @@ export class DefectiveService {
   ): Promise<{items: {productId: string; candidates: SupplierCandidate[]}[]}> {
     const ids = [...new Set(productIds.filter(Boolean))].slice(0, 200);
     if (!ids.length) return {items: []};
+    const openDebt = sql`${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount} > 0.004`;
     const rows = await this.db
       .select({
         productId: goodsReceiptItems.productId,
@@ -369,7 +388,7 @@ export class DefectiveService {
           eq(goodsReceipts.businessId, businessId),
           ne(goodsReceipts.status, 'draft'),
           inArray(goodsReceiptItems.productId, ids),
-          sql`${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount} > 0.004`,
+          openDebt,
           ...(supplierId ? [eq(goodsReceipts.supplierId, supplierId)] : []),
         ),
       )
@@ -379,8 +398,14 @@ export class DefectiveService {
       );
 
     const byProduct = new Map<string, SupplierCandidate[]>();
+    // Every open receipt that lists the product, capped list or not — so the
+    // off-receipt pass below does not offer the same receipt twice.
+    const listedOn = new Map<string, Set<string>>();
     for (const r of rows) {
       if (!r.productId) continue;
+      const listed = listedOn.get(r.productId) ?? new Set<string>();
+      listed.add(r.receiptId);
+      listedOn.set(r.productId, listed);
       const list = byProduct.get(r.productId) ?? [];
       // A receipt listing the product twice: the newest line's price wins.
       if (list.some((c) => c.receiptId === r.receiptId)) continue;
@@ -398,8 +423,76 @@ export class DefectiveService {
             Number(r.paidAmount) -
             Number(r.returnedAmount),
         ),
+        onReceipt: true,
+        priceSource: 'receipt',
+        priceFrom: null,
       });
       byProduct.set(r.productId, list);
+    }
+
+    // Off-receipt: the product's own suppliers' other open receipts.
+    const links = await supplierLinks(this.db, businessId, ids);
+    const owners = new Set<string>();
+    for (const set of links.values()) {
+      for (const id of set) if (!supplierId || id === supplierId) owners.add(id);
+    }
+    if (owners.size) {
+      const [open, prices] = await Promise.all([
+        this.db
+          .select({
+            receiptId: goodsReceipts.id,
+            supplierId: goodsReceipts.supplierId,
+            supplierName: goodsReceipts.supplierName,
+            receivedAt: goodsReceipts.createdAt,
+            currency: goodsReceipts.currency,
+            usdRate: goodsReceipts.usdRate,
+            totalAmount: goodsReceipts.totalAmount,
+            paidAmount: goodsReceipts.paidAmount,
+            returnedAmount: goodsReceipts.returnedAmount,
+          })
+          .from(goodsReceipts)
+          .where(
+            and(
+              eq(goodsReceipts.businessId, businessId),
+              ne(goodsReceipts.status, 'draft'),
+              inArray(goodsReceipts.supplierId, [...owners]),
+              openDebt,
+            ),
+          )
+          .orderBy(desc(goodsReceipts.createdAt)),
+        offReceiptPrices(this.db, businessId, [...owners], ids),
+      ]);
+      for (const productId of ids) {
+        const mine = links.get(productId);
+        if (!mine) continue;
+        const list = byProduct.get(productId) ?? [];
+        for (const r of open) {
+          if (list.length >= CANDIDATES_PER_PRODUCT) break;
+          if (!r.supplierId || !mine.has(r.supplierId)) continue;
+          if (supplierId && r.supplierId !== supplierId) continue;
+          if (listedOn.get(productId)?.has(r.receiptId)) continue;
+          const ref = prices.get(`${r.supplierId}:${productId}`);
+          if (!ref) continue;
+          list.push({
+            receiptId: r.receiptId,
+            supplierId: r.supplierId,
+            supplierName: r.supplierName,
+            receivedAt: toIso(r.receivedAt),
+            priceIn: priceInReceiptCurrency(ref, r),
+            currency: r.currency,
+            usdRate: r.usdRate === null ? null : Number(r.usdRate),
+            outstanding: round2(
+              Number(r.totalAmount) -
+                Number(r.paidAmount) -
+                Number(r.returnedAmount),
+            ),
+            onReceipt: false,
+            priceSource: ref.source,
+            priceFrom: ref.from ? toIso(ref.from) : null,
+          });
+        }
+        byProduct.set(productId, list);
+      }
     }
     return {
       items: ids.map((productId) => ({
@@ -671,6 +764,9 @@ export class DefectiveService {
    * updated) except that only defective lots move — sellable stock and the
    * receipt's own lots are untouched. The value may not exceed what is still
    * owed: with no supplier credit anywhere, the excess would silently vanish.
+   *
+   * The receipt need not list every product (S14): one of the supplier's own
+   * products can go back off any of their receipts that still carry debt.
    */
   async supplierReturn(
     businessId: string,
@@ -714,17 +810,53 @@ export class DefectiveService {
         });
       }
     }
-    for (const l of lines) {
-      if (!priceOf.has(l.productId)) {
-        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, {
-          productId: l.productId,
-        });
-      }
-    }
     const info = await this.productInfo(
       businessId,
       lines.map((l) => l.productId),
     );
+    // A product the receipt does not list (S14): the supplier takes it back
+    // off this receipt's debt all the same, provided it is theirs — priced at
+    // their last delivery of it, else the card's purchase price.
+    const missing = [
+      ...new Set(
+        lines.map((l) => l.productId).filter((id) => !priceOf.has(id)),
+      ),
+    ];
+    if (missing.length) {
+      if (!receipt.supplierId) {
+        throw new AppException(ErrorCode.RECEIPT_PRODUCT_NOT_ON_RECEIPT, {
+          productId: missing[0],
+        });
+      }
+      const [links, prices] = await Promise.all([
+        supplierLinks(this.db, businessId, missing),
+        offReceiptPrices(this.db, businessId, [receipt.supplierId], missing),
+      ]);
+      for (const productId of missing) {
+        const name = info.get(productId)?.name;
+        if (!name) {
+          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+            productId,
+          });
+        }
+        if (!links.get(productId)?.has(receipt.supplierId)) {
+          throw new AppException(
+            ErrorCode.DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER,
+            {product: name},
+          );
+        }
+        const ref = prices.get(`${receipt.supplierId}:${productId}`);
+        if (!ref) {
+          throw new AppException(ErrorCode.DEFECTIVE_PRODUCT_NO_PRICE, {
+            product: name,
+          });
+        }
+        priceOf.set(productId, {
+          name,
+          price: priceInReceiptCurrency(ref, receipt),
+        });
+      }
+    }
     const cashier = await this.resolveCashier(account);
     const branchId = await this.resolveBranch(
       businessId,
