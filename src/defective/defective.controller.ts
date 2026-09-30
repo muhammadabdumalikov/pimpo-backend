@@ -56,16 +56,23 @@ export class DefectiveController {
     required: false,
     description: 'Name, code or barcode',
   })
+  @ApiQuery({
+    name: 'supplierId',
+    required: false,
+    description: 'Products assigned to or ever received from this supplier',
+  })
   list(
     @CurrentBusiness() business: IBusiness,
     @Query('branchId') branchId?: string,
     @Query('productId') productId?: string,
     @Query('search') search?: string,
+    @Query('supplierId') supplierId?: string,
   ) {
     return this.defectiveService.list(business.id, {
       branchId,
       productId,
       search,
+      supplierId: supplierId || undefined,
     });
   }
 
@@ -79,6 +86,12 @@ export class DefectiveController {
   @ApiQuery({name: 'to', required: false})
   @ApiQuery({name: 'page', required: false})
   @ApiQuery({name: 'limit', required: false})
+  @ApiQuery({
+    name: 'supplierId',
+    required: false,
+    description:
+      "Moves to this supplier, or supplier-less moves of this supplier's products",
+  })
   movements(
     @CurrentBusiness() business: IBusiness,
     @Query('branchId') branchId?: string,
@@ -88,6 +101,7 @@ export class DefectiveController {
     @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('supplierId') supplierId?: string,
   ) {
     return this.defectiveService.movements(business.id, {
       branchId,
@@ -99,6 +113,7 @@ export class DefectiveController {
       to,
       page: page ? Number(page) || 1 : 1,
       limit: limit ? Number(limit) || 20 : 20,
+      supplierId: supplierId || undefined,
     });
   }
 
@@ -122,13 +137,20 @@ export class DefectiveController {
     required: true,
     description: 'Comma-separated',
   })
+  @ApiQuery({
+    name: 'supplierId',
+    required: false,
+    description: "Only this supplier's receipts",
+  })
   supplierCandidates(
     @CurrentBusiness() business: IBusiness,
     @Query('productIds') productIds?: string,
+    @Query('supplierId') supplierId?: string,
   ) {
     return this.defectiveService.supplierCandidates(
       business.id,
       (productIds ?? '').split(',').map((s) => s.trim()),
+      supplierId || undefined,
     );
   }
 

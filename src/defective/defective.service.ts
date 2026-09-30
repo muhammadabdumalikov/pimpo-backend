@@ -50,6 +50,7 @@ import {
   type DefectiveMovementType,
 } from '../common/defective-stock';
 import {outstandingOf, paymentStatusOf} from '../receipt/receipt.service';
+import {productOfSupplier} from './supplier-attribution';
 import {
   DefectiveSupplierReturnDto,
   ExchangeDefectiveDto,
@@ -128,7 +129,13 @@ export class DefectiveService {
   /** What is in defective stock now, per product and branch. */
   async list(
     businessId: string,
-    q: {branchId?: string; productId?: string; search?: string} = {},
+    q: {
+      branchId?: string;
+      productId?: string;
+      search?: string;
+      /** Products that belong to this supplier (supplier-attribution.ts). */
+      supplierId?: string;
+    } = {},
   ): Promise<{
     items: DefectiveStockRow[];
     totals: {qty: number; value: number};
@@ -139,6 +146,11 @@ export class DefectiveService {
     ];
     if (q.branchId) where.push(eq(defectiveLots.branchId, q.branchId));
     if (q.productId) where.push(eq(defectiveLots.productId, q.productId));
+    if (q.supplierId) {
+      where.push(
+        productOfSupplier(defectiveLots.productId, businessId, q.supplierId),
+      );
+    }
     const term = q.search?.trim();
     if (term) {
       where.push(
@@ -218,6 +230,11 @@ export class DefectiveService {
       to?: string;
       page?: number;
       limit?: number;
+      /**
+       * Moves that concern this supplier: their own supplier is this one, or
+       * they have none and carry one of this supplier's products.
+       */
+      supplierId?: string;
     } = {},
   ): Promise<{
     movements: (DefectiveMovement & {
@@ -241,6 +258,18 @@ export class DefectiveService {
     if (q.productId) {
       where.push(
         sql`EXISTS (SELECT 1 FROM ${defectiveMovementItems} WHERE ${defectiveMovementItems.movementId} = ${defectiveMovements.id} AND ${defectiveMovementItems.productId} = ${q.productId})`,
+      );
+    }
+    if (q.supplierId) {
+      // A move to another supplier is theirs, even for a product both deliver.
+      where.push(
+        or(
+          eq(defectiveMovements.supplierId, q.supplierId),
+          and(
+            sql`${defectiveMovements.supplierId} IS NULL`,
+            sql`EXISTS (SELECT 1 FROM ${defectiveMovementItems} WHERE ${defectiveMovementItems.movementId} = ${defectiveMovements.id} AND ${productOfSupplier(defectiveMovementItems.productId, businessId, q.supplierId)})`,
+          ),
+        )!,
       );
     }
     const [agg] = await this.db
@@ -311,6 +340,8 @@ export class DefectiveService {
   async supplierCandidates(
     businessId: string,
     productIds: string[],
+    /** Only this supplier's receipts (the drawer opened from their page). */
+    supplierId?: string,
   ): Promise<{items: {productId: string; candidates: SupplierCandidate[]}[]}> {
     const ids = [...new Set(productIds.filter(Boolean))].slice(0, 200);
     if (!ids.length) return {items: []};
@@ -339,6 +370,7 @@ export class DefectiveService {
           ne(goodsReceipts.status, 'draft'),
           inArray(goodsReceiptItems.productId, ids),
           sql`${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount} > 0.004`,
+          ...(supplierId ? [eq(goodsReceipts.supplierId, supplierId)] : []),
         ),
       )
       .orderBy(

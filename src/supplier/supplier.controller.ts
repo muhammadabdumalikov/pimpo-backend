@@ -31,6 +31,9 @@ import {CreateSupplierDto} from './dto/create-supplier.dto';
 import {UpdateSupplierDto} from './dto/update-supplier.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {FeatureGuard} from '../feature/feature.guard';
+import {RequireFeature} from '../feature/require-feature.decorator';
+import {SupplierDefectiveService} from '../defective/supplier-defective.service';
 
 @ApiTags('suppliers')
 @Controller('suppliers')
@@ -38,7 +41,10 @@ import { RequirePermission } from '../permission/permission.decorator';
 @MinTier('basic')
 @ApiBearerAuth('JWT-auth')
 export class SupplierController {
-  constructor(private readonly supplierService: SupplierService) {}
+  constructor(
+    private readonly supplierService: SupplierService,
+    private readonly supplierDefectiveService: SupplierDefectiveService,
+  ) {}
 
   @Post()
   @RequirePermission('supplier:manage')
@@ -73,6 +79,24 @@ export class SupplierController {
       limit: limit ? parseInt(limit, 10) : undefined,
       search,
     });
+  }
+
+  // Yaroqsiz tovarlar from the supplier side (YOQOTISHLAR.md S1–S13). Behind
+  // the defective_store flag, like the store itself, but with no permission:
+  // whoever can see suppliers sees their figures; acting on the goods goes
+  // through /defective-stock, which asks for defective:manage.
+  //
+  // Declared before ':id' so the path is not taken for a supplier id.
+  @Get('defective-summary')
+  @UseGuards(FeatureGuard)
+  @RequireFeature('defective_store')
+  @ApiOperation({
+    summary:
+      'Defective stock per supplier: products, value at cost, returnable now',
+  })
+  @ApiResponse({status: 200, description: 'Suppliers with defective stock'})
+  async defectiveSummary(@CurrentBusiness() business: IBusiness) {
+    return this.supplierDefectiveService.summary(business.id);
   }
 
   @Get(':id')
@@ -163,6 +187,66 @@ export class SupplierController {
         sort === 'recent'
           ? sort
           : undefined,
+    });
+  }
+
+  @Get(':id/defective')
+  @UseGuards(FeatureGuard)
+  @RequireFeature('defective_store')
+  @ApiOperation({
+    summary:
+      "This supplier's products in defective stock, per branch, with what can go back now",
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  @ApiQuery({name: 'branchId', required: false, type: String})
+  @ApiResponse({status: 404, description: 'Supplier not found'})
+  async defective(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const supplier = await this.supplierService.findOne(business.id, id);
+    if (!supplier) {
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+    }
+    return this.supplierDefectiveService.forSupplier(business.id, id, {
+      branchId: branchId || undefined,
+    });
+  }
+
+  @Get(':id/defective/history')
+  @UseGuards(FeatureGuard)
+  @RequireFeature('defective_store')
+  @ApiOperation({
+    summary:
+      'Defective goods that went back to this supplier: returns and exchanges',
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  @ApiQuery({name: 'branchId', required: false, type: String})
+  @ApiQuery({name: 'from', required: false, description: 'YYYY-MM-DD'})
+  @ApiQuery({name: 'to', required: false, description: 'YYYY-MM-DD'})
+  @ApiQuery({name: 'page', required: false, type: Number})
+  @ApiQuery({name: 'limit', required: false, type: Number})
+  @ApiResponse({status: 404, description: 'Supplier not found'})
+  async defectiveHistory(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('branchId') branchId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const supplier = await this.supplierService.findOne(business.id, id);
+    if (!supplier) {
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+    }
+    return this.supplierDefectiveService.history(business.id, id, {
+      branchId: branchId || undefined,
+      from: from || undefined,
+      to: to || undefined,
+      page: page ? Number(page) || 1 : 1,
+      limit: limit ? Number(limit) || 20 : 20,
     });
   }
 

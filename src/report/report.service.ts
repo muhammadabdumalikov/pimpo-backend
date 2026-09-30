@@ -971,8 +971,15 @@ export class ReportService {
   }
 
   // ─── R7: Ta'minotchiga qaytarishlar ───────────────────────────────────────
-  /** Supplier returns (qaytarishlar) in a range. */
-  async getSupplierReturns(businessId: string, range?: DateRange) {
+  /**
+   * Supplier returns (qaytarishlar) in a range. `source` narrows to returns
+   * out of sellable stock ('stock') or out of the yaroqsiz tovarlar ombori
+   * ('defective'); omitted = both.
+   */
+  async getSupplierReturns(
+    businessId: string,
+    range?: DateRange & {source?: 'stock' | 'defective'},
+  ) {
     const rows = await this.db
       .select({
         id: supplierReturns.id,
@@ -988,6 +995,7 @@ export class ReportService {
         and(
           eq(supplierReturns.businessId, businessId),
           ...this.dateWhere(supplierReturns.createdAt, range),
+          ...(range?.source ? [eq(supplierReturns.source, range.source)] : []),
           // Branch lives on the parent receipt.
           ...(range?.branchId
             ? [

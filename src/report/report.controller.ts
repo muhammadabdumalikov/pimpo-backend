@@ -144,13 +144,26 @@ export class ReportController {
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})
+  @ApiQuery({
+    name: 'source',
+    required: false,
+    enum: ['stock', 'defective'],
+    description: 'Out of sellable stock or out of defective stock; omitted = both',
+  })
   async getSupplierReturns(
     @CurrentBusiness() business: IBusiness,
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('branchId') branchId?: string,
+    @Query('source') source?: string,
   ) {
-    return this.reportService.getSupplierReturns(business.id, {from, to, branchId});
+    return this.reportService.getSupplierReturns(business.id, {
+      from,
+      to,
+      branchId,
+      source:
+        source === 'stock' || source === 'defective' ? source : undefined,
+    });
   }
 
   @Get('losses')
