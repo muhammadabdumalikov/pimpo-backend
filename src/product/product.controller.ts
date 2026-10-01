@@ -145,6 +145,13 @@ export class ProductController {
       'Comma-separated product fields to return (plus id), e.g. name,priceOut,quantity. Omit for the full row.',
   })
   @ApiQuery({
+    name: 'vitrina',
+    required: false,
+    type: Boolean,
+    description:
+      "'true' keeps only what the till's Vitrina shows: fractional-unit products (kg/l/m) and products without a barcode.",
+  })
+  @ApiQuery({
     name: 'cursor',
     required: false,
     type: String,
@@ -175,6 +182,7 @@ export class ProductController {
     @Query('fields') fields?: string,
     @Query('cursor') cursor?: string,
     @Query('withTotal') withTotal?: string,
+    @Query('vitrina') vitrina?: string,
   ) {
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
@@ -187,6 +195,7 @@ export class ProductController {
       categoryId: categoryId || undefined,
       supplierId: supplierId || undefined,
       unitId: unitId || undefined,
+      vitrina: vitrina === 'true',
       fields: parseFields(fields),
       cursor: cursor || undefined,
       withTotal: withTotal !== 'false',

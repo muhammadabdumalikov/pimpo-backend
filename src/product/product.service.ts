@@ -594,6 +594,10 @@ export class ProductService {
       // Exact scale PLU. Unlike `search` this cannot drift: a label carries one
       // PLU and it must resolve to that product or to nothing at all.
       plu?: number;
+      // The till's Vitrina (VITRINA.md): products a cashier cannot simply scan —
+      // sold in fractional units (kg/l/m, quantityType 'kg') or carrying no
+      // barcode at all. Sold-out rows stay in so the till can grey them in place.
+      vitrina?: boolean;
       // Sparse fieldset (common/field-selection.ts): only these columns are
       // read and returned, plus `id`. Undefined = the full row.
       fields?: Set<string>;
@@ -629,6 +633,7 @@ export class ProductService {
     const supplierId = options?.supplierId;
     const unitId = options?.unitId;
     const plu = options?.plu;
+    const vitrina = options?.vitrina;
 
     // Build where conditions
     const whereConditions = [
@@ -646,6 +651,12 @@ export class ProductService {
 
     if (categoryId) {
       whereConditions.push(eq(products.categoryId, categoryId));
+    }
+
+    if (vitrina) {
+      whereConditions.push(
+        sql`(${products.quantityType} = 'kg' or coalesce(btrim(${products.barcode}), '') = '')`,
+      );
     }
 
     if (supplierId) {

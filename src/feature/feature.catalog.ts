@@ -48,6 +48,15 @@ export const FEATURE_CATALOG = [
       "qo'lda kiritiladi. Tekshiruv faqat UI'da: server og'irlik manbasini " +
       "flag holatidan qat'i nazar saqlaydi.",
   },
+  {
+    key: 'pos_quick_grid',
+    name: 'Kassada Vitrina',
+    description:
+      "Kassa toolbar'ida «Vitrina» tugmasi (Alt+V): kilogramlik va " +
+      "shtrix-kodsiz mahsulotlar kartochka ko'rinishida, kategoriya chiplari " +
+      "bilan. Kartochka bosilganda og'irlik kg yoki so'mda kiritiladi. Bunday " +
+      "mahsuloti yo'q do'konda tugma chiqmaydi. Tekshiruv faqat UI'da.",
+  },
 ] as const satisfies readonly FeatureDefinition[];
 
 /** Every key the code may check. `never` while the catalogue is empty. */
