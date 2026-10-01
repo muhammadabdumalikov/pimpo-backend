@@ -30,10 +30,25 @@ import {
   defectiveMovements,
   defectiveMovementItems,
 } from '../database/schema';
-import {eq, and, or, gte, lte, gt, ne, not, sql, desc, inArray} from 'drizzle-orm';
+import {
+  eq,
+  and,
+  or,
+  gte,
+  lte,
+  gt,
+  ne,
+  not,
+  sql,
+  desc,
+  inArray,
+  isNull,
+  notInArray,
+} from 'drizzle-orm';
 import {capitalRow, liveRow} from '../finance/ledger-rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
+import {creditBalances} from '../common/supplier-credit';
 
 export interface DateRange {
   from?: string;
@@ -195,7 +210,12 @@ export class ReportService {
         eq(financialTransactions.businessId, businessId),
         eq(financialTransactions.kind, kind),
         eq(financialTransactions.currency, 'UZS'),
-        ne(financialTransactions.source, 'supplier_payment'),
+        // Money to and from suppliers is stock bought or given back, which
+        // COGS already carries — not an expense or income of its own.
+        notInArray(financialTransactions.source, [
+          'supplier_payment',
+          'supplier_refund',
+        ]),
         liveRow(),
         not(capitalRow()),
         ...this.rawDateWhere(
@@ -988,18 +1008,23 @@ export class ReportService {
         currency: supplierReturns.currency,
         itemCount: supplierReturns.itemCount,
         source: supplierReturns.source,
+        settlement: supplierReturns.settlement,
         createdAt: supplierReturns.createdAt,
       })
       .from(supplierReturns)
       .where(
         and(
           eq(supplierReturns.businessId, businessId),
+          // An undone defective return (S23) never happened as far as a
+          // report is concerned.
+          isNull(supplierReturns.cancelledAt),
           ...this.dateWhere(supplierReturns.createdAt, range),
           ...(range?.source ? [eq(supplierReturns.source, range.source)] : []),
-          // Branch lives on the parent receipt.
+          // Branch lives on the return itself (0085) or, before that and for
+          // a debt return, on the parent receipt.
           ...(range?.branchId
             ? [
-                sql`${supplierReturns.receiptId} IN (SELECT ${goodsReceipts.id} FROM ${goodsReceipts} WHERE ${goodsReceipts.branchId} = ${range.branchId})`,
+                sql`(${supplierReturns.branchId} = ${range.branchId} OR (${supplierReturns.branchId} IS NULL AND ${supplierReturns.receiptId} IN (SELECT ${goodsReceipts.id} FROM ${goodsReceipts} WHERE ${goodsReceipts.branchId} = ${range.branchId})))`,
               ]
             : []),
         ),
@@ -1041,6 +1066,8 @@ export class ReportService {
       reasons: reasonsByReturn.get(r.id) ?? [],
       // 'defective' = sent back out of the yaroqsiz tovarlar ombori.
       source: r.source,
+      // 'debt' (off a receipt) | 'credit' | 'cash' (S15).
+      settlement: r.settlement,
       createdAt: r.createdAt,
     }));
 
@@ -2543,6 +2570,13 @@ export class ReportService {
         ),
       );
 
+    // Their credit with us today (S22) — a balance, not a figure of the
+    // period, per currency.
+    const credit = await creditBalances(
+      this.db,
+      businessId,
+      rows.map((r) => r.supplierId).filter((id): id is string => !!id),
+    );
     const suppliers = rows.map((r) => {
       const purchased = Number(r.purchased);
       const paid = Number(r.paid);
@@ -2555,6 +2589,7 @@ export class ReportService {
         paid,
         returned,
         outstanding: purchased - paid - returned,
+        credit: (r.supplierId ? credit.get(r.supplierId) : undefined) ?? [],
       };
     });
 

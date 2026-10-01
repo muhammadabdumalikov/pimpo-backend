@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
   Query,
   UseGuards,
@@ -22,6 +23,7 @@ import {IAccount, IBusiness} from '../business/types';
 import {DEFECTIVE_MOVEMENT_TYPES} from '../common/defective-stock';
 import {DefectiveService} from './defective.service';
 import {
+  DefectiveSettlementDto,
   DefectiveSupplierReturnDto,
   ExchangeDefectiveDto,
   MoveToDefectiveDto,
@@ -228,5 +230,35 @@ export class DefectiveController {
     @Body() dto: DefectiveSupplierReturnDto,
   ) {
     return this.defectiveService.supplierReturn(business.id, dto, account);
+  }
+
+  @Post('supplier-settlement')
+  @RequirePermission('defective:manage')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      'Hand defective goods to one supplier, each line its own way: off a debt, as credit, for cash, or swapped',
+  })
+  settle(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Body() dto: DefectiveSettlementDto,
+  ) {
+    return this.defectiveService.settle(business.id, dto, account);
+  }
+
+  @Post('supplier-returns/:id/cancel')
+  @RequirePermission('defective:manage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Undo a defective supplier return: goods back in defective stock, debt / credit / cash reversed (cash also needs receipt:unpay)',
+  })
+  cancelSupplierReturn(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+  ) {
+    return this.defectiveService.cancelSupplierReturn(business.id, id, account);
   }
 }

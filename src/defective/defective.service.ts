@@ -32,6 +32,7 @@ import {
   suppliers,
   type DefectiveMovement,
   type DefectiveMovementItem,
+  type GoodsReceipt,
 } from '../database/schema';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -55,8 +56,18 @@ import {
   priceInReceiptCurrency,
   productOfSupplier,
   supplierLinks,
+  type OffReceiptPrice,
 } from './supplier-attribution';
+import {FinanceService} from '../finance/finance.service';
+import {PermissionService} from '../permission/permission.service';
 import {
+  addCreditTx,
+  creditBalanceTx,
+  lockSupplierTx,
+} from '../common/supplier-credit';
+import {
+  DefectiveSettlementDto,
+  DefectiveSettlementLineDto,
   DefectiveSupplierReturnDto,
   ExchangeDefectiveDto,
   MoveToDefectiveDto,
@@ -75,6 +86,39 @@ const CANDIDATES_PER_PRODUCT = 5;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 const money = (n: number) => n.toFixed(2);
+
+/** A credit / cash line's price: in its own currency, `rate` → so'm. */
+export interface CreditPrice {
+  price: number;
+  currency: string;
+  rate: number;
+  source: 'last_delivery' | 'card';
+  from: string | null;
+}
+
+/** A return line with its price and value in the document's currency. */
+interface ValuedLine {
+  name: string;
+  price: number;
+  value: number;
+}
+
+/** Credit or cash lines of one currency: one supplier return document. */
+interface MoneyReturn {
+  settlement: 'credit' | 'cash';
+  currency: string;
+  /** cash: the account the money came into. */
+  accountId: string | null;
+  lines: (DefectiveSettlementLineDto & {
+    name: string;
+    /** What the system priced the line at. */
+    computed: number;
+    /** What goes on the document: the agreed amount, else computed. */
+    value: number;
+    /** The price's currency → so'm. */
+    rate: number;
+  })[];
+}
 
 export interface DefectiveStockRow {
   productId: string;
@@ -123,7 +167,8 @@ export interface SupplierCandidate {
  * Money: a defective unit is inventory, not a loss. Moving it in or out of
  * sellable stock books nothing; a write-off books its cost as an expense (less
  * opening lots, which were a loss before they were entered); a supplier return
- * takes its value off the chosen receipt's debt, like any supplier return.
+ * takes its value off the chosen receipt's debt, like any supplier return,
+ * or (S15–S20) leaves it as the supplier's credit or brings cash back.
  */
 @Injectable()
 export class DefectiveService {
@@ -132,6 +177,8 @@ export class DefectiveService {
   constructor(
     private readonly dbService: DatabaseService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    private readonly financeService: FinanceService,
+    private readonly permissionService: PermissionService,
   ) {}
 
   private get db() {
@@ -360,7 +407,13 @@ export class DefectiveService {
     productIds: string[],
     /** Only this supplier's receipts (the drawer opened from their page). */
     supplierId?: string,
-  ): Promise<{items: {productId: string; candidates: SupplierCandidate[]}[]}> {
+  ): Promise<{
+    items: {
+      productId: string;
+      candidates: SupplierCandidate[];
+      creditPrice: CreditPrice | null;
+    }[];
+  }> {
     const ids = [...new Set(productIds.filter(Boolean))].slice(0, 200);
     if (!ids.length) return {items: []};
     const openDebt = sql`${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount} > 0.004`;
@@ -436,8 +489,9 @@ export class DefectiveService {
     for (const set of links.values()) {
       for (const id of set) if (!supplierId || id === supplierId) owners.add(id);
     }
+    let prices = new Map<string, OffReceiptPrice>();
     if (owners.size) {
-      const [open, prices] = await Promise.all([
+      const [open, offPrices] = await Promise.all([
         this.db
           .select({
             receiptId: goodsReceipts.id,
@@ -462,6 +516,7 @@ export class DefectiveService {
           .orderBy(desc(goodsReceipts.createdAt)),
         offReceiptPrices(this.db, businessId, [...owners], ids),
       ]);
+      prices = offPrices;
       for (const productId of ids) {
         const mine = links.get(productId);
         if (!mine) continue;
@@ -495,10 +550,27 @@ export class DefectiveService {
       }
     }
     return {
-      items: ids.map((productId) => ({
-        productId,
-        candidates: byProduct.get(productId) ?? [],
-      })),
+      items: ids.map((productId) => {
+        // What a credit or cash line of it goes back at (S15–S20): only for
+        // the drawer locked to one supplier, and only if it is theirs.
+        const ref =
+          supplierId && links.get(productId)?.has(supplierId)
+            ? prices.get(`${supplierId}:${productId}`)
+            : undefined;
+        return {
+          productId,
+          candidates: byProduct.get(productId) ?? [],
+          creditPrice: ref
+            ? {
+                price: ref.price,
+                currency: ref.currency,
+                rate: ref.rate,
+                source: ref.source,
+                from: ref.from ? toIso(ref.from) : null,
+              }
+            : null,
+        };
+      }),
     };
   }
 
@@ -763,7 +835,7 @@ export class DefectiveService {
    * receipt line's price in its currency, returnedAmount and payment status
    * updated) except that only defective lots move — sellable stock and the
    * receipt's own lots are untouched. The value may not exceed what is still
-   * owed: with no supplier credit anywhere, the excess would silently vanish.
+   * owed: the excess would silently vanish (settle() puts it on a credit).
    *
    * The receipt need not list every product (S14): one of the supplier's own
    * products can go back off any of their receipts that still carry debt.
@@ -777,12 +849,384 @@ export class DefectiveService {
     for (const l of lines) {
       assertReasonNote(l.reasonCode ?? dto.reasonCode, l.note ?? dto.note);
     }
+    const receipt = await this.loadReceipt(businessId, dto.receiptId);
+    const info = await this.productInfo(
+      businessId,
+      lines.map((l) => l.productId),
+    );
+    const valued = await this.priceOnReceipt(businessId, receipt, lines, info);
+    const cashier = await this.resolveCashier(account);
+    const branchId = await this.resolveBranch(
+      businessId,
+      dto.branchId ?? receipt.branchId ?? undefined,
+    );
+    const movementId = await this.db.transaction((tx) =>
+      this.debtReturnTx(tx, {
+        businessId,
+        receipt,
+        branchId,
+        lines: valued,
+        reasonCode: dto.reasonCode ?? null,
+        note: dto.note?.trim() || null,
+        cashier,
+        info,
+      }),
+    );
+    return this.getMovement(businessId, movementId);
+  }
+
+  /**
+   * "Agent keldi" (S15–S26): everything handed to one supplier at once, each
+   * line its own way — off a receipt's debt, left with them as a credit,
+   * handed back in cash, or swapped for good units. One transaction: either
+   * every document is written or none is.
+   *
+   * Credit and cash lines are the supplier's own products (assigned or ever
+   * delivered), priced like an off-receipt debt line — their last delivery,
+   * else the card — in that price's currency, unless the line carries the
+   * total agreed with the agent. One return document per receipt, per
+   * credit currency and per cash currency.
+   */
+  async settle(
+    businessId: string,
+    dto: DefectiveSettlementDto,
+    account?: IAccount,
+  ) {
+    const lines = this.requireLines(dto.items);
+    for (const l of lines) {
+      if (l.path !== 'exchange') {
+        assertReasonNote(l.reasonCode ?? dto.reasonCode, l.note ?? dto.note);
+      }
+    }
+    const [supplier] = await this.db
+      .select({id: suppliers.id, name: suppliers.name})
+      .from(suppliers)
+      .where(
+        and(
+          eq(suppliers.businessId, businessId),
+          eq(suppliers.id, dto.supplierId),
+          eq(suppliers.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (!supplier) throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+    const info = await this.productInfo(
+      businessId,
+      lines.map((l) => l.productId),
+    );
+    for (const l of lines) {
+      if (!info.has(l.productId)) {
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+          productId: l.productId,
+        });
+      }
+    }
+    const exchange = lines.filter((l) => l.path === 'exchange');
+    if (exchange.length) await this.assertNoStockTake(businessId);
+    const cashier = await this.resolveCashier(account);
+    const branchId = await this.resolveBranch(businessId, dto.branchId);
+    const docReason = dto.reasonCode ?? null;
+    const docNote = dto.note?.trim() || null;
+
+    // Off a receipt's debt: one document per receipt, the receipt this
+    // supplier's own.
+    const byReceipt = new Map<string, typeof lines>();
+    for (const l of lines) {
+      if (l.path !== 'debt') continue;
+      const list = byReceipt.get(l.receiptId!) ?? [];
+      list.push(l);
+      byReceipt.set(l.receiptId!, list);
+    }
+    const debt: {
+      receipt: GoodsReceipt;
+      lines: (DefectiveSettlementLineDto & ValuedLine)[];
+    }[] = [];
+    for (const [receiptId, group] of byReceipt) {
+      const receipt = await this.loadReceipt(businessId, receiptId);
+      if (receipt.supplierId !== supplier.id) {
+        throw new AppException(ErrorCode.DEFECTIVE_RECEIPT_OTHER_SUPPLIER);
+      }
+      debt.push({
+        receipt,
+        lines: await this.priceOnReceipt(businessId, receipt, group, info),
+      });
+    }
+
+    // Credit / cash: one document per way and currency.
+    const moneyLines = lines.filter(
+      (l) => l.path === 'credit' || l.path === 'cash',
+    );
+    const money: MoneyReturn[] = [];
+    if (moneyLines.length) {
+      const ids = [...new Set(moneyLines.map((l) => l.productId))];
+      const [links, prices] = await Promise.all([
+        supplierLinks(this.db, businessId, ids),
+        offReceiptPrices(this.db, businessId, [supplier.id], ids),
+      ]);
+      const groups = new Map<string, MoneyReturn>();
+      for (const l of moneyLines) {
+        const name = info.get(l.productId)!.name;
+        if (!links.get(l.productId)?.has(supplier.id)) {
+          throw new AppException(ErrorCode.DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER, {
+            product: name,
+          });
+        }
+        const ref = prices.get(`${supplier.id}:${l.productId}`);
+        if (!ref) {
+          throw new AppException(ErrorCode.DEFECTIVE_PRODUCT_NO_PRICE, {
+            product: name,
+          });
+        }
+        const settlement = l.path as 'credit' | 'cash';
+        const key = `${settlement}:${ref.currency}`;
+        const group = groups.get(key) ?? {
+          settlement,
+          currency: ref.currency,
+          accountId: null,
+          lines: [],
+        };
+        const computed = round2(l.qty * ref.price);
+        group.lines.push({
+          ...l,
+          name,
+          computed,
+          value: l.amount !== undefined ? round2(l.amount) : computed,
+          rate: ref.rate,
+        });
+        groups.set(key, group);
+      }
+      for (const g of groups.values()) {
+        if (g.settlement === 'cash') {
+          const acc = dto.cashAccounts?.find((a) => a.currency === g.currency);
+          if (!acc) {
+            throw new AppException(ErrorCode.DEFECTIVE_CASH_ACCOUNT_REQUIRED, {
+              currency: g.currency,
+            });
+          }
+          g.accountId = acc.accountId;
+        }
+        money.push(g);
+      }
+    }
+
+    const movementIds = await this.db.transaction(async (tx) => {
+      const ids: string[] = [];
+      for (const d of debt) {
+        ids.push(
+          await this.debtReturnTx(tx, {
+            businessId,
+            receipt: d.receipt,
+            branchId,
+            lines: d.lines,
+            reasonCode: docReason,
+            note: docNote,
+            cashier,
+            info,
+          }),
+        );
+      }
+      for (const m of money) {
+        ids.push(
+          await this.moneyReturnTx(tx, {
+            businessId,
+            supplier,
+            branchId,
+            group: m,
+            reasonCode: docReason,
+            note: docNote,
+            cashier,
+            info,
+          }),
+        );
+      }
+      if (exchange.length) {
+        ids.push(
+          await this.releaseTx(tx, {
+            businessId,
+            type: 'out_exchange',
+            branchId,
+            lines: exchange,
+            note: docNote,
+            cashier,
+            supplier,
+          }),
+        );
+      }
+      return ids;
+    });
+    return {
+      movements: await Promise.all(
+        movementIds.map((id) => this.getMovement(businessId, id)),
+      ),
+    };
+  }
+
+  /**
+   * Undo a defective supplier return (S23): the goods go back into defective
+   * stock at the cost they left at, and the settlement is reversed — the
+   * receipt's debt comes back, the credit is taken off (refused when it has
+   * already been spent), or the cash kirim is stornoed in Moliya. Nothing is
+   * deleted: the return and its movement are marked cancelled, and every
+   * report skips them. A cash return also needs receipt:unpay (S24).
+   */
+  async cancelSupplierReturn(
+    businessId: string,
+    returnId: string,
+    account?: IAccount,
+  ) {
+    const [head] = await this.db
+      .select({settlement: supplierReturns.settlement})
+      .from(supplierReturns)
+      .where(
+        and(
+          eq(supplierReturns.id, returnId),
+          eq(supplierReturns.businessId, businessId),
+          eq(supplierReturns.source, 'defective'),
+        ),
+      )
+      .limit(1);
+    if (!head) throw new AppException(ErrorCode.DEFECTIVE_RETURN_NOT_FOUND);
+    if (head.settlement === 'cash' && account) {
+      await this.permissionService.assert(account, 'receipt:unpay');
+    }
+    const cashier = await this.resolveCashier(account);
+
+    const movementId = await this.db.transaction(async (tx) => {
+      const [ret] = await tx
+        .select()
+        .from(supplierReturns)
+        .where(eq(supplierReturns.id, returnId))
+        .for('update')
+        .limit(1);
+      if (ret.cancelledAt) {
+        throw new AppException(ErrorCode.DEFECTIVE_RETURN_ALREADY_CANCELLED);
+      }
+      const [movement] = await tx
+        .select()
+        .from(defectiveMovements)
+        .where(
+          and(
+            eq(defectiveMovements.businessId, businessId),
+            eq(defectiveMovements.supplierReturnId, ret.id),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      const total = Number(ret.totalAmount);
+
+      if (ret.settlement === 'credit') {
+        if (ret.supplierId) {
+          await lockSupplierTx(tx, businessId, ret.supplierId);
+          const available = await creditBalanceTx(
+            tx,
+            businessId,
+            ret.supplierId,
+            ret.currency,
+          );
+          if (Math.round(available * 100) < Math.round(total * 100)) {
+            throw new AppException(ErrorCode.DEFECTIVE_CREDIT_ALREADY_USED, {
+              amount: money(total),
+              available: money(Math.max(0, available)),
+              currency: ret.currency,
+            });
+          }
+          await addCreditTx(tx, {
+            businessId,
+            supplierId: ret.supplierId,
+            currency: ret.currency,
+            amount: -total,
+            kind: 'return_cancel',
+            supplierReturnId: ret.id,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+          });
+        }
+      } else if (ret.settlement === 'cash') {
+        if (ret.financeTxId) {
+          await this.financeService.reverseTx(
+            tx,
+            businessId,
+            ret.financeTxId,
+            cashier,
+          );
+        }
+      } else if (ret.receiptId) {
+        const [locked] = await tx
+          .select()
+          .from(goodsReceipts)
+          .where(
+            and(
+              eq(goodsReceipts.id, ret.receiptId),
+              eq(goodsReceipts.businessId, businessId),
+            ),
+          )
+          .for('update')
+          .limit(1);
+        if (locked) {
+          const newReturned = Math.max(
+            0,
+            round2(Number(locked.returnedAmount) - total),
+          );
+          await tx
+            .update(goodsReceipts)
+            .set({
+              returnedAmount: money(newReturned),
+              paymentStatus: paymentStatusOf(
+                Number(locked.paidAmount) + newReturned,
+                Number(locked.totalAmount),
+              ),
+              updatedAt: new Date(),
+            })
+            .where(eq(goodsReceipts.id, locked.id));
+        }
+      }
+
+      // The goods come back at the cost they left at. The lots they came out
+      // of are not rebuilt — one fresh lot per line, marked as a cancelled
+      // return, in the branch they left.
+      if (movement) {
+        const items = await tx
+          .select()
+          .from(defectiveMovementItems)
+          .where(eq(defectiveMovementItems.movementId, movement.id));
+        for (const it of items) {
+          if (!it.productId || !(it.quantity > 0)) continue;
+          await addDefectiveLotTx(tx, {
+            businessId,
+            productId: it.productId,
+            branchId: movement.branchId,
+            qty: it.quantity,
+            unitCost: Number(it.unitCost),
+            source: 'supplier_cancel',
+            movementId: movement.id,
+          });
+        }
+        await tx
+          .update(defectiveMovements)
+          .set({cancelledAt: new Date()})
+          .where(eq(defectiveMovements.id, movement.id));
+      }
+      await tx
+        .update(supplierReturns)
+        .set({cancelledAt: new Date(), cancelledByName: cashier.name})
+        .where(eq(supplierReturns.id, ret.id));
+      return movement?.id ?? null;
+    });
+    return movementId ? this.getMovement(businessId, movementId) : {id: null};
+  }
+
+  // ─── Internals ────────────────────────────────────────────────────────────
+
+  private async loadReceipt(
+    businessId: string,
+    receiptId: string,
+  ): Promise<GoodsReceipt> {
     const [receipt] = await this.db
       .select()
       .from(goodsReceipts)
       .where(
         and(
-          eq(goodsReceipts.id, dto.receiptId),
+          eq(goodsReceipts.id, receiptId),
           eq(goodsReceipts.businessId, businessId),
         ),
       )
@@ -791,7 +1235,27 @@ export class DefectiveService {
     if (receipt.status === 'draft') {
       throw new AppException(ErrorCode.RECEIPT_RECEIVE_BEFORE_RETURN);
     }
-    // The receipt line's price (newest line when a product is listed twice).
+    return receipt;
+  }
+
+  /**
+   * Price return lines off one receipt, in its currency: the receipt's own
+   * line (newest when listed twice), else (S14) the supplier's last delivery
+   * of the product or its card price — provided the product is theirs.
+   */
+  private async priceOnReceipt<
+    L extends {
+      productId: string;
+      qty: number;
+      reasonCode?: string | null;
+      note?: string | null;
+    },
+  >(
+    businessId: string,
+    receipt: GoodsReceipt,
+    lines: L[],
+    info: Map<string, {id: string; name: string; quantityType: string | null}>,
+  ): Promise<(L & ValuedLine)[]> {
     const receiptLines = await this.db
       .select({
         productId: goodsReceiptItems.productId,
@@ -810,10 +1274,6 @@ export class DefectiveService {
         });
       }
     }
-    const info = await this.productInfo(
-      businessId,
-      lines.map((l) => l.productId),
-    );
     // A product the receipt does not list (S14): the supplier takes it back
     // off this receipt's debt all the same, provided it is theirs — priced at
     // their last delivery of it, else the card's purchase price.
@@ -857,13 +1317,7 @@ export class DefectiveService {
         });
       }
     }
-    const cashier = await this.resolveCashier(account);
-    const branchId = await this.resolveBranch(
-      businessId,
-      dto.branchId ?? receipt.branchId ?? undefined,
-    );
-    const currency = receipt.currency ?? 'UZS';
-    const valued = lines.map((l) => {
+    return lines.map((l) => {
       const p = priceOf.get(l.productId)!;
       return {
         ...l,
@@ -872,126 +1326,292 @@ export class DefectiveService {
         value: round2(l.qty * p.price),
       };
     });
-    const value = round2(valued.reduce((s, l) => s + l.value, 0));
-
-    const movementId = generateId();
-    const returnId = generateId();
-    await this.db.transaction(async (tx) => {
-      // The receipt row first — the order returns, un-receiving and payments
-      // take it in — so the debt is checked against locked figures.
-      const [locked] = await tx
-        .select()
-        .from(goodsReceipts)
-        .where(
-          and(
-            eq(goodsReceipts.id, receipt.id),
-            eq(goodsReceipts.businessId, businessId),
-          ),
-        )
-        .for('update')
-        .limit(1);
-      const out: DefectiveMovementLine[] = [];
-      let itemCount = 0;
-      for (const l of valued) {
-        const taken = await consumeDefectiveLotsTx(tx, {
-          businessId,
-          productId: l.productId,
-          branchId,
-          qty: l.qty,
-          productName: l.name,
-        });
-        out.push({
-          productId: l.productId,
-          productName: l.name,
-          quantity: l.qty,
-          unitCost: taken.unitCost,
-          costTotal: taken.costTotal,
-          reasonCode: l.reasonCode ?? dto.reasonCode ?? null,
-          note: l.note?.trim() || null,
-        });
-        itemCount += info.get(l.productId)?.quantityType === 'kg' ? 1 : l.qty;
-      }
-      // Stock first (the clearer error when both fail), then the debt; a
-      // failure rolls the lots back with the transaction.
-      const outstanding = outstandingOf(locked);
-      if (outstanding <= 0) {
-        throw new AppException(ErrorCode.DEFECTIVE_RECEIPT_NO_DEBT);
-      }
-      if (Math.round(value * 100) > Math.round(outstanding * 100)) {
-        throw new AppException(ErrorCode.DEFECTIVE_RETURN_EXCEEDS_DEBT, {
-          value: money(value),
-          outstanding: money(outstanding),
-          currency,
-        });
-      }
-
-      await tx.insert(supplierReturns).values({
-        id: returnId,
-        businessId,
-        receiptId: receipt.id,
-        supplierId: receipt.supplierId,
-        supplierName: receipt.supplierName,
-        totalAmount: money(value),
-        currency,
-        itemCount,
-        note: dto.note?.trim() || null,
-        cashierId: cashier.id,
-        cashierName: cashier.name,
-        source: 'defective',
-      });
-      await tx.insert(supplierReturnItems).values(
-        valued.map((l) => ({
-          id: generateId(),
-          returnId,
-          businessId,
-          productId: l.productId,
-          productName: l.name,
-          priceIn: money(l.price),
-          quantity: l.qty,
-          lineTotal: money(l.value),
-          reasonCode: l.reasonCode ?? dto.reasonCode ?? null,
-          note: l.note?.trim() || null,
-        })),
-      );
-      const newReturned = Number(locked.returnedAmount) + value;
-      await tx
-        .update(goodsReceipts)
-        .set({
-          returnedAmount: money(newReturned),
-          paymentStatus: paymentStatusOf(
-            Number(locked.paidAmount) + newReturned,
-            Number(locked.totalAmount),
-          ),
-          updatedAt: new Date(),
-        })
-        .where(eq(goodsReceipts.id, receipt.id));
-
-      await insertDefectiveMovementTx(
-        tx,
-        {
-          id: movementId,
-          businessId,
-          branchId,
-          type: 'out_supplier',
-          reasonCode: dto.reasonCode ?? null,
-          note: dto.note?.trim() || null,
-          receiptId: receipt.id,
-          supplierReturnId: returnId,
-          supplierId: receipt.supplierId,
-          supplierName: receipt.supplierName,
-          creditValue: value,
-          currency,
-          cashierId: cashier.id,
-          cashierName: cashier.name,
-        },
-        out,
-        itemCount,
-      );
-    });
-    return this.getMovement(businessId, movementId);
   }
 
-  // ─── Internals ────────────────────────────────────────────────────────────
+  /** One debt return inside `tx`; returns the movement id. */
+  private async debtReturnTx(
+    tx: Tx,
+    p: {
+      businessId: string;
+      receipt: GoodsReceipt;
+      branchId: string;
+      lines: (ValuedLine & {
+        productId: string;
+        qty: number;
+        reasonCode?: string | null;
+        note?: string | null;
+      })[];
+      reasonCode: string | null;
+      note: string | null;
+      cashier: {id: string | null; name: string | null};
+      info: Map<string, {quantityType: string | null}>;
+    },
+  ): Promise<string> {
+    const {businessId, receipt, branchId, cashier} = p;
+    const currency = receipt.currency ?? 'UZS';
+    const value = round2(p.lines.reduce((s, l) => s + l.value, 0));
+    const movementId = generateId();
+    const returnId = generateId();
+    // The receipt row first — the order returns, un-receiving and payments
+    // take it in — so the debt is checked against locked figures.
+    const [locked] = await tx
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receipt.id),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .for('update')
+      .limit(1);
+    const {out, itemCount} = await this.takeLines(tx, businessId, branchId, p);
+    // Stock first (the clearer error when both fail), then the debt; a
+    // failure rolls the lots back with the transaction.
+    const outstanding = outstandingOf(locked);
+    if (outstanding <= 0) {
+      throw new AppException(ErrorCode.DEFECTIVE_RECEIPT_NO_DEBT);
+    }
+    if (Math.round(value * 100) > Math.round(outstanding * 100)) {
+      throw new AppException(ErrorCode.DEFECTIVE_RETURN_EXCEEDS_DEBT, {
+        value: money(value),
+        outstanding: money(outstanding),
+        currency,
+      });
+    }
+
+    await tx.insert(supplierReturns).values({
+      id: returnId,
+      businessId,
+      receiptId: receipt.id,
+      supplierId: receipt.supplierId,
+      supplierName: receipt.supplierName,
+      totalAmount: money(value),
+      currency,
+      itemCount,
+      note: p.note,
+      cashierId: cashier.id,
+      cashierName: cashier.name,
+      source: 'defective',
+      settlement: 'debt',
+      branchId,
+    });
+    await tx.insert(supplierReturnItems).values(
+      p.lines.map((l) => ({
+        id: generateId(),
+        returnId,
+        businessId,
+        productId: l.productId,
+        productName: l.name,
+        priceIn: money(l.price),
+        quantity: l.qty,
+        lineTotal: money(l.value),
+        reasonCode: l.reasonCode ?? p.reasonCode,
+        note: l.note?.trim() || null,
+      })),
+    );
+    const newReturned = Number(locked.returnedAmount) + value;
+    await tx
+      .update(goodsReceipts)
+      .set({
+        returnedAmount: money(newReturned),
+        paymentStatus: paymentStatusOf(
+          Number(locked.paidAmount) + newReturned,
+          Number(locked.totalAmount),
+        ),
+        updatedAt: new Date(),
+      })
+      .where(eq(goodsReceipts.id, receipt.id));
+
+    await insertDefectiveMovementTx(
+      tx,
+      {
+        id: movementId,
+        businessId,
+        branchId,
+        type: 'out_supplier',
+        reasonCode: p.reasonCode,
+        note: p.note,
+        receiptId: receipt.id,
+        supplierReturnId: returnId,
+        supplierId: receipt.supplierId,
+        supplierName: receipt.supplierName,
+        creditValue: value,
+        currency,
+        settlement: 'debt',
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+      },
+      out,
+      itemCount,
+    );
+    return movementId;
+  }
+
+  /**
+   * One credit or cash return inside `tx` (S15–S20); returns the movement id.
+   * The goods leave defective stock; a credit lands on the supplier's credit
+   * ledger, cash as a Moliya kirim on the chosen account.
+   */
+  private async moneyReturnTx(
+    tx: Tx,
+    p: {
+      businessId: string;
+      supplier: {id: string; name: string};
+      branchId: string;
+      group: MoneyReturn;
+      reasonCode: string | null;
+      note: string | null;
+      cashier: {id: string | null; name: string | null};
+      info: Map<string, {quantityType: string | null}>;
+    },
+  ): Promise<string> {
+    const {businessId, supplier, branchId, group, cashier} = p;
+    const movementId = generateId();
+    const returnId = generateId();
+    const {out, itemCount} = await this.takeLines(tx, businessId, branchId, {
+      lines: group.lines,
+      reasonCode: p.reasonCode,
+      info: p.info,
+    });
+    const total = round2(group.lines.reduce((s, l) => s + l.value, 0));
+    const computed = round2(group.lines.reduce((s, l) => s + l.computed, 0));
+    // The rate a USD credit is worth in so'm: each line's own delivery rate,
+    // weighted by its computed value.
+    const usdRate =
+      group.currency === 'USD' && computed > 0
+        ? group.lines.reduce((s, l) => s + l.computed * l.rate, 0) / computed
+        : null;
+
+    let financeTxId: string | null = null;
+    if (group.settlement === 'cash') {
+      const txn = await this.financeService.recordIncomeTx(tx, businessId, {
+        accountId: group.accountId!,
+        source: 'supplier_refund',
+        amount: total,
+        currency: group.currency,
+        categoryName: "Yetkazib beruvchidan qaytgan pul",
+        note: `Yaroqsiz tovar uchun qaytgan pul: ${supplier.name}`,
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+      });
+      financeTxId = txn.id;
+    }
+
+    await tx.insert(supplierReturns).values({
+      id: returnId,
+      businessId,
+      receiptId: null,
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      totalAmount: money(total),
+      currency: group.currency,
+      itemCount,
+      note: p.note,
+      cashierId: cashier.id,
+      cashierName: cashier.name,
+      source: 'defective',
+      settlement: group.settlement,
+      computedTotal:
+        Math.round(computed * 100) !== Math.round(total * 100)
+          ? money(computed)
+          : null,
+      usdRate: usdRate === null ? null : usdRate.toFixed(4),
+      branchId,
+      financeTxId,
+    });
+    await tx.insert(supplierReturnItems).values(
+      group.lines.map((l) => ({
+        id: generateId(),
+        returnId,
+        businessId,
+        productId: l.productId,
+        productName: l.name,
+        priceIn: money(l.qty > 0 ? l.value / l.qty : 0),
+        quantity: l.qty,
+        lineTotal: money(l.value),
+        reasonCode: l.reasonCode ?? p.reasonCode,
+        note: l.note?.trim() || null,
+      })),
+    );
+    if (group.settlement === 'credit') {
+      await lockSupplierTx(tx, businessId, supplier.id);
+      await addCreditTx(tx, {
+        businessId,
+        supplierId: supplier.id,
+        currency: group.currency,
+        amount: total,
+        kind: 'return',
+        supplierReturnId: returnId,
+        note: p.note,
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+      });
+    }
+    await insertDefectiveMovementTx(
+      tx,
+      {
+        id: movementId,
+        businessId,
+        branchId,
+        type: 'out_supplier',
+        reasonCode: p.reasonCode,
+        note: p.note,
+        supplierReturnId: returnId,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        creditValue: total,
+        currency: group.currency,
+        settlement: group.settlement,
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+      },
+      out,
+      itemCount,
+    );
+    return movementId;
+  }
+
+  /** Take return lines out of a branch's defective stock, oldest lot first. */
+  private async takeLines(
+    tx: Tx,
+    businessId: string,
+    branchId: string,
+    p: {
+      lines: {
+        productId: string;
+        qty: number;
+        name: string;
+        reasonCode?: string | null;
+        note?: string | null;
+      }[];
+      reasonCode: string | null;
+      info: Map<string, {quantityType: string | null}>;
+    },
+  ): Promise<{out: DefectiveMovementLine[]; itemCount: number}> {
+    const out: DefectiveMovementLine[] = [];
+    let itemCount = 0;
+    for (const l of p.lines) {
+      const taken = await consumeDefectiveLotsTx(tx, {
+        businessId,
+        productId: l.productId,
+        branchId,
+        qty: l.qty,
+        productName: l.name,
+      });
+      out.push({
+        productId: l.productId,
+        productName: l.name,
+        quantity: l.qty,
+        unitCost: taken.unitCost,
+        costTotal: taken.costTotal,
+        reasonCode: l.reasonCode ?? p.reasonCode,
+        note: l.note?.trim() || null,
+      });
+      itemCount += p.info.get(l.productId)?.quantityType === 'kg' ? 1 : l.qty;
+    }
+    return {out, itemCount};
+  }
 
   /** Out of defective stock onto the shelf: a fresh lot at the defective cost. */
   private async release(
@@ -1005,65 +1625,83 @@ export class DefectiveService {
     await this.assertNoStockTake(businessId);
     const cashier = await this.resolveCashier(account);
     const branchId = await this.resolveBranch(businessId, dto.branchId);
-
-    const movementId = generateId();
-    await this.db.transaction(async (tx) => {
-      const out: DefectiveMovementLine[] = [];
-      let itemCount = 0;
-      for (const line of lines) {
-        const product = await this.lockProduct(tx, businessId, line.productId);
-        const taken = await consumeDefectiveLotsTx(tx, {
-          businessId,
-          productId: product.id,
-          branchId,
-          qty: line.qty,
-          productName: product.name,
-        });
-        await tx.insert(inventoryBatches).values({
-          id: generateId(),
-          businessId,
-          productId: product.id,
-          receiptItemId: null,
-          branchId,
-          priceIn: money(taken.unitCost),
-          priceOut: product.priceOut,
-          qtyReceived: line.qty,
-          qtyRemaining: line.qty,
-        });
-        await applyBranchStockDelta(
-          tx,
-          businessId,
-          product.id,
-          branchId,
-          line.qty,
-        );
-        out.push({
-          productId: product.id,
-          productName: product.name,
-          quantity: line.qty,
-          unitCost: taken.unitCost,
-          costTotal: taken.costTotal,
-        });
-        itemCount += product.quantityType === 'kg' ? 1 : line.qty;
-      }
-      await insertDefectiveMovementTx(
-        tx,
-        {
-          id: movementId,
-          businessId,
-          branchId,
-          type,
-          note: dto.note?.trim() || null,
-          supplierId: supplier?.id ?? null,
-          supplierName: supplier?.name ?? null,
-          cashierId: cashier.id,
-          cashierName: cashier.name,
-        },
-        out,
-        itemCount,
-      );
-    });
+    const movementId = await this.db.transaction((tx) =>
+      this.releaseTx(tx, {
+        businessId,
+        type,
+        branchId,
+        lines,
+        note: dto.note?.trim() || null,
+        cashier,
+        supplier,
+      }),
+    );
     return this.getMovement(businessId, movementId);
+  }
+
+  private async releaseTx(
+    tx: Tx,
+    p: {
+      businessId: string;
+      type: Extract<DefectiveMovementType, 'out_to_sale' | 'out_exchange'>;
+      branchId: string;
+      lines: {productId: string; qty: number}[];
+      note: string | null;
+      cashier: {id: string | null; name: string | null};
+      supplier: {id: string; name: string} | null;
+    },
+  ): Promise<string> {
+    const {businessId, branchId} = p;
+    const movementId = generateId();
+    const out: DefectiveMovementLine[] = [];
+    let itemCount = 0;
+    for (const line of p.lines) {
+      const product = await this.lockProduct(tx, businessId, line.productId);
+      const taken = await consumeDefectiveLotsTx(tx, {
+        businessId,
+        productId: product.id,
+        branchId,
+        qty: line.qty,
+        productName: product.name,
+      });
+      await tx.insert(inventoryBatches).values({
+        id: generateId(),
+        businessId,
+        productId: product.id,
+        receiptItemId: null,
+        branchId,
+        priceIn: money(taken.unitCost),
+        priceOut: product.priceOut,
+        qtyReceived: line.qty,
+        qtyRemaining: line.qty,
+      });
+      await applyBranchStockDelta(tx, businessId, product.id, branchId, line.qty);
+      out.push({
+        productId: product.id,
+        productName: product.name,
+        quantity: line.qty,
+        unitCost: taken.unitCost,
+        costTotal: taken.costTotal,
+      });
+      itemCount += product.quantityType === 'kg' ? 1 : line.qty;
+    }
+    await insertDefectiveMovementTx(
+      tx,
+      {
+        id: movementId,
+        businessId,
+        branchId,
+        type: p.type,
+        note: p.note,
+        supplierId: p.supplier?.id ?? null,
+        supplierName: p.supplier?.name ?? null,
+        cashierId: p.cashier.id,
+        cashierName: p.cashier.name,
+      },
+      out,
+      itemCount,
+    );
+    return movementId;
   }
 
   private requireLines<T extends {qty: number}>(items: T[] | undefined): T[] {

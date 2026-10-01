@@ -589,7 +589,7 @@ export class LossesReportService {
              i.quantity::float8,
              (${units(sql`i.quantity`)})::float8,
              (i.line_total * CASE WHEN r.currency = 'USD'
-                                  THEN COALESCE(gr.usd_rate, 0) ELSE 1 END)::numeric,
+                                  THEN COALESCE(gr.usd_rate, r.usd_rate, 0) ELSE 1 END)::numeric,
              NULL::numeric,
              i.reason_code::text,
              NULL::text,
@@ -597,11 +597,14 @@ export class LossesReportService {
              (CASE WHEN r.source = 'defective' THEN 'defective' ELSE 'stock' END)::text
       FROM supplier_return_items i
       JOIN supplier_returns r ON r.id = i.return_id
-      JOIN goods_receipts gr ON gr.id = r.receipt_id
+      -- A credit / cash defective return has no receipt (S15): its own
+      -- branch and rate stand in.
+      LEFT JOIN goods_receipts gr ON gr.id = r.receipt_id
       LEFT JOIN products p ON p.id = i.product_id
       WHERE r.business_id = ${businessId}
         ${dates(sql`r.created_at`)}
-        ${branch(sql`gr.branch_id`)}
+        AND r.cancelled_at IS NULL
+        ${branch(sql`COALESCE(r.branch_id, gr.branch_id)`)}
 
       UNION ALL
 
@@ -696,6 +699,8 @@ export class LossesReportService {
       JOIN defective_movements m ON m.id = i.movement_id
       LEFT JOIN products p ON p.id = i.product_id
       WHERE m.business_id = ${businessId}
+        -- An undone supplier return (S23) never left: its goods are back.
+        AND m.cancelled_at IS NULL
         ${dates(sql`m.created_at`)}
         ${branch(sql`m.branch_id`)}
     `;

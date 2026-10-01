@@ -690,6 +690,9 @@ export const supplierPayments = pgTable('supplier_payments', {
   accountName: varchar('account_name', {length: 255}),
   // The booked finance expense, for provenance / reversal.
   financialTransactionId: varchar('financial_transaction_id', {length: 36}),
+  // 'money' (a shop account / Tashqi mablag') | 'credit' (the supplier's
+  // credit, supplier_credits; no Moliya row).
+  source: varchar('source', {length: 8}).notNull().default('money'),
   note: varchar('note', {length: 500}),
   cashierId: varchar('cashier_id', {length: 36}),
   cashierName: varchar('cashier_name', {length: 255}),
@@ -699,14 +702,18 @@ export const supplierPayments = pgTable('supplier_payments', {
 
 // A return of received goods back to the supplier, against a goods receipt.
 // Reverses stock + the receipt's batches and reduces the amount owed.
+// A defective return may instead leave the supplier a credit or bring cash
+// back (settlement), with no receipt (0085, YOQOTISHLAR.md S15–S26).
 export const supplierReturns = pgTable('supplier_returns', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
     .notNull()
     .references(() => businesses.id, {onDelete: 'cascade'}),
-  receiptId: varchar('receipt_id', {length: 36})
-    .notNull()
-    .references(() => goodsReceipts.id, {onDelete: 'cascade'}),
+  // Null for a credit / cash return.
+  receiptId: varchar('receipt_id', {length: 36}).references(
+    () => goodsReceipts.id,
+    {onDelete: 'cascade'},
+  ),
   supplierId: varchar('supplier_id', {length: 36}),
   supplierName: varchar('supplier_name', {length: 255}),
   totalAmount: decimal('total_amount', {precision: 12, scale: 2}).notNull(),
@@ -720,8 +727,52 @@ export const supplierReturns = pgTable('supplier_returns', {
   // defective lots move — sellable stock and the receipt's lots are untouched).
   // Stock reports must skip 'defective' rows.
   source: varchar('source', {length: 12}).notNull().default('stock'),
+  // 'debt' (off receipt_id's debt) | 'credit' (supplier_credits) | 'cash'
+  // (a Moliya kirim, finance_tx_id).
+  settlement: varchar('settlement', {length: 8}).notNull().default('debt'),
+  // What the system priced it at when the person typed another total.
+  computedTotal: decimal('computed_total', {precision: 14, scale: 2}),
+  // USD credit / cash: the rate its price was booked at.
+  usdRate: decimal('usd_rate', {precision: 12, scale: 4}),
+  branchId: varchar('branch_id', {length: 36}),
+  financeTxId: varchar('finance_tx_id', {length: 36}),
+  // Undone: every report skips it; the row stays for the audit trail.
+  cancelledAt: timestamp('cancelled_at'),
+  cancelledByName: varchar('cancelled_by_name', {length: 255}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+// The supplier's credit with us, as a ledger (balance per currency = sum).
+// kind: 'return' (+) | 'return_cancel' (−) | 'payment' (−, spent on a
+// receipt) | 'payment_cancel' (+).
+export const supplierCredits = pgTable(
+  'supplier_credits',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    supplierId: varchar('supplier_id', {length: 36}).notNull(),
+    currency: varchar('currency', {length: 3}).notNull(),
+    amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
+    kind: varchar('kind', {length: 16}).notNull(),
+    supplierReturnId: varchar('supplier_return_id', {length: 36}),
+    supplierPaymentId: varchar('supplier_payment_id', {length: 36}),
+    receiptId: varchar('receipt_id', {length: 36}),
+    note: varchar('note', {length: 500}),
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierIdx: index('supplier_credits_supplier_idx').on(
+      table.businessId,
+      table.supplierId,
+      table.currency,
+    ),
+  }),
+);
+export type SupplierCredit = typeof supplierCredits.$inferSelect;
 
 export const supplierReturnItems = pgTable('supplier_return_items', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
@@ -2916,6 +2967,10 @@ export const defectiveMovements = pgTable(
     // out_supplier: what the supplier took off the debt, in the receipt currency.
     creditValue: decimal('credit_value', {precision: 14, scale: 2}),
     currency: varchar('currency', {length: 3}),
+    // out_supplier: 'debt' | 'credit' | 'cash' (supplier_returns.settlement).
+    settlement: varchar('settlement', {length: 8}),
+    // Its supplier return was undone; reports skip it.
+    cancelledAt: timestamp('cancelled_at'),
     cashierId: varchar('cashier_id', {length: 36}),
     cashierName: varchar('cashier_name', {length: 255}),
     createdAt: timestamp('created_at').defaultNow().notNull(),

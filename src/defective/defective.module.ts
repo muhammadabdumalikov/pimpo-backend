@@ -6,9 +6,16 @@ import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from '../business/business.module';
 import {SubscriptionModule} from '../subscription/subscription.module';
 import {FeatureModule} from '../feature/feature.module';
+import {FinanceModule} from '../finance/finance.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule, SubscriptionModule, FeatureModule],
+  imports: [
+    DatabaseModule,
+    BusinessModule,
+    SubscriptionModule,
+    FeatureModule,
+    FinanceModule,
+  ],
   controllers: [DefectiveController],
   providers: [DefectiveService, SupplierDefectiveService],
   // The supplier pages read defective stock from their side.

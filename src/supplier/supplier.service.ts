@@ -8,6 +8,7 @@ import {
   products,
   goodsReceipts,
   goodsReceiptItems,
+  supplierCredits,
   type Supplier,
   type NewSupplier,
 } from '../database/schema';
@@ -25,6 +26,7 @@ import {
 } from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {CacheKeys, TTL} from '../cache/cache.util';
+import {creditBalances} from '../common/supplier-credit';
 
 @Injectable()
 export class SupplierService {
@@ -379,6 +381,56 @@ export class SupplierService {
       receiptCount: totals?.receiptCount ?? 0,
       unpaid: totals?.unpaid ?? 0,
       monthly: rows,
+    };
+  }
+
+  /**
+   * Every supplier's credit with us (YOQOTISHLAR.md S22) — what defective
+   * returns left them owing, net of what was spent on their receipts. Only
+   * non-zero balances, per currency.
+   */
+  async creditSummary(businessId: string) {
+    const balances = await creditBalances(this.dbService.db, businessId);
+    return {
+      items: [...balances.entries()].map(([supplierId, list]) => ({
+        supplierId,
+        balances: list,
+      })),
+    };
+  }
+
+  /** One supplier's credit: balances per currency and the ledger, newest first. */
+  async credit(businessId: string, supplierId: string, limit = 100) {
+    const [balances, rows] = await Promise.all([
+      creditBalances(this.dbService.db, businessId, [supplierId]),
+      this.dbService.db
+        .select({
+          id: supplierCredits.id,
+          kind: supplierCredits.kind,
+          amount: supplierCredits.amount,
+          currency: supplierCredits.currency,
+          supplierReturnId: supplierCredits.supplierReturnId,
+          supplierPaymentId: supplierCredits.supplierPaymentId,
+          receiptId: supplierCredits.receiptId,
+          receiptDate: goodsReceipts.createdAt,
+          note: supplierCredits.note,
+          cashierName: supplierCredits.cashierName,
+          createdAt: supplierCredits.createdAt,
+        })
+        .from(supplierCredits)
+        .leftJoin(goodsReceipts, eq(goodsReceipts.id, supplierCredits.receiptId))
+        .where(
+          and(
+            eq(supplierCredits.businessId, businessId),
+            eq(supplierCredits.supplierId, supplierId),
+          ),
+        )
+        .orderBy(desc(supplierCredits.createdAt))
+        .limit(Math.min(Math.max(1, limit), 500)),
+    ]);
+    return {
+      balances: balances.get(supplierId) ?? [],
+      history: rows.map((r) => ({...r, amount: Number(r.amount)})),
     };
   }
 

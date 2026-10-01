@@ -6,6 +6,9 @@ export type FinanceSource =
   | 'manual' // typed in Moliya (kirim / xarajat / ko'chirish)
   | 'external' // capital leg of a "Tashqi mablag'" pair
   | 'supplier_payment'
+  // Cash a supplier handed back for defective goods (YOQOTISHLAR.md S17):
+  // goods turned back into money — neither profit nor cost.
+  | 'supplier_refund'
   | 'payroll'
   | 'shift_close'
   | 'cash_movement'

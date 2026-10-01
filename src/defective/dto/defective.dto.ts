@@ -9,6 +9,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import {
@@ -165,4 +166,73 @@ export class DefectiveSupplierReturnDto extends BranchDocDto {
   @IsIn(SUPPLIER_RETURN_REASONS)
   @IsOptional()
   reasonCode?: SupplierReturnReason;
+}
+
+// ── "Agent keldi": one confirmation, every way back (S15–S26) ────────────────
+export const SETTLEMENT_PATHS = ['debt', 'credit', 'cash', 'exchange'] as const;
+export type SettlementPath = (typeof SETTLEMENT_PATHS)[number];
+
+export class DefectiveSettlementLineDto extends DefectiveSupplierReturnLineDto {
+  @ApiProperty({
+    enum: SETTLEMENT_PATHS,
+    description:
+      "'debt' off receiptId's debt · 'credit' left with the supplier · 'cash' handed back · 'exchange' swapped for good units",
+  })
+  @IsIn(SETTLEMENT_PATHS)
+  path!: SettlementPath;
+
+  @ApiPropertyOptional({description: "debt: the receipt whose debt it reduces"})
+  @ValidateIf((o: DefectiveSettlementLineDto) => o.path === 'debt')
+  @IsString()
+  receiptId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'credit / cash: the line total agreed with the agent, in the currency of its computed price; omitted = the computed price',
+  })
+  @IsNumber({maxDecimalPlaces: 2})
+  @Min(0.01)
+  @IsOptional()
+  amount?: number;
+}
+
+class CashAccountDto {
+  @ApiProperty({description: 'Currency of the cash lines this account takes'})
+  @IsString()
+  currency!: string;
+
+  @ApiProperty({description: 'Finance account the cash came into'})
+  @IsString()
+  accountId!: string;
+}
+
+export class DefectiveSettlementDto extends BranchDocDto {
+  @ApiProperty({description: 'The supplier the goods go back to'})
+  @IsString()
+  supplierId!: string;
+
+  @ApiProperty({type: [DefectiveSettlementLineDto]})
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({each: true})
+  @Type(() => DefectiveSettlementLineDto)
+  items!: DefectiveSettlementLineDto[];
+
+  @ApiPropertyOptional({
+    enum: SUPPLIER_RETURN_REASONS,
+    description: 'Default for return lines',
+  })
+  @IsIn(SUPPLIER_RETURN_REASONS)
+  @IsOptional()
+  reasonCode?: SupplierReturnReason;
+
+  @ApiPropertyOptional({
+    type: [CashAccountDto],
+    description: 'cash lines: the account per currency the money came into',
+  })
+  @IsArray()
+  @ValidateNested({each: true})
+  @Type(() => CashAccountDto)
+  @IsOptional()
+  cashAccounts?: CashAccountDto[];
 }

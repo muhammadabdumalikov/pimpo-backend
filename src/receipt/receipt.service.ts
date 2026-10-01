@@ -52,6 +52,11 @@ import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import {AddPaymentDto} from './dto/add-payment.dto';
 import {CreateReturnDto} from './dto/create-return.dto';
 import {displayAmount} from '../common/display-amount';
+import {
+  addCreditTx,
+  creditBalanceTx,
+  lockSupplierTx,
+} from '../common/supplier-credit';
 import {recordPriceChangesTx} from '../common/price-history';
 import {priceFlags, isSevere, type PriceFlag} from '../common/price-risk';
 
@@ -1588,39 +1593,91 @@ export class ReceiptService {
         });
       }
 
-      const txn = await this.financeService.recordExpenseTx(tx, businessId, {
-        source: 'supplier_payment',
-        accountId: dto.accountId,
-        external: dto.external,
-        allowNegative: dto.allowNegative,
-        amount: dto.amount,
-        currency,
-        note:
-          dto.note ??
-          `Ta'minotchi to'lovi${receipt.supplierName ? `: ${receipt.supplierName}` : ''}`,
-        cashierId: cashier.id,
-        cashierName: cashier.name,
-      });
-
-      const [payment] = await tx
-        .insert(supplierPayments)
-        .values({
-          id: generateId(),
+      let payment: SupplierPayment;
+      if (dto.source === 'credit') {
+        // Paid out of the supplier's credit (S16): no money moves, so no
+        // Moliya row — the credit ledger goes down instead. The supplier row
+        // is locked after the receipt, the order every credit write keeps.
+        if (!receipt.supplierId) {
+          throw new AppException(ErrorCode.SUPPLIER_CREDIT_NO_SUPPLIER);
+        }
+        await lockSupplierTx(tx, businessId, receipt.supplierId);
+        const available = await creditBalanceTx(
+          tx,
           businessId,
-          receiptId,
-          supplierId: receipt.supplierId,
-          supplierName: receipt.supplierName,
-          amount: money(dto.amount),
+          receipt.supplierId,
           currency,
-          accountId: txn.accountId,
-          accountName: txn.accountName,
-          financialTransactionId: txn.id,
+        );
+        if (Math.round(dto.amount * 100) > Math.round(available * 100)) {
+          throw new AppException(ErrorCode.SUPPLIER_CREDIT_INSUFFICIENT, {
+            available: displayAmount(Math.max(0, available)),
+            currency,
+          });
+        }
+        [payment] = await tx
+          .insert(supplierPayments)
+          .values({
+            id: generateId(),
+            businessId,
+            receiptId,
+            supplierId: receipt.supplierId,
+            supplierName: receipt.supplierName,
+            amount: money(dto.amount),
+            currency,
+            source: 'credit',
+            note: dto.note ?? null,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+            paidAt,
+          })
+          .returning();
+        await addCreditTx(tx, {
+          businessId,
+          supplierId: receipt.supplierId,
+          currency,
+          amount: -dto.amount,
+          kind: 'payment',
+          supplierPaymentId: payment.id,
+          receiptId,
           note: dto.note ?? null,
           cashierId: cashier.id,
           cashierName: cashier.name,
-          paidAt,
-        })
-        .returning();
+        });
+      } else {
+        const txn = await this.financeService.recordExpenseTx(tx, businessId, {
+          source: 'supplier_payment',
+          accountId: dto.accountId,
+          external: dto.external,
+          allowNegative: dto.allowNegative,
+          amount: dto.amount,
+          currency,
+          note:
+            dto.note ??
+            `Yetkazib beruvchiga to'lov${receipt.supplierName ? `: ${receipt.supplierName}` : ''}`,
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+        });
+
+        [payment] = await tx
+          .insert(supplierPayments)
+          .values({
+            id: generateId(),
+            businessId,
+            receiptId,
+            supplierId: receipt.supplierId,
+            supplierName: receipt.supplierName,
+            amount: money(dto.amount),
+            currency,
+            accountId: txn.accountId,
+            accountName: txn.accountName,
+            financialTransactionId: txn.id,
+            note: dto.note ?? null,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+            paidAt,
+          })
+          .returning();
+      }
 
       const newPaid = Number(receipt.paidAmount) + dto.amount;
       const [updated] = await tx
@@ -1687,8 +1744,24 @@ export class ReceiptService {
       }
 
       const amount = Number(payment.amount);
-      // A payment with no booked expense behind it (none were made without
-      // one, but the columns are nullable) has nothing in Moliya to answer.
+      if (payment.source === 'credit' && payment.supplierId) {
+        // Paid from the supplier's credit: the credit comes back.
+        await lockSupplierTx(tx, businessId, payment.supplierId);
+        await addCreditTx(tx, {
+          businessId,
+          supplierId: payment.supplierId,
+          currency: payment.currency,
+          amount,
+          kind: 'payment_cancel',
+          supplierPaymentId: payment.id,
+          receiptId,
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+        });
+      }
+      // A payment with no booked expense behind it (a credit payment, or an
+      // old row with the nullable columns empty) has nothing in Moliya to
+      // answer.
       if (payment.financialTransactionId && payment.accountId) {
         await this.financeService.reverseTx(
           tx,

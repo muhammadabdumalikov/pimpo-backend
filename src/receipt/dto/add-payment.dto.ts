@@ -7,6 +7,7 @@ import {
   MaxLength,
   IsDateString,
   IsBoolean,
+  IsIn,
   ValidateIf,
 } from 'class-validator';
 
@@ -16,9 +17,18 @@ export class AddPaymentDto {
     description:
       'Finance account the money leaves (cash/bank); omitted when `external` is true',
   })
-  @ValidateIf((o: AddPaymentDto) => !o.external)
+  @ValidateIf((o: AddPaymentDto) => !o.external && o.source !== 'credit')
   @IsString()
   accountId?: string;
+
+  @ApiPropertyOptional({
+    enum: ['money', 'credit'],
+    description:
+      "'money' (default): from a shop account or Tashqi mablag'. 'credit': spent from the supplier's credit (defective returns, YOQOTISHLAR.md S16) — no Moliya row",
+  })
+  @IsIn(['money', 'credit'])
+  @IsOptional()
+  source?: 'money' | 'credit';
 
   @ApiProperty({description: 'Payment amount (> 0)'})
   @IsNumber()

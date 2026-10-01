@@ -22,6 +22,7 @@ import {
   goodsReceiptItems,
   goodsReceipts,
   products,
+  supplierReturns,
   suppliers,
 } from '../database/schema';
 import {businessDayEnd, businessDayStart} from '../common/business-time';
@@ -68,6 +69,21 @@ export interface SupplierDefectiveRow {
   returnableQty: number;
   /** returnableQty at the prices it would go back at, in base UZS. */
   returnableValue: number;
+  /**
+   * What returnableQty cost us (the row's average lot cost), base UZS — so
+   * returnableValue − returnableCost is what the return is worth above cost.
+   */
+  returnableCost: number;
+  /**
+   * The rest, what can go back as credit or for cash (S21): the units the
+   * debt can't take, at the off-receipt price (last delivery, else card),
+   * base UZS. 0 when the product has no price at all.
+   */
+  creditQty: number;
+  creditValue: number;
+  creditCost: number;
+  /** Some way back has a price: false = Qaytarish is off for the row. */
+  hasPrice: boolean;
 }
 
 export interface SupplierDefectiveTotals {
@@ -81,6 +97,12 @@ export interface SupplierDefectiveTotals {
   returnableProducts: number;
   /** At receipt prices (base UZS), capped by debt. */
   returnableValue: number;
+  /** The same units at cost (base UZS). */
+  returnableCost: number;
+  /** What can go back as credit / cash beyond the debt (S21), base UZS. */
+  creditProducts: number;
+  creditValue: number;
+  creditCost: number;
 }
 
 interface LotRow {
@@ -248,20 +270,33 @@ export class SupplierDefectiveService {
       where.push(lte(defectiveMovements.createdAt, businessDayEnd(q.to)));
     }
 
-    // A return's credit is in its receipt's currency; the rate it was booked
-    // at turns it into so'm so a USD supplier's figures add up.
-    const toUzs = sql`(case when ${defectiveMovements.currency} = 'USD' then coalesce(${goodsReceipts.usdRate}, 1) else 1 end)`;
+    // A return's value is in its own currency: a debt return's receipt's, a
+    // credit / cash return's price's. The rate it was booked at — the
+    // receipt's, or the one kept on the return — turns it into so'm so a USD
+    // supplier's figures add up.
+    const toUzs = sql`(case when ${defectiveMovements.currency} = 'USD' then coalesce(${goodsReceipts.usdRate}, ${supplierReturns.usdRate}, 1) else 1 end)`;
+    // An undone return stays in the list, marked, but counts nowhere.
+    const live = sql`${defectiveMovements.cancelledAt} is null`;
+    const settled = (s: 'debt' | 'credit' | 'cash') =>
+      sql<number>`coalesce(sum(${defectiveMovements.creditValue} * ${toUzs}) filter (where ${defectiveMovements.type} = 'out_supplier' and ${live} and coalesce(${defectiveMovements.settlement}, 'debt') = ${s}), 0)::float8`;
 
     const [agg] = await this.db
       .select({
         movements: count(),
-        returns: sql<number>`count(*) filter (where ${defectiveMovements.type} = 'out_supplier')::int`,
-        returnedValue: sql<number>`coalesce(sum(${defectiveMovements.creditValue} * ${toUzs}) filter (where ${defectiveMovements.type} = 'out_supplier'), 0)::float8`,
+        returns: sql<number>`count(*) filter (where ${defectiveMovements.type} = 'out_supplier' and ${live})::int`,
+        returnedValue: sql<number>`coalesce(sum(${defectiveMovements.creditValue} * ${toUzs}) filter (where ${defectiveMovements.type} = 'out_supplier' and ${live}), 0)::float8`,
+        debtValue: settled('debt'),
+        creditValue: settled('credit'),
+        cashValue: settled('cash'),
         exchanges: sql<number>`count(*) filter (where ${defectiveMovements.type} = 'out_exchange')::int`,
         exchangedValue: sql<number>`coalesce(sum(${defectiveMovements.totalCost}) filter (where ${defectiveMovements.type} = 'out_exchange'), 0)::float8`,
       })
       .from(defectiveMovements)
       .leftJoin(goodsReceipts, eq(goodsReceipts.id, defectiveMovements.receiptId))
+      .leftJoin(
+        supplierReturns,
+        eq(supplierReturns.id, defectiveMovements.supplierReturnId),
+      )
       .where(and(...where));
 
     const rows = await this.db
@@ -269,11 +304,19 @@ export class SupplierDefectiveService {
         m: defectiveMovements,
         branchName: branches.name,
         receiptDate: goodsReceipts.createdAt,
-        usdRate: goodsReceipts.usdRate,
+        usdRate: sql<
+          string | null
+        >`coalesce(${goodsReceipts.usdRate}, ${supplierReturns.usdRate})`,
+        computedTotal: supplierReturns.computedTotal,
+        cancelledByName: supplierReturns.cancelledByName,
       })
       .from(defectiveMovements)
       .leftJoin(branches, eq(branches.id, defectiveMovements.branchId))
       .leftJoin(goodsReceipts, eq(goodsReceipts.id, defectiveMovements.receiptId))
+      .leftJoin(
+        supplierReturns,
+        eq(supplierReturns.id, defectiveMovements.supplierReturnId),
+      )
       .where(and(...where))
       .orderBy(desc(defectiveMovements.createdAt))
       .limit(limit)
@@ -323,11 +366,24 @@ export class SupplierDefectiveService {
           branchName: r.branchName,
           receiptId: r.m.receiptId,
           receiptDate: r.receiptDate,
-          /** Taken off the receipt's debt, in the receipt currency (returns only). */
+          /** Returns: the supplier return (what the cancel button undoes). */
+          supplierReturnId: r.m.supplierReturnId,
+          /** Returns: off a receipt's debt, left as credit, or cash back. */
+          settlement:
+            r.m.type === 'out_supplier'
+              ? ((r.m.settlement ?? 'debt') as 'debt' | 'credit' | 'cash')
+              : null,
+          /** Returns: its value, in its currency (the receipt's for debt). */
           creditValue: credit,
           currency: r.m.currency,
           /** creditValue in base UZS (returns only). */
           creditValueUzs: credit === null ? null : round2(credit * rate),
+          /** Credit / cash typed over the computed price: what it was priced at. */
+          computedTotal:
+            r.computedTotal === null ? null : Number(r.computedTotal),
+          /** Undone (S23): listed, but counted nowhere. */
+          cancelledAt: r.m.cancelledAt,
+          cancelledByName: r.cancelledByName,
           /** Cost of the goods that left (base UZS). */
           totalCost: Number(r.m.totalCost),
           itemCount: r.m.itemCount,
@@ -353,6 +409,10 @@ export class SupplierDefectiveService {
       totals: {
         returns: agg?.returns ?? 0,
         returnedValue: round2(agg?.returnedValue ?? 0),
+        /** returnedValue by settlement (UZS). */
+        debtValue: round2(agg?.debtValue ?? 0),
+        creditValue: round2(agg?.creditValue ?? 0),
+        cashValue: round2(agg?.cashValue ?? 0),
         exchanges: agg?.exchanges ?? 0,
         exchangedValue: round2(agg?.exchangedValue ?? 0),
       },
@@ -511,6 +571,14 @@ export class SupplierDefectiveService {
       offPrice: new Map(),
     };
     if (!productIds.length || !supplierIds.length) return open;
+    // The off-receipt price is what a credit or cash return goes back at, so
+    // it is needed most exactly when no receipt is open.
+    open.offPrice = await offReceiptPrices(
+      this.db,
+      businessId,
+      supplierIds,
+      productIds,
+    );
     const receipts = await this.db
       .select({
         id: goodsReceipts.id,
@@ -548,24 +616,20 @@ export class SupplierDefectiveService {
     }
     if (!open.receipts.size) return open;
 
-    const [lines, offPrice] = await Promise.all([
-      this.db
-        .select({
-          receiptId: goodsReceiptItems.receiptId,
-          productId: goodsReceiptItems.productId,
-          priceIn: goodsReceiptItems.priceIn,
-        })
-        .from(goodsReceiptItems)
-        .where(
-          and(
-            inArray(goodsReceiptItems.receiptId, [...open.receipts.keys()]),
-            inArray(goodsReceiptItems.productId, productIds),
-          ),
-        )
-        .orderBy(desc(goodsReceiptItems.createdAt)),
-      offReceiptPrices(this.db, businessId, supplierIds, productIds),
-    ]);
-    open.offPrice = offPrice;
+    const lines = await this.db
+      .select({
+        receiptId: goodsReceiptItems.receiptId,
+        productId: goodsReceiptItems.productId,
+        priceIn: goodsReceiptItems.priceIn,
+      })
+      .from(goodsReceiptItems)
+      .where(
+        and(
+          inArray(goodsReceiptItems.receiptId, [...open.receipts.keys()]),
+          inArray(goodsReceiptItems.productId, productIds),
+        ),
+      )
+      .orderBy(desc(goodsReceiptItems.createdAt));
     for (const l of lines) {
       if (!l.productId) continue;
       // A receipt listing the product twice: the newest line's price wins,
@@ -611,6 +675,11 @@ export class SupplierDefectiveService {
       openReceiptsListing: number;
       returnableQty: number;
       returnableValue: number;
+      returnableCost: number;
+      creditQty: number;
+      creditValue: number;
+      creditCost: number;
+      hasPrice: boolean;
     }[];
     totals: SupplierDefectiveTotals;
   } {
@@ -662,12 +731,24 @@ export class SupplierDefectiveService {
       }
     }
 
-    const perRow = plan.map((p) => ({
-      openReceipts: p.listing.length + p.others.length,
-      openReceiptsListing: p.listing.length,
-      returnableQty: round3(p.qty),
-      returnableValue: round2(p.value),
-    }));
+    const unitCost = (p: (typeof plan)[number]) =>
+      p.row.qty > 0 ? p.row.value / p.row.qty : 0;
+    const perRow = plan.map((p) => {
+      // Whatever the debt could not take goes back as credit or cash, at the
+      // off-receipt price — when there is one.
+      const creditQty = p.ref && p.left > 0 ? round3(p.left) : 0;
+      return {
+        openReceipts: p.listing.length + p.others.length,
+        openReceiptsListing: p.listing.length,
+        returnableQty: round3(p.qty),
+        returnableValue: round2(p.value),
+        returnableCost: round2(p.qty * unitCost(p)),
+        creditQty,
+        creditValue: p.ref ? round2(creditQty * p.ref.price * p.ref.rate) : 0,
+        creditCost: round2(creditQty * unitCost(p)),
+        hasPrice: !!p.ref || p.listing.length > 0,
+      };
+    });
 
     const totals: SupplierDefectiveTotals = {
       products: new Set(rows.map((r) => r.productId)).size,
@@ -679,6 +760,12 @@ export class SupplierDefectiveService {
         rows.filter((_, i) => perRow[i].returnableQty > 0).map((r) => r.productId),
       ).size,
       returnableValue: round2(perRow.reduce((s, r) => s + r.returnableValue, 0)),
+      returnableCost: round2(perRow.reduce((s, r) => s + r.returnableCost, 0)),
+      creditProducts: new Set(
+        rows.filter((_, i) => perRow[i].creditQty > 0).map((r) => r.productId),
+      ).size,
+      creditValue: round2(perRow.reduce((s, r) => s + r.creditValue, 0)),
+      creditCost: round2(perRow.reduce((s, r) => s + r.creditCost, 0)),
     };
     return {perRow, totals};
   }

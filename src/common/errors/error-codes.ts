@@ -221,6 +221,13 @@ export enum ErrorCode {
   DEFECTIVE_RETURN_EXCEEDS_DEBT = 'DEFECTIVE_RETURN_EXCEEDS_DEBT',
   DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER = 'DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER',
   DEFECTIVE_PRODUCT_NO_PRICE = 'DEFECTIVE_PRODUCT_NO_PRICE',
+  DEFECTIVE_RECEIPT_OTHER_SUPPLIER = 'DEFECTIVE_RECEIPT_OTHER_SUPPLIER',
+  DEFECTIVE_CASH_ACCOUNT_REQUIRED = 'DEFECTIVE_CASH_ACCOUNT_REQUIRED',
+  DEFECTIVE_RETURN_NOT_FOUND = 'DEFECTIVE_RETURN_NOT_FOUND',
+  DEFECTIVE_RETURN_ALREADY_CANCELLED = 'DEFECTIVE_RETURN_ALREADY_CANCELLED',
+  DEFECTIVE_CREDIT_ALREADY_USED = 'DEFECTIVE_CREDIT_ALREADY_USED',
+  SUPPLIER_CREDIT_INSUFFICIENT = 'SUPPLIER_CREDIT_INSUFFICIENT',
+  SUPPLIER_CREDIT_NO_SUPPLIER = 'SUPPLIER_CREDIT_NO_SUPPLIER',
 
   // ── Stock transfer (filiallararo ko'chirish) ───────────────────────────────
   TRANSFER_EMPTY = 'TRANSFER_EMPTY',
@@ -1042,6 +1049,34 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.DEFECTIVE_PRODUCT_NO_PRICE]: {
     status: HttpStatus.BAD_REQUEST,
     message: '{product} has no delivery price from this supplier and no purchase price on its card',
+  },
+  [ErrorCode.DEFECTIVE_RECEIPT_OTHER_SUPPLIER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This receipt belongs to another supplier',
+  },
+  [ErrorCode.DEFECTIVE_CASH_ACCOUNT_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Choose the account the {currency} cash came into',
+  },
+  [ErrorCode.DEFECTIVE_RETURN_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Defective supplier return not found',
+  },
+  [ErrorCode.DEFECTIVE_RETURN_ALREADY_CANCELLED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This return has already been cancelled',
+  },
+  [ErrorCode.DEFECTIVE_CREDIT_ALREADY_USED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This return left {amount} {currency} of credit, but only {available} is left; cancel the payment that spent it first',
+  },
+  [ErrorCode.SUPPLIER_CREDIT_INSUFFICIENT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The supplier has only {available} {currency} of credit',
+  },
+  [ErrorCode.SUPPLIER_CREDIT_NO_SUPPLIER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This receipt has no supplier, so there is no credit to pay from',
   },
 
   // Stock transfer

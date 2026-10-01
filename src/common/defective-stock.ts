@@ -29,7 +29,12 @@ export const DEFECTIVE_MOVEMENT_TYPES = [
 export type DefectiveMovementType = (typeof DEFECTIVE_MOVEMENT_TYPES)[number];
 
 /** Where a lot's goods came from; an opening lot was a loss before it arrived. */
-export type DefectiveLotSource = 'customer_return' | 'shelf' | 'opening';
+export type DefectiveLotSource =
+  | 'customer_return'
+  | 'shelf'
+  | 'opening'
+  // Back from an undone supplier return (S23), at the cost it left at.
+  | 'supplier_cancel';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -63,6 +68,7 @@ export async function insertDefectiveMovementTx(
     supplierName?: string | null;
     creditValue?: number | null;
     currency?: string | null;
+    settlement?: 'debt' | 'credit' | 'cash' | null;
     cashierId: string | null;
     cashierName: string | null;
   },
@@ -90,6 +96,7 @@ export async function insertDefectiveMovementTx(
         ? null
         : money(header.creditValue),
     currency: header.currency ?? null,
+    settlement: header.settlement ?? null,
     cashierId: header.cashierId,
     cashierName: header.cashierName,
   });

@@ -99,6 +99,15 @@ export class SupplierController {
     return this.supplierDefectiveService.summary(business.id);
   }
 
+  // The supplier's credit with us (YOQOTISHLAR.md S22). Not behind the
+  // defective_store flag: once a credit exists it must stay visible and
+  // spendable even if the store is switched off. Declared before ':id'.
+  @Get('credit-summary')
+  @ApiOperation({summary: "Every supplier's non-zero credit, per currency"})
+  async creditSummary(@CurrentBusiness() business: IBusiness) {
+    return this.supplierService.creditSummary(business.id);
+  }
+
   @Get(':id')
   @ApiOperation({summary: 'Get a supplier by ID'})
   @ApiParam({name: 'id', description: 'Supplier ID'})
@@ -188,6 +197,23 @@ export class SupplierController {
           ? sort
           : undefined,
     });
+  }
+
+  @Get(':id/credit')
+  @ApiOperation({
+    summary: "One supplier's credit: balances per currency and its history",
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  @ApiResponse({status: 404, description: 'Supplier not found'})
+  async credit(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    const supplier = await this.supplierService.findOne(business.id, id);
+    if (!supplier) {
+      throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+    }
+    return this.supplierService.credit(business.id, id);
   }
 
   @Get(':id/defective')

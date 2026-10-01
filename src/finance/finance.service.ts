@@ -636,6 +636,40 @@ export class FinanceService {
     });
   }
 
+  /**
+   * Book money coming in from another module (a supplier handing back cash
+   * for defective goods), inside the caller's transaction, into a shop
+   * account. The row is marked by `source` so reports know it for what it is
+   * — the P&L skips a supplier refund the way it skips supplier payments.
+   * Returns the income leg; reverseTx takes it back.
+   */
+  async recordIncomeTx(
+    tx: DbTx,
+    businessId: string,
+    params: {
+      accountId: string;
+      source: FinanceSource;
+      amount: number;
+      currency: string;
+      note?: string | null;
+      categoryName?: string | null;
+      cashierId?: string | null;
+      cashierName?: string | null;
+    },
+  ): Promise<FinancialTransaction> {
+    const account = await this.loadAccount(businessId, params.accountId, tx);
+    return this.insertLegTx(tx, businessId, account, {
+      kind: 'income',
+      source: params.source,
+      amount: params.amount,
+      currency: params.currency,
+      categoryName: params.categoryName,
+      cashierId: params.cashierId,
+      cashierName: params.cashierName,
+      note: params.note,
+    });
+  }
+
   // ─── Transactions (Tranzaksiyalar) ────────────────────────────────────────
   // A manual row's category must exist and be of the row's kind. A kirim
   // always needs one — its category is what says capital or profit.
