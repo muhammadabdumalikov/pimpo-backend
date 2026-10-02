@@ -26,14 +26,17 @@ import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
-import {IBusiness} from '../business/types';
+import {CurrentAccount} from '../business/decorators/current-account.decorator';
+import {IAccount, IBusiness} from '../business/types';
 import {CreateSupplierDto} from './dto/create-supplier.dto';
 import {UpdateSupplierDto} from './dto/update-supplier.dto';
+import {TransferAdvanceDto} from './dto/transfer-advance.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import {FeatureGuard} from '../feature/feature.guard';
 import {RequireFeature} from '../feature/require-feature.decorator';
 import {SupplierDefectiveService} from '../defective/supplier-defective.service';
+import {ReceiptService} from '../receipt/receipt.service';
 
 @ApiTags('suppliers')
 @Controller('suppliers')
@@ -44,6 +47,7 @@ export class SupplierController {
   constructor(
     private readonly supplierService: SupplierService,
     private readonly supplierDefectiveService: SupplierDefectiveService,
+    private readonly receiptService: ReceiptService,
   ) {}
 
   @Post()
@@ -214,6 +218,42 @@ export class SupplierController {
       throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
     }
     return this.supplierService.credit(business.id, id);
+  }
+
+  @Post(':id/advance-transfer')
+  @RequirePermission('receipt:pay')
+  @ApiOperation({
+    summary:
+      "Move a supplier's advance to another supplier (Avansni o'tkazish); with settle, it then pays their open receipts oldest first",
+  })
+  @ApiParam({name: 'id', description: 'Supplier the advance moves from'})
+  async transferAdvance(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: TransferAdvanceDto,
+  ) {
+    return this.receiptService.transferAdvance(business.id, id, dto, account);
+  }
+
+  @Get(':id/open-debt')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary:
+      "A supplier's open receipts (oldest first), their debt and advance in one currency",
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  @ApiQuery({name: 'currency', required: false, enum: ['UZS', 'USD']})
+  async openDebt(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('currency') currency?: string,
+  ) {
+    return this.receiptService.tillDebt(
+      business.id,
+      id,
+      currency === 'USD' ? 'USD' : 'UZS',
+    );
   }
 
   @Get(':id/defective')

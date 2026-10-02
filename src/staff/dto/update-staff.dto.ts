@@ -10,7 +10,9 @@ import {
   Max,
   MinLength,
   MaxLength,
+  Matches,
 } from 'class-validator';
+import {PIN_PATTERN} from '../../utils/pin';
 
 export class UpdateStaffDto {
   @ApiProperty({ description: 'Employee display name', required: false })
@@ -48,6 +50,18 @@ export class UpdateStaffDto {
   @MinLength(6)
   @IsOptional()
   password?: string;
+
+  @ApiProperty({
+    description:
+      'New till PIN (4–6 digits) for the desktop app; null removes it. An ' +
+      'account holder must keep a login+password or a PIN.',
+    required: false,
+    nullable: true,
+  })
+  @IsString()
+  @Matches(PIN_PATTERN)
+  @IsOptional()
+  pin?: string | null;
 
   @ApiProperty({ description: 'Job title (display only)', required: false })
   @IsString()

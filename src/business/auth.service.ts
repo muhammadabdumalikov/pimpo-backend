@@ -155,7 +155,8 @@ export class AuthService {
         type: 'staff' as const,
         id: member.id,
         name: member.name,
-        login: member.login,
+        // A PIN-only cashier (desktop till) has no login.
+        login: member.login ?? '',
         avatarUrl: member.avatarUrl ?? null,
         roleId: role.id,
         roleName: role.name,
@@ -213,12 +214,18 @@ export class AuthService {
     };
   }
 
-  private async buildStaffSession(member: typeof staff.$inferSelect) {
-    // Callers gate on hasAccount before reaching here, so credentials are set.
-    // Re-checked (and narrowed) locally because an employee kept only as a
-    // payroll record carries a null login/roleId.
-    const {login, roleId} = member;
-    if (!login || !roleId) {
+  /**
+   * Issue a staff JWT. Used by the password login above and by the desktop
+   * till's PIN sign-in (DeviceService), which is why `login` may be null: a
+   * PIN-only cashier has no login, only an account and a role.
+   */
+  async buildStaffSession(member: typeof staff.$inferSelect) {
+    // Callers gate on hasAccount before reaching here. Re-checked (and
+    // narrowed) locally because an employee kept only as a payroll record
+    // carries a null roleId.
+    const login = member.login ?? '';
+    const {roleId} = member;
+    if (!member.hasAccount || !roleId) {
       throw new AppException(ErrorCode.STAFF_NO_ACCOUNT);
     }
     const [role] = await this.dbService.db

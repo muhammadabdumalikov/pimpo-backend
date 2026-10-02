@@ -425,6 +425,7 @@ export class TelegramNotifyService {
       `💰 Summa: ${uz(m.amount)}${cur}`,
     ];
     if (m.categoryName) lines.push(`🏷 Kategoriya: ${m.categoryName}`);
+    if (m.supplierName) lines.push(`🚚 Yetkazib beruvchi: ${m.supplierName}`);
     if (m.reason) lines.push(`📝 Izoh: ${m.reason}`);
     if (m.cashierName) lines.push(`👤 Kassir: ${m.cashierName}`);
     lines.push(`🕒 ${hhmm(m.createdAt)}`);

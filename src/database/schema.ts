@@ -86,6 +86,10 @@ export const staff = pgTable('staff', {
   password: varchar('password', {length: 255}),
   // Whether this employee can sign in (POS + dashboard). Drives seat counting.
   hasAccount: boolean('has_account').default(false).notNull(),
+  // Till PIN for the desktop app (scrypt, see utils/pin.ts). Only accepted
+  // together with a bound device's token, never by the web login. An account
+  // holder needs a login+password, a PIN, or both.
+  pinHash: varchar('pin_hash', {length: 255}),
   // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
   avatarUrl: varchar('avatar_url', {length: 500}),
   // ─── HR fields ───────────────────────────────────────────────────────────
@@ -744,7 +748,9 @@ export const supplierReturns = pgTable('supplier_returns', {
 
 // The supplier's credit with us, as a ledger (balance per currency = sum).
 // kind: 'return' (+) | 'return_cancel' (−) | 'payment' (−, spent on a
-// receipt) | 'payment_cancel' (+).
+// receipt) | 'payment_cancel' (+) | 'advance' (+, till money handed over
+// beyond the open debt) | 'transfer_out' (−) / 'transfer_in' (+, moved
+// between suppliers; related_supplier_* is the other side). Shown as "Avans".
 export const supplierCredits = pgTable(
   'supplier_credits',
   {
@@ -759,6 +765,8 @@ export const supplierCredits = pgTable(
     supplierReturnId: varchar('supplier_return_id', {length: 36}),
     supplierPaymentId: varchar('supplier_payment_id', {length: 36}),
     receiptId: varchar('receipt_id', {length: 36}),
+    relatedSupplierId: varchar('related_supplier_id', {length: 36}),
+    relatedSupplierName: varchar('related_supplier_name', {length: 255}),
     note: varchar('note', {length: 500}),
     cashierId: varchar('cashier_id', {length: 36}),
     cashierName: varchar('cashier_name', {length: 255}),
@@ -1220,6 +1228,10 @@ export const cashMovements = pgTable('cash_movements', {
   reason: varchar('reason', {length: 500}),
   cashierId: varchar('cashier_id', {length: 36}),
   cashierName: varchar('cashier_name', {length: 255}),
+  // "Ta'minotchiga to'lov" (0088): the supplier the till paid. Such a movement
+  // is booked as supplier payments + an advance, never as an expense.
+  supplierId: varchar('supplier_id', {length: 36}),
+  supplierName: varchar('supplier_name', {length: 255}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -3139,3 +3151,51 @@ export const announcementReads = pgTable(
 );
 
 export type Announcement = typeof announcements.$inferSelect;
+
+// Desktop till installs (pimpo-desktop). Each PC is bound once to one register
+// and authenticates with an opaque token; only its sha256 is stored. Binding a
+// register again revokes the previous device on it, but a revoked device may
+// still push the sales it queued (see DESKTOP.md).
+export const devices = pgTable(
+  'devices',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    registerId: varchar('register_id', {length: 36})
+      .notNull()
+      .references(() => cashRegisters.id, {onDelete: 'cascade'}),
+    // Copied from the register at bind time: the branch whose catalogue and
+    // stock this till sells from.
+    branchId: varchar('branch_id', {length: 36}).references(() => branches.id, {
+      onDelete: 'set null',
+    }),
+    name: varchar('name', {length: 255}).notNull(),
+    // Prefix of the receipt numbers this till prints while offline (K1, K2, …),
+    // unique per business and never reused.
+    receiptPrefix: varchar('receipt_prefix', {length: 16}).notNull(),
+    tokenHash: varchar('token_hash', {length: 64}).notNull(),
+    appVersion: varchar('app_version', {length: 32}),
+    lastSeenAt: timestamp('last_seen_at'),
+    revokedAt: timestamp('revoked_at'),
+    // Who bound it (owner business.id or staff.id).
+    createdBy: varchar('created_by', {length: 36}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    tokenUq: uniqueIndex('devices_token_hash_uq').on(table.tokenHash),
+    prefixUq: uniqueIndex('devices_business_prefix_uq').on(
+      table.businessId,
+      table.receiptPrefix,
+    ),
+    // One live device per register.
+    activeRegisterUq: uniqueIndex('devices_active_register_uq')
+      .on(table.registerId)
+      .where(sql`${table.revokedAt} IS NULL`),
+    businessIdx: index('devices_business_idx').on(table.businessId),
+  }),
+);
+
+export type Device = typeof devices.$inferSelect;

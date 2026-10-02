@@ -1702,6 +1702,372 @@ export class ReceiptService {
     });
   }
 
+  // ─── Till payments ("Ta'minotchiga to'lov") ──────────────────────────────
+
+  /**
+   * A supplier's open receipts in one currency, oldest first — the order a
+   * till payment settles them in. `lock` takes them FOR UPDATE, so a payment
+   * entered on the nakladnoy page at the same moment either lands first (and
+   * is seen here) or waits for this one.
+   */
+  private async openReceipts(
+    db: DbTx | DatabaseService['db'],
+    businessId: string,
+    supplierId: string,
+    currency: string,
+    lock = false,
+  ): Promise<GoodsReceipt[]> {
+    const query = db
+      .select()
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.businessId, businessId),
+          eq(goodsReceipts.supplierId, supplierId),
+          eq(goodsReceipts.currency, currency),
+          ne(goodsReceipts.status, 'draft'),
+          sql`round((${goodsReceipts.totalAmount} - ${goodsReceipts.paidAmount} - ${goodsReceipts.returnedAmount}) * 100) > 0`,
+        ),
+      )
+      .orderBy(asc(goodsReceipts.createdAt), asc(goodsReceipts.id));
+    return lock ? query.for('update') : query;
+  }
+
+  /**
+   * What the till shows before paying a supplier: their open receipts (oldest
+   * first, as they will be settled), the debt they add up to, and the advance
+   * already standing with them.
+   */
+  async tillDebt(businessId: string, supplierId: string, currency: string) {
+    const db = this.dbService.db;
+    const [supplier] = await db
+      .select({id: suppliers.id, name: suppliers.name})
+      .from(suppliers)
+      .where(
+        and(eq(suppliers.id, supplierId), eq(suppliers.businessId, businessId)),
+      )
+      .limit(1);
+    if (!supplier) throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+
+    const [open, advance] = await Promise.all([
+      this.openReceipts(db, businessId, supplierId, currency),
+      creditBalanceTx(db, businessId, supplierId, currency),
+    ]);
+    const receipts = open.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt,
+      total: Number(r.totalAmount),
+      outstanding: outstandingOf(r),
+    }));
+    const debtCents = receipts.reduce(
+      (s, r) => s + Math.round(r.outstanding * 100),
+      0,
+    );
+    return {
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      currency,
+      debt: debtCents / 100,
+      advance,
+      receipts,
+    };
+  }
+
+  /**
+   * Settle a supplier's debt with till money, inside the shift's transaction.
+   *
+   * Their open receipts in the movement's currency are paid oldest first, each
+   * as an ordinary supplier payment — it reads, and cancels, exactly like one
+   * entered on the nakladnoy page. Whatever is left over becomes their advance
+   * ("Avans"), spent later with "Avansdan". Every leg is a supplier-payment
+   * ledger row tied to the cash movement, so none of it reaches the P&L as an
+   * expense: the goods' cost arrives there as COGS when they sell.
+   *
+   * Oldest first is what an agent means by "here is money towards what we
+   * owe", and it leaves the open debt on the newest goods. Receipts are locked
+   * before the supplier row, the order addPayment's credit path keeps, so the
+   * two can never wait on each other in a circle.
+   */
+  async payFromTillTx(
+    tx: DbTx,
+    businessId: string,
+    p: {
+      supplierId: string;
+      supplierName: string;
+      amount: number;
+      reason: string | null;
+      movement: {
+        id: string;
+        shiftId: string;
+        isCash: boolean;
+        currency: string;
+        cashierId: string | null;
+        cashierName: string | null;
+      };
+      register: {id: string; name: string | null};
+    },
+  ): Promise<{
+    payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[];
+    advance: number;
+  }> {
+    const {movement} = p;
+    const currency = movement.currency;
+    const suffix = p.reason ? ` — ${p.reason}` : '';
+    const open = await this.openReceipts(
+      tx,
+      businessId,
+      p.supplierId,
+      currency,
+      true,
+    );
+
+    // Whole cents throughout: USD receipts carry fractions, and the last
+    // receipt must close exactly, not at 99.99999.
+    let left = Math.round(p.amount * 100);
+    const payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[] =
+      [];
+    for (const receipt of open) {
+      if (left <= 0) break;
+      const cents = Math.min(left, Math.round(outstandingOf(receipt) * 100));
+      if (cents <= 0) continue;
+      const amount = cents / 100;
+
+      const txn = await this.financeService.recordTillSupplierPaymentTx(
+        tx,
+        businessId,
+        movement,
+        p.register,
+        amount,
+        `Yetkazib beruvchiga to'lov (kassa): ${p.supplierName}${suffix}`,
+      );
+      await tx.insert(supplierPayments).values({
+        id: generateId(),
+        businessId,
+        receiptId: receipt.id,
+        supplierId: p.supplierId,
+        supplierName: receipt.supplierName ?? p.supplierName,
+        amount: money(amount),
+        currency,
+        accountId: txn.accountId,
+        accountName: txn.accountName,
+        financialTransactionId: txn.id,
+        note: `Kassadan${suffix}`,
+        cashierId: movement.cashierId,
+        cashierName: movement.cashierName,
+        paidAt: new Date(),
+      });
+      const newPaid = Number(receipt.paidAmount) + amount;
+      await tx
+        .update(goodsReceipts)
+        .set({
+          paidAmount: money(newPaid),
+          paymentStatus: paymentStatusOf(
+            newPaid + Number(receipt.returnedAmount),
+            Number(receipt.totalAmount),
+          ),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(goodsReceipts.id, receipt.id),
+            eq(goodsReceipts.businessId, businessId),
+          ),
+        );
+
+      payments.push({
+        receiptId: receipt.id,
+        receiptCreatedAt: receipt.createdAt,
+        amount,
+      });
+      left -= cents;
+    }
+
+    const advance = left / 100;
+    if (left > 0) {
+      await lockSupplierTx(tx, businessId, p.supplierId);
+      await this.financeService.recordTillSupplierPaymentTx(
+        tx,
+        businessId,
+        movement,
+        p.register,
+        advance,
+        `Yetkazib beruvchiga avans (kassa): ${p.supplierName}${suffix}`,
+      );
+      await addCreditTx(tx, {
+        businessId,
+        supplierId: p.supplierId,
+        currency,
+        amount: advance,
+        kind: 'advance',
+        note: p.reason,
+        cashierId: movement.cashierId,
+        cashierName: movement.cashierName,
+      });
+    }
+
+    return {payments, advance: Math.max(0, advance)};
+  }
+
+  /**
+   * "Avansni o'tkazish": move part or all of a supplier's advance to another
+   * supplier.
+   *
+   * For money booked to the wrong name — a till payment to the wrong
+   * supplier, or old payments parked on a temporary one until the owner knows
+   * whose they were. No money moves and Moliya is not touched: the cash left
+   * long ago, only whose advance it is changes. With `settle` (the default)
+   * the moved sum then pays the new supplier's open receipts oldest first,
+   * each exactly as "Avansdan" on that receipt would, and what is left stays
+   * their advance.
+   *
+   * Receipts are locked before supplier rows, as in every credit write, and
+   * the two suppliers in id order, so two transfers between the same pair in
+   * opposite directions queue instead of deadlocking.
+   */
+  async transferAdvance(
+    businessId: string,
+    fromSupplierId: string,
+    dto: {
+      toSupplierId: string;
+      amount: number;
+      currency?: string;
+      settle?: boolean;
+      note?: string;
+    },
+    account?: IAccount,
+  ): Promise<{
+    transferred: number;
+    payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[];
+    advanceLeft: number;
+  }> {
+    if (dto.toSupplierId === fromSupplierId) {
+      throw new AppException(ErrorCode.SUPPLIER_ADVANCE_SAME_SUPPLIER);
+    }
+    const cashier = await this.resolveCashier(account);
+    const currency = dto.currency ?? 'UZS';
+    const settle = dto.settle ?? true;
+    const note = dto.note?.trim() || null;
+
+    return this.dbService.db.transaction(async (tx) => {
+      const pair = await tx
+        .select({id: suppliers.id, name: suppliers.name})
+        .from(suppliers)
+        .where(
+          and(
+            eq(suppliers.businessId, businessId),
+            inArray(suppliers.id, [fromSupplierId, dto.toSupplierId]),
+          ),
+        );
+      const from = pair.find((s) => s.id === fromSupplierId);
+      const to = pair.find((s) => s.id === dto.toSupplierId);
+      if (!from || !to) throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+
+      const open = settle
+        ? await this.openReceipts(tx, businessId, to.id, currency, true)
+        : [];
+      for (const id of [from.id, to.id].sort()) {
+        await lockSupplierTx(tx, businessId, id);
+      }
+
+      const available = await creditBalanceTx(tx, businessId, from.id, currency);
+      const cents = Math.round(dto.amount * 100);
+      if (cents > Math.round(available * 100)) {
+        throw new AppException(ErrorCode.SUPPLIER_CREDIT_INSUFFICIENT, {
+          available: displayAmount(Math.max(0, available)),
+          currency,
+        });
+      }
+      const amount = cents / 100;
+      const actor = {cashierId: cashier.id, cashierName: cashier.name};
+      await addCreditTx(tx, {
+        businessId,
+        supplierId: from.id,
+        currency,
+        amount: -amount,
+        kind: 'transfer_out',
+        relatedSupplierId: to.id,
+        relatedSupplierName: to.name,
+        note,
+        ...actor,
+      });
+      await addCreditTx(tx, {
+        businessId,
+        supplierId: to.id,
+        currency,
+        amount,
+        kind: 'transfer_in',
+        relatedSupplierId: from.id,
+        relatedSupplierName: from.name,
+        note,
+        ...actor,
+      });
+
+      let left = cents;
+      const payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[] =
+        [];
+      for (const receipt of open) {
+        if (left <= 0) break;
+        const pay = Math.min(left, Math.round(outstandingOf(receipt) * 100));
+        if (pay <= 0) continue;
+        const payAmount = pay / 100;
+
+        const [payment] = await tx
+          .insert(supplierPayments)
+          .values({
+            id: generateId(),
+            businessId,
+            receiptId: receipt.id,
+            supplierId: to.id,
+            supplierName: receipt.supplierName ?? to.name,
+            amount: money(payAmount),
+            currency,
+            source: 'credit',
+            note: `Avansdan (${from.name})`,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+            paidAt: new Date(),
+          })
+          .returning();
+        await addCreditTx(tx, {
+          businessId,
+          supplierId: to.id,
+          currency,
+          amount: -payAmount,
+          kind: 'payment',
+          supplierPaymentId: payment.id,
+          receiptId: receipt.id,
+          ...actor,
+        });
+        const newPaid = Number(receipt.paidAmount) + payAmount;
+        await tx
+          .update(goodsReceipts)
+          .set({
+            paidAmount: money(newPaid),
+            paymentStatus: paymentStatusOf(
+              newPaid + Number(receipt.returnedAmount),
+              Number(receipt.totalAmount),
+            ),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(goodsReceipts.id, receipt.id),
+              eq(goodsReceipts.businessId, businessId),
+            ),
+          );
+
+        payments.push({
+          receiptId: receipt.id,
+          receiptCreatedAt: receipt.createdAt,
+          amount: payAmount,
+        });
+        left -= pay;
+      }
+
+      return {transferred: amount, payments, advanceLeft: left / 100};
+    });
+  }
+
   /**
    * Cancel a payment made against a receipt.
    *

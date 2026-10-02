@@ -28,6 +28,7 @@ import {CreateCashCategoryDto} from './dto/create-cash-category.dto';
 import {UpdateCashCategoryDto} from './dto/update-cash-category.dto';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
+import {PaySupplierDto} from './dto/pay-supplier.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
@@ -183,6 +184,43 @@ export class ShiftController {
       account,
     );
     return {message: 'Movement recorded', movement};
+  }
+
+  @Post('shifts/:id/supplier-payments')
+  @RequirePermission('cash:movement')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      "Pay a supplier from the till (Ta'minotchiga to'lov): settles their open receipts oldest first, the rest becomes their advance",
+  })
+  @ApiParam({name: 'id', description: 'Shift ID'})
+  async paySupplier(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: PaySupplierDto,
+  ) {
+    return this.shiftService.paySupplier(business.id, id, dto, account);
+  }
+
+  @Get('shifts/supplier-debt/:supplierId')
+  @RequirePermission('cash:movement')
+  @ApiOperation({
+    summary:
+      "A supplier's open receipts, debt and advance in one currency — for the till's payment form",
+  })
+  @ApiParam({name: 'supplierId', description: 'Supplier ID'})
+  @ApiQuery({name: 'currency', required: false, enum: ['UZS', 'USD']})
+  async supplierDebt(
+    @CurrentBusiness() business: IBusiness,
+    @Param('supplierId') supplierId: string,
+    @Query('currency') currency?: string,
+  ) {
+    return this.shiftService.supplierDebt(
+      business.id,
+      supplierId,
+      currency === 'USD' ? 'USD' : 'UZS',
+    );
   }
 
   @Get('shifts/:id/movements')

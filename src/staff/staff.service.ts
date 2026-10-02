@@ -12,11 +12,14 @@ import {
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
 import {hashPassword} from '../utils/password';
+import {hashPin} from '../utils/pin';
 import {SubscriptionService} from '../subscription/subscription.service';
 
-export type StaffView = Omit<Staff, 'password'> & {
+export type StaffView = Omit<Staff, 'password' | 'pinHash'> & {
   roleName: string | null;
   branchName: string | null;
+  /** Whether a till PIN is set. The hash itself never leaves the server here. */
+  hasPin: boolean;
 };
 
 /**
@@ -79,6 +82,8 @@ export interface StaffWriteData {
   hasAccount?: boolean;
   login?: string | null;
   password?: string | null;
+  /** Till PIN (4–6 digits); null removes it. */
+  pin?: string | null;
   roleId?: string | null;
   position?: string | null;
   phone?: string | null;
@@ -151,8 +156,8 @@ export class StaffService {
     roleName: string | null,
     branchName: string | null,
   ): StaffView {
-    const {password: _, ...rest} = member;
-    return {...rest, roleName, branchName};
+    const {password: _, pinHash, ...rest} = member;
+    return {...rest, roleName, branchName, hasPin: pinHash !== null};
   }
 
   async findAll(businessId: string): Promise<StaffView[]> {
@@ -255,14 +260,18 @@ export class StaffService {
 
   async create(businessId: string, data: StaffWriteData): Promise<StaffView> {
     const hasAccount = data.hasAccount ?? false;
+    const login = data.login || null;
+    const pin = data.pin || null;
 
     if (hasAccount) {
-      if (!data.login || !data.password || !data.roleId) {
+      // A login pair, a till PIN, or both — and a login never without its
+      // password.
+      if (!data.roleId || (!login && !pin) || (login && !data.password)) {
         throw new AppException(ErrorCode.STAFF_ACCOUNT_FIELDS_REQUIRED);
       }
       await this.assertSeatAvailable(businessId);
       await this.assertRoleBelongsToBusiness(businessId, data.roleId);
-      await this.assertLoginFree(data.login);
+      if (login) await this.assertLoginFree(login);
     }
 
     const salaryType = data.salaryType ?? 'none';
@@ -272,8 +281,9 @@ export class StaffService {
       name: data.name,
       hasAccount,
       roleId: hasAccount ? (data.roleId as string) : null,
-      login: hasAccount ? (data.login as string) : null,
-      password: hasAccount ? hashPassword(data.password as string) : null,
+      login: hasAccount ? login : null,
+      password: hasAccount && login ? hashPassword(data.password as string) : null,
+      pinHash: hasAccount && pin ? await hashPin(pin) : null,
       isActive: data.isActive ?? true,
       salaryType,
       ...this.salaryColumns({...data, salaryType}, salaryType),
@@ -300,24 +310,41 @@ export class StaffService {
     const accountColumns: Partial<NewStaff> = {};
 
     if (hasAccount) {
-      const login = data.login ?? existing.login;
+      // `null`/'' clears a login (a PIN-only cashier); undefined keeps it.
+      const login =
+        data.login === undefined ? existing.login : data.login || null;
       const roleId = data.roleId ?? existing.roleId;
-      // A brand-new account must arrive with a password; an existing one keeps
-      // its stored hash unless a new password was supplied.
-      if (!login || !roleId || (gainingAccount && !data.password)) {
+      // A login keeps its stored password unless a new one was supplied; a
+      // login that is new on this row must arrive with one. Login and password
+      // are always written together, so an existing login implies a password.
+      const newLogin = !!login && login !== existing.login;
+      const hasPassword = !!data.password || (!!login && !newLogin);
+      const hasPin =
+        data.pin === undefined ? existing.hasPin : !!data.pin;
+      if (
+        !roleId ||
+        (!login && !hasPin) ||
+        (login && !hasPassword) ||
+        (gainingAccount && login && !data.password)
+      ) {
         throw new AppException(ErrorCode.STAFF_ACCOUNT_FIELDS_REQUIRED);
       }
       if (gainingAccount) {
         await this.assertSeatAvailable(businessId, id);
       }
       await this.assertRoleBelongsToBusiness(businessId, roleId);
-      await this.assertLoginFree(login, id);
+      if (login) await this.assertLoginFree(login, id);
 
       accountColumns.hasAccount = true;
       accountColumns.login = login;
       accountColumns.roleId = roleId;
-      if (data.password) {
+      if (!login) {
+        accountColumns.password = null;
+      } else if (data.password) {
         accountColumns.password = hashPassword(data.password);
+      }
+      if (data.pin !== undefined) {
+        accountColumns.pinHash = data.pin ? await hashPin(data.pin) : null;
       }
     } else {
       // Revoking access: clear the credentials so the login lookup can never
@@ -325,6 +352,7 @@ export class StaffService {
       accountColumns.hasAccount = false;
       accountColumns.login = null;
       accountColumns.password = null;
+      accountColumns.pinHash = null;
       accountColumns.roleId = null;
     }
 

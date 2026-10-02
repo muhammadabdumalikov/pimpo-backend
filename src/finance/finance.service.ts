@@ -1244,6 +1244,68 @@ export class FinanceService {
   }
 
   /**
+   * Book till money handed to a supplier ("Ta'minotchiga to'lov"): an expense
+   * on the register's cash account (or the shared non-cash one), tagged as a
+   * supplier payment so the P&L leaves the goods to COGS, and tied to the cash
+   * movement that took it out of the drawer. One row per receipt it settles,
+   * plus one for an advance. Like every till movement it never refuses below
+   * zero — the cash was physically there.
+   */
+  async recordTillSupplierPaymentTx(
+    tx: DbTx,
+    businessId: string,
+    movement: {
+      id: string;
+      shiftId: string;
+      isCash: boolean;
+      currency: string;
+      cashierId: string | null;
+      cashierName: string | null;
+    },
+    register: {id: string; name: string | null},
+    amount: number,
+    note: string,
+  ): Promise<FinancialTransaction> {
+    const account = movement.isCash
+      ? await this.getOrCreateCashAccountTx(
+          tx,
+          businessId,
+          register.id,
+          register.name,
+        )
+      : await this.getOrCreateNoncashAccountTx(tx, businessId);
+
+    const [txn] = await tx
+      .insert(financialTransactions)
+      .values({
+        id: generateId(),
+        businessId,
+        kind: 'expense',
+        source: 'supplier_payment',
+        accountId: account.id,
+        accountName: account.name,
+        isCash: movement.isCash,
+        amount: amount.toFixed(2),
+        currency: movement.currency,
+        note,
+        cashierId: movement.cashierId,
+        cashierName: movement.cashierName,
+        shiftId: movement.shiftId,
+        cashMovementId: movement.id,
+      })
+      .returning();
+
+    await this.applyBalanceDelta(
+      tx,
+      businessId,
+      account.id,
+      movement.currency,
+      -amount,
+    );
+    return txn;
+  }
+
+  /**
    * Record a shift's SALES into the ledger on close (manual movements are
    * already mirrored by recordCashMovementTx, so only sales are added here to
    * avoid double-counting). Cash sales → register cash account; card sales →

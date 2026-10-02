@@ -18,7 +18,12 @@ export type SupplierCreditKind =
   | 'return'
   | 'return_cancel'
   | 'payment'
-  | 'payment_cancel';
+  | 'payment_cancel'
+  // Till money handed to the supplier beyond what their receipts owed (0088).
+  | 'advance'
+  // An advance moved to / from another supplier (related_supplier_*).
+  | 'transfer_out'
+  | 'transfer_in';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -112,6 +117,9 @@ export async function addCreditTx(
     supplierReturnId?: string | null;
     supplierPaymentId?: string | null;
     receiptId?: string | null;
+    /** The other side of a transfer_in / transfer_out. */
+    relatedSupplierId?: string | null;
+    relatedSupplierName?: string | null;
     note?: string | null;
     cashierId?: string | null;
     cashierName?: string | null;
@@ -127,6 +135,8 @@ export async function addCreditTx(
     supplierReturnId: row.supplierReturnId ?? null,
     supplierPaymentId: row.supplierPaymentId ?? null,
     receiptId: row.receiptId ?? null,
+    relatedSupplierId: row.relatedSupplierId ?? null,
+    relatedSupplierName: row.relatedSupplierName ?? null,
     note: row.note ?? null,
     cashierId: row.cashierId ?? null,
     cashierName: row.cashierName ?? null,

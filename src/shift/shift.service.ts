@@ -16,6 +16,7 @@ import {
   saleReturns,
   staff,
   businesses,
+  suppliers,
   type CashRegister,
   type CashShift,
   type CashMovement,
@@ -24,8 +25,10 @@ import {eq, and, desc, ne, getTableColumns} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
+import {ReceiptService} from '../receipt/receipt.service';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
+import {PaySupplierDto} from './dto/pay-supplier.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import {
   computeReconciliation,
@@ -57,11 +60,16 @@ export interface ShiftReport {
 // (Operation categories now live in the shared finance categories table.)
 const DEFAULT_REGISTER_NAME = 'Asosiy kassa';
 
+// Category name snapshotted onto a till payment to a supplier. It is not a
+// finance category: the money is booked as supplier payments, not an expense.
+const TILL_SUPPLIER_PAYMENT = "Ta'minotchiga to'lov";
+
 @Injectable()
 export class ShiftService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
+    private readonly receiptService: ReceiptService,
     private readonly branchService: BranchService,
     private readonly telegramNotify: TelegramNotifyService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
@@ -524,6 +532,91 @@ export class ShiftService {
     // Post-commit, fire-and-forget: notify the linked chats of the cash in/out.
     this.telegramNotify.notifyCashOperation(businessId, movement);
     return movement;
+  }
+
+  /**
+   * "Ta'minotchiga to'lov": till money handed to a supplier.
+   *
+   * The drawer sees an ordinary cash-out movement, so the shift's count still
+   * reconciles. The money is NOT mirrored as an expense the way addMovement
+   * does it: ReceiptService settles the supplier's open receipts with it,
+   * oldest first, and keeps the rest as their advance. Cash movement, supplier
+   * payments, receipts and advance commit together or not at all.
+   */
+  async paySupplier(
+    businessId: string,
+    shiftId: string,
+    dto: PaySupplierDto,
+    account?: IAccount,
+  ) {
+    const shift = await this.loadOpenShift(businessId, shiftId);
+    const cashier = await this.resolveCashier(account);
+    const isCash = dto.isCash ?? true;
+    const currency = dto.currency ?? 'UZS';
+    const reason = dto.reason?.trim() || null;
+
+    const result = await this.dbService.db.transaction(async (tx) => {
+      // Read, not locked: the receipts are locked before the supplier row —
+      // the order every credit write keeps — and payFromTillTx takes both.
+      const [supplier] = await tx
+        .select({id: suppliers.id, name: suppliers.name})
+        .from(suppliers)
+        .where(
+          and(
+            eq(suppliers.id, dto.supplierId),
+            eq(suppliers.businessId, businessId),
+          ),
+        )
+        .limit(1);
+      if (!supplier) throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+
+      const [movement] = await tx
+        .insert(cashMovements)
+        .values({
+          id: generateId(),
+          businessId,
+          shiftId: shift.id,
+          registerId: shift.registerId,
+          type: 'out',
+          isCash,
+          amount: String(dto.amount),
+          currency,
+          categoryId: null,
+          categoryName: TILL_SUPPLIER_PAYMENT,
+          reason,
+          cashierId: cashier.id,
+          cashierName: cashier.name,
+          supplierId: supplier.id,
+          supplierName: supplier.name,
+        })
+        .returning();
+
+      const settled = await this.receiptService.payFromTillTx(tx, businessId, {
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        amount: dto.amount,
+        reason,
+        movement: {
+          id: movement.id,
+          shiftId: movement.shiftId,
+          isCash: movement.isCash,
+          currency: movement.currency,
+          cashierId: movement.cashierId,
+          cashierName: movement.cashierName,
+        },
+        register: {id: shift.registerId, name: shift.registerName},
+      });
+
+      return {movement, ...settled};
+    });
+
+    this.telegramNotify.notifyCashOperation(businessId, result.movement);
+    return result;
+  }
+
+  /** The supplier's open debt and advance, for the till's payment form. */
+  async supplierDebt(businessId: string, supplierId: string, currency: string) {
+    return this.receiptService.tillDebt(businessId, supplierId, currency);
   }
 
   async getShiftMovements(

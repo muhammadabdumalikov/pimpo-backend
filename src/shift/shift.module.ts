@@ -6,6 +6,7 @@ import {BusinessModule} from '../business/business.module';
 import {FinanceModule} from '../finance/finance.module';
 import {BranchModule} from '../branch/branch.module';
 import {TelegramModule} from '../telegram/telegram.module';
+import {ReceiptModule} from '../receipt/receipt.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import {TelegramModule} from '../telegram/telegram.module';
     FinanceModule,
     BranchModule,
     TelegramModule,
+    ReceiptModule,
   ],
   controllers: [ShiftController],
   providers: [ShiftService],

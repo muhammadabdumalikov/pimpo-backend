@@ -413,6 +413,7 @@ export class SupplierService {
           supplierPaymentId: supplierCredits.supplierPaymentId,
           receiptId: supplierCredits.receiptId,
           receiptDate: goodsReceipts.createdAt,
+          relatedSupplierName: supplierCredits.relatedSupplierName,
           note: supplierCredits.note,
           cashierName: supplierCredits.cashierName,
           createdAt: supplierCredits.createdAt,

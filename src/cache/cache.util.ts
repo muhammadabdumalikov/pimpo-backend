@@ -97,6 +97,9 @@ export const TTL = {
   // Provider model catalogue. Long: vendors ship models weekly at most, and the
   // settings page has an explicit refresh button for the impatient.
   AI_MODELS: 60 * 60 * 1000, // 1h
+  // Wrong-PIN counter per (device, employee) on the desktop till. Outlives the
+  // lock it can trigger, so the count does not reset while a guesser waits.
+  DEVICE_PIN_ATTEMPTS: 15 * 60 * 1000, // 15m
 } as const;
 
 /** Stable, compact suffix for endpoints whose result depends on query params. */
@@ -201,4 +204,8 @@ export const CacheKeys = {
   /** Model catalogue for a business's configured provider. */
   aiModels: (businessId: string, provider: string) =>
     `ai:models:${businessId}:${provider}`,
+
+  /** Wrong-PIN attempts for one employee on one desktop till. */
+  devicePinAttempts: (deviceId: string, staffId: string) =>
+    `device:pin:${deviceId}:${staffId}`,
 } as const;

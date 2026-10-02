@@ -6,6 +6,7 @@ import { BusinessModule } from 'src/business/business.module';
 import { SubscriptionModule } from '../subscription/subscription.module';
 import { FeatureModule } from '../feature/feature.module';
 import { DefectiveModule } from '../defective/defective.module';
+import { ReceiptModule } from '../receipt/receipt.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { DefectiveModule } from '../defective/defective.module';
     SubscriptionModule,
     FeatureModule,
     DefectiveModule,
+    ReceiptModule,
   ],
   controllers: [SupplierController],
   providers: [SupplierService],

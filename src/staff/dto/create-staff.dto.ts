@@ -10,8 +10,16 @@ import {
   Max,
   MinLength,
   MaxLength,
+  Matches,
   ValidateIf,
 } from 'class-validator';
+import {PIN_PATTERN} from '../../utils/pin';
+
+// An account holder signs in with a login+password, a till PIN, or both. The
+// login pair is required unless a PIN is given; once a login is given its
+// password is required too.
+const needsLoginPair = (o: CreateStaffDto) =>
+  o.hasAccount === true && (!o.pin || o.login !== undefined);
 
 export class CreateStaffDto {
   @ApiProperty({ description: 'Employee display name', example: 'Ali Valiyev' })
@@ -32,21 +40,22 @@ export class CreateStaffDto {
   hasAccount?: boolean;
 
   @ApiProperty({
-    description: 'Login username (globally unique). Required when hasAccount.',
+    description:
+      'Login username (globally unique). Required when hasAccount and no PIN.',
     example: 'ali_cashier',
     required: false,
   })
-  @ValidateIf((o: CreateStaffDto) => o.hasAccount === true)
+  @ValidateIf(needsLoginPair)
   @IsString()
   @MinLength(3)
   @MaxLength(100)
   login?: string;
 
   @ApiProperty({
-    description: 'Password. Required when hasAccount.',
+    description: 'Password. Required together with login.',
     required: false,
   })
-  @ValidateIf((o: CreateStaffDto) => o.hasAccount === true)
+  @ValidateIf(needsLoginPair)
   @IsString()
   @MinLength(6)
   password?: string;
@@ -59,6 +68,17 @@ export class CreateStaffDto {
   @IsString()
   @MinLength(1)
   roleId?: string;
+
+  @ApiProperty({
+    description:
+      'Till PIN for the desktop app, 4–6 digits. Only an account holder gets one.',
+    example: '4821',
+    required: false,
+  })
+  @IsString()
+  @Matches(PIN_PATTERN)
+  @IsOptional()
+  pin?: string;
 
   @ApiProperty({
     description: 'Job title (Sotuvchi, Omborchi…) — display only',

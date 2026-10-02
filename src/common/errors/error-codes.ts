@@ -228,6 +228,7 @@ export enum ErrorCode {
   DEFECTIVE_CREDIT_ALREADY_USED = 'DEFECTIVE_CREDIT_ALREADY_USED',
   SUPPLIER_CREDIT_INSUFFICIENT = 'SUPPLIER_CREDIT_INSUFFICIENT',
   SUPPLIER_CREDIT_NO_SUPPLIER = 'SUPPLIER_CREDIT_NO_SUPPLIER',
+  SUPPLIER_ADVANCE_SAME_SUPPLIER = 'SUPPLIER_ADVANCE_SAME_SUPPLIER',
 
   // ── Stock transfer (filiallararo ko'chirish) ───────────────────────────────
   TRANSFER_EMPTY = 'TRANSFER_EMPTY',
@@ -292,6 +293,22 @@ export enum ErrorCode {
   AI_INVOICE_UNREADABLE = 'AI_INVOICE_UNREADABLE',
   INVOICE_SCAN_NOT_FOUND = 'INVOICE_SCAN_NOT_FOUND',
   INVOICE_SCAN_LIMIT = 'INVOICE_SCAN_LIMIT',
+
+  // ── Desktop till devices (pimpo-desktop) ───────────────────────────────────
+  // No X-Device-Token header on a device-only endpoint.
+  DEVICE_TOKEN_MISSING = 'DEVICE_TOKEN_MISSING',
+  // The token matches no device (never issued, or the row is gone).
+  DEVICE_TOKEN_INVALID = 'DEVICE_TOKEN_INVALID',
+  // The device was unlinked by an admin or replaced by a re-bind.
+  DEVICE_REVOKED = 'DEVICE_REVOKED',
+  DEVICE_NOT_FOUND = 'DEVICE_NOT_FOUND',
+  // Binding asked for a register that is not this business's.
+  DEVICE_REGISTER_NOT_FOUND = 'DEVICE_REGISTER_NOT_FOUND',
+  PIN_INVALID = 'PIN_INVALID',
+  // Too many wrong PINs for this employee on this device; params.retryAfterSec.
+  PIN_LOCKED = 'PIN_LOCKED',
+  // The employee has no PIN, so the till cannot sign them in.
+  PIN_NOT_SET = 'PIN_NOT_SET',
 }
 
 export interface ErrorDefinition {
@@ -799,6 +816,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.NOT_FOUND,
     message: 'Payment not found',
   },
+  [ErrorCode.SUPPLIER_ADVANCE_SAME_SUPPLIER]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Choose another supplier to move the advance to',
+  },
   // Paying a receipt that owes nothing. What is owed is the total less what
   // was paid AND what was returned: goods sent back settle the debt as surely
   // as money does.
@@ -1261,6 +1282,40 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message:
       'You already have {max} unfinished scans. Finish or discard one first.',
+  },
+
+  // Desktop till devices
+  [ErrorCode.DEVICE_TOKEN_MISSING]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Device token is required',
+  },
+  [ErrorCode.DEVICE_TOKEN_INVALID]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Device token is invalid',
+  },
+  [ErrorCode.DEVICE_REVOKED]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'This device has been unlinked',
+  },
+  [ErrorCode.DEVICE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Device not found',
+  },
+  [ErrorCode.DEVICE_REGISTER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Register not found',
+  },
+  [ErrorCode.PIN_INVALID]: {
+    status: HttpStatus.UNAUTHORIZED,
+    message: 'Wrong PIN',
+  },
+  [ErrorCode.PIN_LOCKED]: {
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    message: 'Too many wrong PINs. Try again in {retryAfterSec} seconds',
+  },
+  [ErrorCode.PIN_NOT_SET]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This employee has no PIN',
   },
 };
 
