@@ -1,0 +1,11 @@
+-- Price rounding: every selling price computed from a percent (the house
+-- markup, a % typed next to a price, a bulk markup) is rounded UP to this step
+-- in the client forms, so 10 333 + 20% reads 12 400 instead of 12 399.
+--
+-- Idempotent; safe to re-run. Run BEFORE deploying the backend.
+--
+--   price_rounding_step  so'm: 0 | 100 | 500 | 1000. 0 = no rounding.
+--                        Every existing shop starts on 100 — nobody wants a
+--                        12 399 price, and saved prices are never touched
+--                        (only prices computed from now on are rounded).
+ALTER TABLE "receipt_settings" ADD COLUMN IF NOT EXISTS "price_rounding_step" integer DEFAULT 100 NOT NULL;

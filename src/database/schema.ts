@@ -983,6 +983,11 @@ export const receiptSettings = pgTable('receipt_settings', {
     precision: 6,
     scale: 2,
   }),
+  // Step (so'm) every selling price computed from a percent is rounded UP to,
+  // so 10 333 + 20% reads 12 400, not 12 399. 0 | 100 | 500 | 1000; 0 = off.
+  // The rounding itself happens in the client forms — typed amounts are never
+  // rounded, and nothing here touches saved prices.
+  priceRoundingStep: integer('price_rounding_step').notNull().default(100),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

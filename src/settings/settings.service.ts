@@ -29,6 +29,9 @@ const DEFAULTS = {
   priceIncreaseMode: 'KEEP_OLD',
   // No house markup until someone sets one — selling prices stay hand-typed.
   defaultMarkupPercent: null as string | null,
+  // %-computed selling prices round up to the next 100 so'm unless the shop
+  // picks another step (or 0 to turn it off).
+  priceRoundingStep: 100,
 };
 
 // A shop that never opened the label page still prints: 58x40 mm stock with
@@ -96,6 +99,7 @@ export class SettingsService {
           costingMethod: DEFAULTS.costingMethod,
           priceIncreaseMode: DEFAULTS.priceIncreaseMode,
           defaultMarkupPercent: DEFAULTS.defaultMarkupPercent,
+          priceRoundingStep: DEFAULTS.priceRoundingStep,
           updatedAt: new Date(),
         };
       },
@@ -126,6 +130,7 @@ export class SettingsService {
           : dto.defaultMarkupPercent === null
             ? null
             : String(dto.defaultMarkupPercent),
+      priceRoundingStep: dto.priceRoundingStep ?? current.priceRoundingStep,
     };
 
     await this.dbService.db

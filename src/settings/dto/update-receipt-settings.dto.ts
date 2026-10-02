@@ -11,6 +11,9 @@ import {
   ValidateIf,
 } from 'class-validator';
 
+/** Rounding steps a shop can pick for %-computed selling prices (0 = off). */
+const PRICE_ROUNDING_STEPS = [0, 100, 500, 1000];
+
 export class UpdateReceiptSettingsDto {
   @ApiPropertyOptional({ description: 'Display name of the receipt template' })
   @IsOptional()
@@ -76,4 +79,15 @@ export class UpdateReceiptSettingsDto {
   @Min(0)
   @Max(1000)
   defaultMarkupPercent?: number | null;
+
+  @ApiPropertyOptional({
+    description:
+      "Step (so'm) every selling price computed from a percent is rounded up " +
+      'to. 0 turns rounding off; typed amounts are never rounded.',
+    enum: PRICE_ROUNDING_STEPS,
+    example: 100,
+  })
+  @IsOptional()
+  @IsIn(PRICE_ROUNDING_STEPS)
+  priceRoundingStep?: number;
 }
