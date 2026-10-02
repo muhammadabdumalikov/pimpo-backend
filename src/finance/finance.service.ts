@@ -429,6 +429,25 @@ export class FinanceService {
     });
   }
 
+  /**
+   * The balance check of one debit, asked up front for money that will leave
+   * in several legs (a supplier payment split over receipts): refused, with
+   * the same dialog details, if the whole sum doesn't fit — not halfway
+   * through on whichever leg ran out. Locks the balance row until the
+   * caller's transaction ends.
+   */
+  async assertAccountCoversTx(
+    tx: DbTx,
+    businessId: string,
+    accountId: string,
+    currency: string,
+    amount: number,
+    allowNegative?: boolean,
+  ): Promise<void> {
+    const account = await this.loadAccount(businessId, accountId, tx);
+    await this.assertCoversTx(tx, account, currency, amount, allowNegative);
+  }
+
   // The hidden account "Tashqi mablag'" pairs live on — one per business
   // (partial unique index), created on first use.
   private async getOrCreateExternalAccountTx(

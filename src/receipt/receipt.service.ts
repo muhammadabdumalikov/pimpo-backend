@@ -1774,72 +1774,63 @@ export class ReceiptService {
   }
 
   /**
-   * Settle a supplier's debt with till money, inside the shift's transaction.
+   * Pay a supplier "towards what we owe" rather than one nakladnoy: `open`,
+   * their unpaid receipts (locked, oldest first), are paid in order, each as
+   * an ordinary supplier payment — it reads, and cancels, exactly like one
+   * entered on the nakladnoy page — and whatever is left becomes their
+   * advance ("Avans"), spent later with "Avansdan". `book` writes the money
+   * leg (the till's or a Moliya account's) and returns its ledger row; every
+   * leg is a supplier payment, so none of it reaches the P&L as an expense:
+   * the goods' cost arrives there as COGS when they sell.
    *
-   * Their open receipts in the movement's currency are paid oldest first, each
-   * as an ordinary supplier payment — it reads, and cancels, exactly like one
-   * entered on the nakladnoy page. Whatever is left over becomes their advance
-   * ("Avans"), spent later with "Avansdan". Every leg is a supplier-payment
-   * ledger row tied to the cash movement, so none of it reaches the P&L as an
-   * expense: the goods' cost arrives there as COGS when they sell.
-   *
-   * Oldest first is what an agent means by "here is money towards what we
-   * owe", and it leaves the open debt on the newest goods. Receipts are locked
-   * before the supplier row, the order addPayment's credit path keeps, so the
-   * two can never wait on each other in a circle.
+   * Oldest first is what "here is money towards what we owe" means, and it
+   * leaves the open debt on the newest goods. The supplier row is locked only
+   * for the advance, after the receipts — the order addPayment's credit path
+   * keeps, so the two can never wait on each other in a circle.
    */
-  async payFromTillTx(
+  private async settleOldestFirstTx(
     tx: DbTx,
     businessId: string,
+    open: GoodsReceipt[],
     p: {
       supplierId: string;
       supplierName: string;
+      currency: string;
       amount: number;
-      reason: string | null;
-      movement: {
+      cashierId: string | null;
+      cashierName: string | null;
+      /** On each supplier_payments row. */
+      paymentNote: string | null;
+      /** On the advance's credit row. */
+      advanceNote: string | null;
+      book: (
+        amount: number,
+        advance: boolean,
+      ) => Promise<{
         id: string;
-        shiftId: string;
-        isCash: boolean;
-        currency: string;
-        cashierId: string | null;
-        cashierName: string | null;
-      };
-      register: {id: string; name: string | null};
+        accountId: string | null;
+        accountName: string | null;
+      }>;
     },
   ): Promise<{
     payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[];
     advance: number;
   }> {
-    const {movement} = p;
-    const currency = movement.currency;
-    const suffix = p.reason ? ` — ${p.reason}` : '';
-    const open = await this.openReceipts(
-      tx,
-      businessId,
-      p.supplierId,
-      currency,
-      true,
-    );
-
     // Whole cents throughout: USD receipts carry fractions, and the last
     // receipt must close exactly, not at 99.99999.
     let left = Math.round(p.amount * 100);
-    const payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[] =
-      [];
+    const payments: {
+      receiptId: string;
+      receiptCreatedAt: Date;
+      amount: number;
+    }[] = [];
     for (const receipt of open) {
       if (left <= 0) break;
       const cents = Math.min(left, Math.round(outstandingOf(receipt) * 100));
       if (cents <= 0) continue;
       const amount = cents / 100;
 
-      const txn = await this.financeService.recordTillSupplierPaymentTx(
-        tx,
-        businessId,
-        movement,
-        p.register,
-        amount,
-        `Yetkazib beruvchiga to'lov (kassa): ${p.supplierName}${suffix}`,
-      );
+      const txn = await p.book(amount, false);
       await tx.insert(supplierPayments).values({
         id: generateId(),
         businessId,
@@ -1847,13 +1838,13 @@ export class ReceiptService {
         supplierId: p.supplierId,
         supplierName: receipt.supplierName ?? p.supplierName,
         amount: money(amount),
-        currency,
+        currency: p.currency,
         accountId: txn.accountId,
         accountName: txn.accountName,
         financialTransactionId: txn.id,
-        note: `Kassadan${suffix}`,
-        cashierId: movement.cashierId,
-        cashierName: movement.cashierName,
+        note: p.paymentNote,
+        cashierId: p.cashierId,
+        cashierName: p.cashierName,
         paidAt: new Date(),
       });
       const newPaid = Number(receipt.paidAmount) + amount;
@@ -1885,27 +1876,169 @@ export class ReceiptService {
     const advance = left / 100;
     if (left > 0) {
       await lockSupplierTx(tx, businessId, p.supplierId);
-      await this.financeService.recordTillSupplierPaymentTx(
-        tx,
-        businessId,
-        movement,
-        p.register,
-        advance,
-        `Yetkazib beruvchiga avans (kassa): ${p.supplierName}${suffix}`,
-      );
+      await p.book(advance, true);
       await addCreditTx(tx, {
         businessId,
         supplierId: p.supplierId,
-        currency,
+        currency: p.currency,
         amount: advance,
         kind: 'advance',
-        note: p.reason,
-        cashierId: movement.cashierId,
-        cashierName: movement.cashierName,
+        note: p.advanceNote,
+        cashierId: p.cashierId,
+        cashierName: p.cashierName,
       });
     }
 
     return {payments, advance: Math.max(0, advance)};
+  }
+
+  /**
+   * Settle a supplier's debt with till money ("Ta'minotchiga to'lov" on the
+   * kassa), inside the shift's transaction. Every leg is tied to the cash
+   * movement that took the money out of the drawer.
+   */
+  async payFromTillTx(
+    tx: DbTx,
+    businessId: string,
+    p: {
+      supplierId: string;
+      supplierName: string;
+      amount: number;
+      reason: string | null;
+      movement: {
+        id: string;
+        shiftId: string;
+        isCash: boolean;
+        currency: string;
+        cashierId: string | null;
+        cashierName: string | null;
+      };
+      register: {id: string; name: string | null};
+    },
+  ): Promise<{
+    payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[];
+    advance: number;
+  }> {
+    const {movement} = p;
+    const suffix = p.reason ? ` — ${p.reason}` : '';
+    const open = await this.openReceipts(
+      tx,
+      businessId,
+      p.supplierId,
+      movement.currency,
+      true,
+    );
+    return this.settleOldestFirstTx(tx, businessId, open, {
+      supplierId: p.supplierId,
+      supplierName: p.supplierName,
+      currency: movement.currency,
+      amount: p.amount,
+      cashierId: movement.cashierId,
+      cashierName: movement.cashierName,
+      paymentNote: `Kassadan${suffix}`,
+      advanceNote: p.reason,
+      book: (amount, advance) =>
+        this.financeService.recordTillSupplierPaymentTx(
+          tx,
+          businessId,
+          movement,
+          p.register,
+          amount,
+          `${advance ? 'Yetkazib beruvchiga avans' : "Yetkazib beruvchiga to'lov"} (kassa): ${p.supplierName}${suffix}`,
+        ),
+    });
+  }
+
+  /**
+   * "Ta'minotchiga to'lov" from Moliya: a shop account — or the owner's own
+   * pocket, "Tashqi mablag'" — pays a supplier towards what we owe, settled
+   * as the till's version is. From Tashqi mablag' each leg also books the
+   * owner's capital kirim, which is how money the owner put straight into
+   * goods reaches the capital figure instead of a fake loss.
+   *
+   * The whole sum is checked against the account once, after the receipts
+   * are locked (receipt → balance → supplier, the order addPayment keeps):
+   * one refusal with the full shortfall, not one halfway through the legs.
+   */
+  async payFromAccount(
+    businessId: string,
+    supplierId: string,
+    dto: {
+      accountId?: string;
+      external?: boolean;
+      allowNegative?: boolean;
+      amount: number;
+      currency?: string;
+      note?: string;
+    },
+    account?: IAccount,
+  ): Promise<{
+    payments: {receiptId: string; receiptCreatedAt: Date; amount: number}[];
+    advance: number;
+  }> {
+    const cashier = await this.resolveCashier(account);
+    const currency = dto.currency === 'USD' ? 'USD' : 'UZS';
+    const note = dto.note?.trim() || null;
+    const suffix = note ? ` — ${note}` : '';
+
+    return this.dbService.db.transaction(async (tx) => {
+      const [supplier] = await tx
+        .select({id: suppliers.id, name: suppliers.name})
+        .from(suppliers)
+        .where(
+          and(
+            eq(suppliers.id, supplierId),
+            eq(suppliers.businessId, businessId),
+          ),
+        )
+        .limit(1);
+      if (!supplier) throw new AppException(ErrorCode.SUPPLIER_NOT_FOUND);
+
+      const open = await this.openReceipts(
+        tx,
+        businessId,
+        supplierId,
+        currency,
+        true,
+      );
+      if (!dto.external) {
+        if (!dto.accountId) {
+          throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
+        }
+        await this.financeService.assertAccountCoversTx(
+          tx,
+          businessId,
+          dto.accountId,
+          currency,
+          dto.amount,
+          dto.allowNegative,
+        );
+      }
+
+      return this.settleOldestFirstTx(tx, businessId, open, {
+        supplierId,
+        supplierName: supplier.name,
+        currency,
+        amount: dto.amount,
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+        paymentNote: note,
+        advanceNote: note,
+        book: (amount, advance) =>
+          this.financeService.recordExpenseTx(tx, businessId, {
+            source: 'supplier_payment',
+            accountId: dto.accountId,
+            external: dto.external,
+            // The whole sum was checked (or confirmed) above.
+            allowNegative: true,
+            amount,
+            currency,
+            note: `${advance ? 'Yetkazib beruvchiga avans' : "Yetkazib beruvchiga to'lov"}: ${supplier.name}${suffix}`,
+            cashierId: cashier.id,
+            cashierName: cashier.name,
+          }),
+      });
+    });
   }
 
   /**

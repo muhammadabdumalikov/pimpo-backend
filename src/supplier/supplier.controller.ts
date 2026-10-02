@@ -31,6 +31,7 @@ import {IAccount, IBusiness} from '../business/types';
 import {CreateSupplierDto} from './dto/create-supplier.dto';
 import {UpdateSupplierDto} from './dto/update-supplier.dto';
 import {TransferAdvanceDto} from './dto/transfer-advance.dto';
+import {PaySupplierFromAccountDto} from './dto/pay-supplier-from-account.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import {FeatureGuard} from '../feature/feature.guard';
@@ -245,6 +246,47 @@ export class SupplierController {
   @ApiParam({name: 'id', description: 'Supplier ID'})
   @ApiQuery({name: 'currency', required: false, enum: ['UZS', 'USD']})
   async openDebt(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('currency') currency?: string,
+  ) {
+    return this.receiptService.tillDebt(
+      business.id,
+      id,
+      currency === 'USD' ? 'USD' : 'UZS',
+    );
+  }
+
+  // "Ta'minotchiga to'lov" in Moliya. finance:manage, the permission of the
+  // form it lives in: asking for receipt:pay too would send whoever lacks it
+  // back to booking goods money as an expense — the fake loss this replaces.
+  @Post(':id/finance-payments')
+  @RequirePermission('finance:manage')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary:
+      "Pay a supplier from a Moliya account or Tashqi mablag': settles their open receipts oldest first, the rest becomes their advance",
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  async payFromAccount(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: PaySupplierFromAccountDto,
+  ) {
+    return this.receiptService.payFromAccount(business.id, id, dto, account);
+  }
+
+  // The same figures as open-debt, for the Moliya form (finance:manage).
+  @Get(':id/finance-debt')
+  @RequirePermission('finance:manage')
+  @ApiOperation({
+    summary:
+      "A supplier's open receipts, debt and advance in one currency — for Moliya's payment form",
+  })
+  @ApiParam({name: 'id', description: 'Supplier ID'})
+  @ApiQuery({name: 'currency', required: false, enum: ['UZS', 'USD']})
+  async financeDebt(
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
     @Query('currency') currency?: string,
