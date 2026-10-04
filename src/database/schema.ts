@@ -12,7 +12,7 @@ import {
   primaryKey,
   index,
 } from 'drizzle-orm/pg-core';
-import {relations, desc, sql} from 'drizzle-orm';
+import {relations, sql} from 'drizzle-orm';
 // Type-only: the scale barcode layout lives with its parser (it is used far
 // from the database), and this import is erased at compile time.
 import type {ScaleBarcodeFormat} from '../common/weight-barcode';
@@ -233,14 +233,20 @@ export const products = pgTable(
   },
   (table) => ({
     // The catalogue list: newest-first, keyset-paginated (common/cursor.ts).
-    // Partial on is_active because the list never shows archived products.
-    // Created by hand as 0075_pagination_indexes.sql (CONCURRENTLY, with the
-    // DESC ordering and the WHERE — none of which this builder emits).
-    businessCreatedIdx: index('products_business_created_idx').on(
+    // Partial on is_active because the list never shows archived products (0075).
+    businessCreatedIdx: index('products_business_created_idx')
+      .on(table.businessId, table.createdAt.desc().nullsFirst(), table.id.desc().nullsFirst())
+      .where(sql`${table.isActive}`),
+    // The per-branch catalogue snapshot a stock-take runs (0031).
+    businessBranchIdx: index('products_business_branch_idx').on(
       table.businessId,
-      desc(table.createdAt),
-      desc(table.id),
+      table.branchId,
     ),
+    // A scale PLU names one product per business; products without one are
+    // unconstrained (0066).
+    businessPluUq: uniqueIndex('products_business_plu_uniq')
+      .on(table.businessId, table.plu)
+      .where(sql`${table.plu} IS NOT NULL`),
     // One barcode, one card — per business, ACTIVE cards only (a deleted card
     // must not hold a barcode out of circulation), blanks excluded. Without it
     // a scan is a coin toss between the cards that share the code. Enforced in
@@ -305,6 +311,12 @@ export const mxikClassifier = pgTable(
   },
   (table) => ({
     barcodeIdx: index('mxik_classifier_barcode_idx').on(table.barcode),
+    // Fuzzy name search in the product form's MXIK picker. Needs the pg_trgm
+    // extension (0064 creates it).
+    nameTrgmIdx: index('mxik_classifier_name_trgm_idx').using(
+      'gin',
+      table.name.op('gin_trgm_ops'),
+    ),
   }),
 );
 
@@ -356,14 +368,15 @@ export const users = pgTable(
       table.businessId,
     ),
     // The customers list (/loyalty/customers): richest first, then signup date,
-    // keyset-paginated. Created by hand as 0075_pagination_indexes.sql, which
-    // also carries the DESC ordering and the `WHERE is_active`.
-    businessBonusIdx: index('users_business_bonus_idx').on(
-      table.businessId,
-      desc(table.bonusBalance),
-      desc(table.createdAt),
-      desc(table.id),
-    ),
+    // keyset-paginated (0075). Partial: the list never shows archived customers.
+    businessBonusIdx: index('users_business_bonus_idx')
+      .on(
+        table.businessId,
+        table.bonusBalance.desc().nullsFirst(),
+        table.createdAt.desc().nullsFirst(),
+        table.id.desc().nullsFirst(),
+      )
+      .where(sql`${table.isActive}`),
   }),
 );
 
@@ -523,12 +536,16 @@ export const orders = pgTable(
       table.telegramUserId,
       table.createdAt,
     ),
-    // The sales list (/orders): newest-first, keyset-paginated. Created by hand
-    // as 0075_pagination_indexes.sql, where the DESC ordering lives.
+    // The sales list (/orders): newest-first, keyset-paginated (0075).
     businessCreatedIdx: index('orders_business_created_idx').on(
       table.businessId,
-      desc(table.createdAt),
-      desc(table.id),
+      table.createdAt.desc().nullsFirst(),
+      table.id.desc().nullsFirst(),
+    ),
+    // Per-branch sales reporting (0026).
+    businessBranchIdx: index('orders_business_branch_idx').on(
+      table.businessId,
+      table.branchId,
     ),
   }),
 );
@@ -915,10 +932,11 @@ export const productPriceHistory = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
+    // One product's price history, newest first.
     productIdx: index('product_price_history_product_idx').on(
       table.businessId,
       table.productId,
-      table.createdAt,
+      table.createdAt.desc().nullsFirst(),
     ),
   }),
 );
@@ -1088,6 +1106,16 @@ export const labelTemplates = pgTable(
   },
   (table) => ({
     businessIdx: index('label_templates_business_idx').on(table.businessId),
+    // At most one default per business: "which label do I print?" must never
+    // have two answers, even under two concurrent requests.
+    oneDefaultIdx: uniqueIndex('label_templates_one_default_idx')
+      .on(table.businessId)
+      .where(sql`${table.isDefault}`),
+    // Template names are unique per shop, case-insensitively.
+    businessNameIdx: uniqueIndex('label_templates_business_name_idx').on(
+      table.businessId,
+      sql`lower(${table.name})`,
+    ),
   }),
 );
 
@@ -1116,6 +1144,9 @@ export const receiptTemplates = pgTable('receipt_templates', {
     .notNull()
     .default(false),
   showPoweredBy: boolean('show_powered_by').notNull().default(true),
+  // Thermal roll width the till prints on (58 | 80), so the editor preview and
+  // the paper share one layout.
+  paperWidthMm: integer('paper_width_mm').notNull().default(80),
   // Info-block fields, in display order, each toggleable:
   // [{ key:'storeName', enabled:true }, { key:'date', enabled:true }, ...].
   infoFields: jsonb('info_fields'),
@@ -1253,7 +1284,12 @@ export const accounts = pgTable('accounts', {
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  // One "Tashqi" (external) account per business (0079).
+  businessExternalUq: uniqueIndex('accounts_business_external_uq')
+    .on(table.businessId)
+    .where(sql`${table.type} = 'external'`),
+}));
 
 // Current balance per account × currency. Updated atomically inside the same
 // db.transaction as each financial_transaction write.
@@ -1354,6 +1390,10 @@ export const financialTransactions = pgTable(
       table.createdAt,
     ),
     accountIdx: index('financial_transactions_account_idx').on(table.accountId),
+    // The other half of a paired entry (transfer / storno / external), 0079.
+    pairIdx: index('financial_transactions_pair_idx')
+      .on(table.pairId)
+      .where(sql`${table.pairId} IS NOT NULL`),
   }),
 );
 
@@ -1414,14 +1454,16 @@ export const payrollEntries = pgTable(
       table.businessId,
       table.createdAt,
     ),
-    // Serves "which employees are already accrued for this month". The
-    // per-staff uniqueness for that same month is enforced by a PARTIAL unique
-    // index (accrual rows only) created in the migration, since Drizzle cannot
-    // express a WHERE clause on a unique index here.
+    // Serves "which employees are already accrued for this month".
     businessPeriodIdx: index('payroll_entries_business_period_idx').on(
       table.businessId,
       table.periodMonth,
     ),
+    // Re-running a month's accrual must never double-pay: one accrual row per
+    // (staff, month). Partial so payments/advances stay unconstrained.
+    accrualPeriodUq: uniqueIndex('payroll_entries_accrual_period_uq')
+      .on(table.staffId, table.periodMonth)
+      .where(sql`${table.type} = 'accrual'`),
   }),
 );
 
@@ -2107,7 +2149,9 @@ export const subscriptionDiscounts = pgTable('subscription_discounts', {
   validUntil: timestamp('valid_until', {withTimezone: true}),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  businessIdx: index('subscription_discounts_business_idx').on(table.businessId),
+}));
 
 export const billingProfilesRelations = relations(billingProfiles, ({one}) => ({
   business: one(businesses, {

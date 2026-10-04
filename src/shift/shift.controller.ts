@@ -29,6 +29,7 @@ import {UpdateCashCategoryDto} from './dto/update-cash-category.dto';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
 import {PaySupplierDto} from './dto/pay-supplier.dto';
+import {QueryCashMovementsDto} from './dto/query-cash-movements.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
@@ -221,6 +222,20 @@ export class ShiftController {
       supplierId,
       currency === 'USD' ? 'USD' : 'UZS',
     );
+  }
+
+  // Kassa operatsiyalari. Read like the rest of the kassa (shift history,
+  // reports): any signed-in account of the business.
+  @Get('cash-movements')
+  @ApiOperation({
+    summary:
+      'Cash movements (kirim/chiqim) across shifts, filtered and paginated, with totals of all that match',
+  })
+  async listMovements(
+    @CurrentBusiness() business: IBusiness,
+    @Query() query: QueryCashMovementsDto,
+  ) {
+    return this.shiftService.listMovements(business.id, query);
   }
 
   @Get('shifts/:id/movements')

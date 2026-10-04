@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Pre-push: a push to main deploys, and the deploy applies drizzle/*.sql before
+# the new server starts. When the push touches the database, prove first that
+#   1. schema.ts and the migrations agree        pnpm db:check (local only)
+#   2. the pending SQL succeeds on real data     pnpm db:migrate:verify — run on
+#      DATABASE_URL inside a transaction that is always rolled back
+# Both run on the working tree, which is what gets pushed when everything is
+# committed. Emergency bypass: git push --no-verify
+#
+# Enabled by `pnpm install` (the `prepare` script sets core.hooksPath).
+set -uo pipefail
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+zero=0000000000000000000000000000000000000000
+changed=""
+unknown=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [[ "$local_sha" == "$zero" ]] && continue # deleting a branch
+  if [[ "$remote_sha" == "$zero" ]]; then
+    base="$(git merge-base "$local_sha" origin/main 2>/dev/null || true)"
+    range="${base:+$base..}$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  # A remote commit we don't have locally: we can't tell what changed, so check.
+  if ! files="$(git diff --name-only "$range" 2>/dev/null)"; then unknown=1; fi
+  changed+="$files"$'\n'
+done
+
+db_paths='^(drizzle/[^/]+\.sql|src/database/(schema\.ts|migrate\.ts|migrations/.+))$'
+if [[ $unknown -eq 0 ]] && ! grep -qE "$db_paths" <<<"$changed"; then
+  exit 0
+fi
+
+echo "pre-push: this push changes the database — checking it first"
+if [[ -n "$(git status --porcelain -- drizzle src/database)" ]]; then
+  echo "  note: drizzle/ or src/database has uncommitted changes; the checks see the working tree"
+fi
+
+pnpm -s db:check
+case $? in
+  0) ;;
+  2) echo "⚠ db:check skipped: Postgres tools missing (brew install postgresql)" ;;
+  *) echo "✗ schema.ts and drizzle/*.sql disagree — push stopped (git push --no-verify to override)"; exit 1 ;;
+esac
+
+pnpm -s db:migrate:verify
+case $? in
+  0) ;;
+  3) echo "⚠ verify skipped: couldn't reach DATABASE_URL" ;;
+  *) echo "✗ a pending migration fails on the real data — push stopped (git push --no-verify to override)"; exit 1 ;;
+esac
+echo "pre-push: database checks passed"

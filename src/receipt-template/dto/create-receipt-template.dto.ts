@@ -72,6 +72,11 @@ export class CreateReceiptTemplateDto {
   @IsBoolean()
   showPoweredBy?: boolean;
 
+  @ApiPropertyOptional({enum: [58, 80], default: 80})
+  @IsOptional()
+  @IsIn([58, 80])
+  paperWidthMm?: number;
+
   @ApiPropertyOptional({type: [FieldConfigDto]})
   @IsOptional()
   @IsArray()

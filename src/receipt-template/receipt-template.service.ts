@@ -136,6 +136,7 @@ export class ReceiptTemplateService {
         showCustomerDebt: dto.showCustomerDebt ?? false,
         showProductAttributes: dto.showProductAttributes ?? false,
         showPoweredBy: dto.showPoweredBy ?? true,
+        paperWidthMm: dto.paperWidthMm ?? 80,
         infoFields: dto.infoFields ?? DEFAULT_INFO_FIELDS,
         footerLinks: dto.footerLinks ?? DEFAULT_FOOTER_LINKS,
         footerText: dto.footerText ?? DEFAULT_FOOTER_TEXT,
@@ -172,6 +173,7 @@ export class ReceiptTemplateService {
     if (dto.showProductAttributes !== undefined)
       set.showProductAttributes = dto.showProductAttributes;
     if (dto.showPoweredBy !== undefined) set.showPoweredBy = dto.showPoweredBy;
+    if (dto.paperWidthMm !== undefined) set.paperWidthMm = dto.paperWidthMm;
     if (dto.infoFields !== undefined) set.infoFields = dto.infoFields;
     if (dto.footerLinks !== undefined) set.footerLinks = dto.footerLinks;
     if (dto.footerText !== undefined) set.footerText = dto.footerText;

@@ -56,7 +56,13 @@ export class OrderController {
     @CurrentAccount() account: IAccount,
     @Body() dto: CreateOrderDto,
   ) {
-    return this.orderService.create(business.id, dto, account);
+    const order = await this.orderService.create(business.id, dto, account);
+    // The sale is committed by now: a failed receipt lookup must not turn it
+    // into an error the till would retry (and so sell twice).
+    const receipt = await this.orderService
+      .receiptContext(business.id, order)
+      .catch(() => null);
+    return {...order, receipt};
   }
 
   @Post('hold')
@@ -353,7 +359,11 @@ export class OrderController {
   ) {
     const order = await this.orderService.findOne(business.id, id);
     if (!order) throw new AppException(ErrorCode.ORDER_NOT_FOUND);
-    return order;
+    // Reprints render from this, so they match the receipt the till printed.
+    const receipt = await this.orderService
+      .receiptContext(business.id, order)
+      .catch(() => null);
+    return {...order, receipt};
   }
 
   @Patch(':id')

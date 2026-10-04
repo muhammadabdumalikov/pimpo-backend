@@ -97,6 +97,9 @@ DECLARE
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
+    -- A table this database doesn't have yet (monthly_targets on a fresh
+    -- build — 0091 creates it and its policy) must not abort the whole loop.
+    CONTINUE WHEN to_regclass(format('public.%I', t)) IS NULL;
     EXECUTE format('DROP POLICY IF EXISTS ai_ro_tenant ON public.%I', t);
     EXECUTE format(
       'CREATE POLICY ai_ro_tenant ON public.%I FOR SELECT TO pimpo_ai_ro '

@@ -49,6 +49,7 @@ import {
   cashShifts,
   cashRegisters,
   receiptSequences,
+  units,
   saleReturns,
   saleReturnItems,
   type Order,
@@ -76,6 +77,18 @@ import {weightSourceFor, type WeightSource} from './weight-source';
 type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
 export type OrderWithItems = Order & {items: OrderItem[]};
+
+/** Receipt-only extras served next to an order (see receiptContext). */
+export interface OrderReceiptContext {
+  /** Register of the sale's shift — picks its receipt template. */
+  registerId: string | null;
+  /** Customer's loyalty balance now; null without a customer. */
+  customerBalance: number | null;
+  /** Customer's outstanding debt now; null without a customer. */
+  customerDebt: number | null;
+  /** order_items id → unit label + digits, for fractional (kg-type) lines. */
+  fractionalUnits: Record<string, {unit: string; precision: number}>;
+}
 
 // Per-order outcome for a batch (offline-sync) create. Errors are captured per
 // order so one rejected sale doesn't fail the others.
@@ -1382,6 +1395,110 @@ export class OrderService {
       .where(eq(orderItems.orderId, id));
 
     return {...order, items};
+  }
+
+  /**
+   * What a printed receipt needs beyond the order row, so the till's print and
+   * a later reprint render the same receipt: the register whose template it
+   * prints with, the customer's loyalty balance and outstanding debt as they
+   * stand now (after this sale, when called right after create), and the unit
+   * of every fractional line so it prints "0.5 kg" rather than "0.5".
+   */
+  async receiptContext(
+    businessId: string,
+    order: OrderWithItems,
+  ): Promise<OrderReceiptContext> {
+    const db = this.dbService.db;
+    const productIds = order.items
+      .map((i) => i.productId)
+      .filter((id): id is string => !!id);
+
+    const [shift, customer, debt, unitRows] = await Promise.all([
+      order.shiftId
+        ? db
+            .select({registerId: cashShifts.registerId})
+            .from(cashShifts)
+            .where(
+              and(
+                eq(cashShifts.businessId, businessId),
+                eq(cashShifts.id, order.shiftId),
+              ),
+            )
+            .limit(1)
+        : Promise.resolve([]),
+      order.userId
+        ? db
+            .select({bonusBalance: users.bonusBalance})
+            .from(users)
+            .where(and(eq(users.businessId, businessId), eq(users.id, order.userId)))
+            .limit(1)
+        : Promise.resolve([]),
+      // Outstanding = what is still owed on every unsettled debt (amount less
+      // its installment payments), the figure the debts screen shows. Names
+      // are spelled out: a single-table select renders columns unqualified,
+      // and a bare "id" inside the subquery would bind to debt_payments.
+      order.userId
+        ? db
+            .select({
+              owed: sql<string>`COALESCE(SUM(GREATEST("user_debts"."amount" - COALESCE((
+                SELECT SUM(dp."amount") FROM "debt_payments" dp
+                WHERE dp."debt_id" = "user_debts"."id"
+              ), 0), 0)), 0)`,
+            })
+            .from(userDebts)
+            .where(
+              and(
+                eq(userDebts.businessId, businessId),
+                eq(userDebts.userId, order.userId),
+                sql`${userDebts.status} <> 'Paid'`,
+              ),
+            )
+        : Promise.resolve([]),
+      productIds.length
+        ? db
+            .select({
+              id: products.id,
+              quantityType: products.quantityType,
+              unitShort: units.shortName,
+              unitPrecision: units.precision,
+            })
+            .from(products)
+            .leftJoin(units, eq(units.id, products.unitId))
+            .where(
+              and(
+                eq(products.businessId, businessId),
+                inArray(products.id, productIds),
+              ),
+            )
+        : Promise.resolve(
+            [] as {
+              id: string;
+              quantityType: string | null;
+              unitShort: string | null;
+              unitPrecision: number | null;
+            }[],
+          ),
+    ]);
+
+    // Same rule as the till: a 'kg' product sells fractionally, labelled by
+    // its unit (kg / 3 digits when it has none).
+    const byProduct = new Map(unitRows.map((r) => [r.id, r]));
+    const fractionalUnits: OrderReceiptContext['fractionalUnits'] = {};
+    for (const it of order.items) {
+      const p = it.productId ? byProduct.get(it.productId) : undefined;
+      if (!p || p.quantityType !== 'kg') continue;
+      fractionalUnits[it.id] = {
+        unit: p.unitShort ?? 'kg',
+        precision: p.unitShort != null ? (p.unitPrecision ?? 3) : 3,
+      };
+    }
+
+    return {
+      registerId: shift[0]?.registerId ?? null,
+      customerBalance: customer[0] ? Number(customer[0].bonusBalance) : null,
+      customerDebt: order.userId ? Number(debt[0]?.owed ?? 0) : null,
+      fractionalUnits,
+    };
   }
 
   async findByUser(businessId: string, userId: string): Promise<Order[]> {

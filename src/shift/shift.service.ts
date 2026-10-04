@@ -21,14 +21,30 @@ import {
   type CashShift,
   type CashMovement,
 } from '../database/schema';
-import {eq, and, desc, ne, getTableColumns} from 'drizzle-orm';
+import {
+  eq,
+  and,
+  desc,
+  ne,
+  gte,
+  lte,
+  or,
+  ilike,
+  isNull,
+  isNotNull,
+  sql,
+  getTableColumns,
+  type SQL,
+} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
+import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
 import {ReceiptService} from '../receipt/receipt.service';
 import {OpenShiftDto} from './dto/open-shift.dto';
 import {CreateCashMovementDto} from './dto/create-cash-movement.dto';
 import {PaySupplierDto} from './dto/pay-supplier.dto';
+import {QueryCashMovementsDto} from './dto/query-cash-movements.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import {
   computeReconciliation,
@@ -633,6 +649,128 @@ export class ShiftService {
         ),
       )
       .orderBy(desc(cashMovements.createdAt));
+  }
+
+  /**
+   * Kassa operatsiyalari: the till's kirim/chiqim across shifts, newest
+   * first, filtered — with the totals of everything that matches (not just
+   * the page), per direction × method × currency, never summed across
+   * currencies. `cashiers` lists everyone who ever recorded one, for the
+   * filter. Sales are not here: they live on the shift report.
+   */
+  async listMovements(businessId: string, query: QueryCashMovementsDto) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(500, Math.max(1, Number(query.limit) || 50));
+
+    const where: SQL[] = [eq(cashMovements.businessId, businessId)];
+    if (query.from) {
+      where.push(gte(cashMovements.createdAt, businessDayStart(query.from)));
+    }
+    if (query.to) {
+      where.push(lte(cashMovements.createdAt, businessDayEnd(query.to)));
+    }
+    if (query.shiftId) where.push(eq(cashMovements.shiftId, query.shiftId));
+    if (query.registerId) {
+      where.push(eq(cashMovements.registerId, query.registerId));
+    }
+    if (query.type) where.push(eq(cashMovements.type, query.type));
+    if (query.method) {
+      where.push(eq(cashMovements.isCash, query.method === 'cash'));
+    }
+    if (query.currency) where.push(eq(cashMovements.currency, query.currency));
+    if (query.categoryId === 'supplier') {
+      where.push(isNotNull(cashMovements.supplierId));
+    } else if (query.categoryId === 'none') {
+      where.push(
+        isNull(cashMovements.categoryId),
+        isNull(cashMovements.supplierId),
+      );
+    } else if (query.categoryId) {
+      where.push(eq(cashMovements.categoryId, query.categoryId));
+    }
+    if (query.supplierId) {
+      where.push(eq(cashMovements.supplierId, query.supplierId));
+    }
+    if (query.cashierId) {
+      where.push(eq(cashMovements.cashierId, query.cashierId));
+    }
+    const search = query.search?.trim();
+    if (search) {
+      // Typed text is matched literally: % and _ are not wildcards here.
+      const like = `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      where.push(
+        or(
+          ilike(cashMovements.reason, like),
+          ilike(cashMovements.categoryName, like),
+          ilike(cashMovements.supplierName, like),
+          ilike(cashMovements.cashierName, like),
+        )!,
+      );
+    }
+    const filter = and(...where);
+    const db = this.dbService.db;
+
+    const [movements, [{total}], summary, cashiers] = await Promise.all([
+      db
+        .select({
+          ...getTableColumns(cashMovements),
+          registerName: cashRegisters.name,
+        })
+        .from(cashMovements)
+        .leftJoin(cashRegisters, eq(cashRegisters.id, cashMovements.registerId))
+        .where(filter)
+        .orderBy(desc(cashMovements.createdAt), desc(cashMovements.id))
+        .limit(limit)
+        .offset((page - 1) * limit),
+      db
+        .select({total: sql<number>`count(*)::int`})
+        .from(cashMovements)
+        .where(filter),
+      db
+        .select({
+          type: cashMovements.type,
+          isCash: cashMovements.isCash,
+          currency: cashMovements.currency,
+          count: sql<number>`count(*)::int`,
+          amount: sql<string>`sum(${cashMovements.amount})`,
+        })
+        .from(cashMovements)
+        .where(filter)
+        .groupBy(
+          cashMovements.type,
+          cashMovements.isCash,
+          cashMovements.currency,
+        ),
+      db
+        .selectDistinct({
+          id: cashMovements.cashierId,
+          name: cashMovements.cashierName,
+        })
+        .from(cashMovements)
+        .where(
+          and(
+            eq(cashMovements.businessId, businessId),
+            isNotNull(cashMovements.cashierId),
+          ),
+        ),
+    ]);
+
+    return {
+      movements,
+      total,
+      page,
+      limit,
+      summary: summary.map((r) => ({...r, amount: Number(r.amount)})),
+      // One entry per person, even if their name was spelled differently
+      // over time.
+      cashiers: Array.from(
+        new Map(
+          cashiers
+            .filter((c): c is {id: string; name: string | null} => !!c.id)
+            .map((c) => [c.id, {id: c.id, name: c.name ?? '—'}]),
+        ).values(),
+      ).sort((a, b) => a.name.localeCompare(b.name)),
+    };
   }
 
   // ─── Reconciliation (X / Z report) ────────────────────────────────────────
