@@ -9,6 +9,7 @@ import {TELEGRAM_QUEUE} from './telegram.constants';
 import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from '../business/business.module';
 import {SubscriptionModule} from '../subscription/subscription.module';
+import {NotificationModule} from '../notification/notification.module';
 import {resolveRedisConnection, envGetter} from '../common/redis-config';
 
 // Redis presence decides whether notifications go through the BullMQ queue.
@@ -41,6 +42,7 @@ const bullProviders = redisConnection ? [TelegramNotificationsProcessor] : [];
     DatabaseModule,
     BusinessModule,
     SubscriptionModule,
+    NotificationModule,
     ...bullImports,
   ],
   controllers: [TelegramController],

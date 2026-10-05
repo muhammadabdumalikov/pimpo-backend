@@ -394,8 +394,9 @@ export class OrderController {
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
     @Body() dto: UpdateOrderStatusDto,
+    @CurrentAccount() account: IAccount,
   ) {
-    return this.orderService.updateStatus(business.id, id, dto.status);
+    return this.orderService.updateStatus(business.id, id, dto.status, account);
   }
 
   @Delete(':id')

@@ -157,6 +157,19 @@ export class AnnouncementService {
     return {updated: unread.length};
   }
 
+  /**
+   * Which of `ids` this business is in the audience of right now — the phone
+   * push cron's per-business check, the same rule the tenant list applies.
+   */
+  async visibleIds(businessId: string, ids: string[]): Promise<string[]> {
+    if (!ids.length) return [];
+    const rows = await this.dbService.db
+      .select({id: announcements.id})
+      .from(announcements)
+      .where(and(inArray(announcements.id, ids), await this.visibleTo(businessId)));
+    return rows.map((r) => r.id);
+  }
+
   /** Published, not expired, and aimed at this business. */
   private async visibleTo(businessId: string): Promise<SQL> {
     const now = new Date();

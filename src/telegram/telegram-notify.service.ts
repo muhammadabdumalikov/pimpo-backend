@@ -13,16 +13,18 @@ import {
   CashShift,
   CashMovement,
 } from '../database/schema';
-import {CacheKeys, TTL} from '../cache/cache.util';
+import {CacheKeys} from '../cache/cache.util';
 import {TelegramSenderService} from './telegram-sender.service';
 import {TELEGRAM_QUEUE, TelegramJobData} from './telegram.constants';
+import {NotifyToggle, readNotificationSettings} from './notification-settings';
+import {NotificationService} from '../notification/notification.service';
+import {Notice} from '../notification/push-text';
 
-/** The togglable notification events. Matches the boolean columns of the table. */
-export type TelegramEvent =
-  | 'checkout'
-  | 'cashShifts'
-  | 'cashOperations'
-  | 'dailySales';
+/**
+ * The togglable events that also go to Telegram. `announcements` is the one
+ * toggle with no Telegram counterpart (phone push only).
+ */
+export type TelegramEvent = Exclude<NotifyToggle, 'announcements'>;
 
 /** One line of a checkout notice (a sold product). */
 export interface CheckoutNoticeItem {
@@ -34,6 +36,8 @@ export interface CheckoutNoticeItem {
 
 /** The sale fields a (detailed) checkout notification needs. */
 export interface CheckoutNotice {
+  orderId?: string;
+  receiptNo?: number | null;
   totalAmount: string | number;
   subtotalAmount?: string | number | null;
   discountAmount?: string | number | null;
@@ -49,19 +53,6 @@ export interface CheckoutNotice {
   cashierName?: string | null;
   createdAt?: Date | null;
   items?: CheckoutNoticeItem[];
-}
-
-/** Defaults for a business that has never saved settings: daily digest ON
- *  (it shipped before this toggle existed), everything else opt-in / OFF. */
-function defaultSettings(businessId: string): TelegramNotificationSettings {
-  return {
-    businessId,
-    checkout: false,
-    cashShifts: false,
-    cashOperations: false,
-    dailySales: true,
-    updatedAt: new Date(),
-  };
 }
 
 // Money — rounded so'm (no tiyin in practice). Nullable input coerces to 0.
@@ -132,6 +123,7 @@ export class TelegramNotifyService {
     private readonly dbService: DatabaseService,
     private readonly sender: TelegramSenderService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    private readonly notifications: NotificationService,
     // Absent when Redis isn't configured (queue not registered) → direct send.
     @Optional()
     @InjectQueue(TELEGRAM_QUEUE)
@@ -144,36 +136,15 @@ export class TelegramNotifyService {
 
   // ── Settings (cached) ──────────────────────────────────────────────────────
 
-  /** The business's toggles; the defaults (dailySales on) when no row exists. */
+  /** The business's toggles (shared with phone push); defaults when no row exists. */
   async getSettings(businessId: string): Promise<TelegramNotificationSettings> {
-    return this.cache.wrap(
-      CacheKeys.telegramSettings(businessId),
-      async () => {
-        try {
-          const [row] = await this.db
-            .select()
-            .from(telegramNotificationSettings)
-            .where(eq(telegramNotificationSettings.businessId, businessId))
-            .limit(1);
-          return row ?? defaultSettings(businessId);
-        } catch (e) {
-          // Fail open to defaults if the table isn't migrated yet (or the DB is
-          // momentarily unreachable) — the settings page must not 500 and event
-          // delivery must not throw. Mirrors the stock-take-lock fallback.
-          this.logger.warn(
-            `telegram settings read failed → defaults: ${(e as Error).message}`,
-          );
-          return defaultSettings(businessId);
-        }
-      },
-      TTL.TELEGRAM_SETTINGS,
-    );
+    return readNotificationSettings(this.dbService, this.cache, businessId);
   }
 
   /** Upsert the toggles (only provided keys change) and drop the cache. */
   async updateSettings(
     businessId: string,
-    patch: Partial<Pick<TelegramNotificationSettings, TelegramEvent>>,
+    patch: Partial<Pick<TelegramNotificationSettings, NotifyToggle>>,
   ): Promise<TelegramNotificationSettings> {
     const now = new Date();
     const [row] = await this.db
@@ -205,19 +176,22 @@ export class TelegramNotifyService {
   }
 
   /**
-   * Gate on settings + bot config, then hand the message to the queue (retries +
-   * rate limiting) — or, when no queue is registered (no Redis), send it directly
-   * best-effort. Awaitable so the digest can enqueue-then-continue; the hot paths
-   * call it fire-and-forget via the `notify*` helpers.
+   * Gate on the shared toggle, hand `notice` to the owner's inbox + phone push,
+   * then — if a bot is configured — the message to the queue (retries + rate
+   * limiting), or, with no queue registered (no Redis), send it directly
+   * best-effort. Awaitable so the digest can enqueue-then-continue; the hot
+   * paths call it fire-and-forget via the `notify*` helpers.
    */
   async dispatch(
     businessId: string,
     event: TelegramEvent,
     message: string,
+    notice?: Notice,
   ): Promise<void> {
-    if (!this.sender.isConfigured()) return;
     const settings = await this.getSettings(businessId);
     if (!settings[event]) return;
+    if (notice) this.notifications.fire(businessId, notice);
+    if (!this.sender.isConfigured()) return;
 
     if (this.queue) {
       await this.queue.add(event, {businessId, event, message});
@@ -241,8 +215,13 @@ export class TelegramNotifyService {
   }
 
   /** Fire-and-forget: gate+enqueue in the background; never throw/block. */
-  private fire(businessId: string, event: TelegramEvent, message: string): void {
-    void this.dispatch(businessId, event, message).catch((e) =>
+  private fire(
+    businessId: string,
+    event: TelegramEvent,
+    message: string,
+    notice?: Notice,
+  ): void {
+    void this.dispatch(businessId, event, message, notice).catch((e) =>
       this.logger.warn(`notify ${event} error: ${(e as Error).message}`),
     );
   }
@@ -319,7 +298,16 @@ export class TelegramNotifyService {
     if (o.customerName) lines.push('', `🙍 Mijoz: ${o.customerName}`);
     if (o.cashierName) lines.push(`👤 Kassir: ${o.cashierName}`);
 
-    this.fire(businessId, 'checkout', lines.join('\n'));
+    this.fire(businessId, 'checkout', lines.join('\n'), {
+      event: 'checkout',
+      data: {
+        orderId: o.orderId ?? null,
+        receiptNo: o.receiptNo ?? null,
+        total: Number(o.totalAmount) || 0,
+        cashierName: o.cashierName ?? null,
+        url: o.orderId ? `/sales?sale=${o.orderId}` : '/sales',
+      },
+    });
   }
 
   /**
@@ -387,7 +375,16 @@ export class TelegramNotifyService {
     if (shift.openedByCashierName)
       lines.push(`👤 Kassir: ${shift.openedByCashierName}`);
     lines.push(`🕒 ${hhmm(shift.openedAt)}`);
-    this.fire(businessId, 'cashShifts', lines.join('\n'));
+    this.fire(businessId, 'cashShifts', lines.join('\n'), {
+      event: 'shiftOpened',
+      data: {
+        shiftId: shift.id,
+        registerName: shift.registerName,
+        cashierName: shift.openedByCashierName ?? null,
+        openingFloat: Number(shift.openingFloat ?? 0),
+        url: '/money',
+      },
+    });
   }
 
   notifyShiftClosed(
@@ -414,7 +411,18 @@ export class TelegramNotifyService {
     else if (diff === 0) lines.push('✅ Kassa mos keldi');
     if (shift.closedByCashierName)
       lines.push(`👤 Kassir: ${shift.closedByCashierName}`);
-    this.fire(businessId, 'cashShifts', lines.join('\n'));
+    this.fire(businessId, 'cashShifts', lines.join('\n'), {
+      event: 'shiftClosed',
+      data: {
+        shiftId: shift.id,
+        registerName: shift.registerName,
+        cashierName: shift.closedByCashierName ?? null,
+        expected: shift.expectedCash != null ? Number(shift.expectedCash) : null,
+        counted: shift.countedCash != null ? Number(shift.countedCash) : null,
+        diff,
+        url: '/money',
+      },
+    });
   }
 
   notifyCashOperation(businessId: string, m: CashMovement): void {
@@ -429,6 +437,138 @@ export class TelegramNotifyService {
     if (m.reason) lines.push(`📝 Izoh: ${m.reason}`);
     if (m.cashierName) lines.push(`👤 Kassir: ${m.cashierName}`);
     lines.push(`🕒 ${hhmm(m.createdAt)}`);
-    this.fire(businessId, 'cashOperations', lines.join('\n'));
+    this.fire(businessId, 'cashOperations', lines.join('\n'), {
+      event: 'cashOperation',
+      data: {
+        shiftId: m.shiftId ?? null,
+        direction: isIn ? 'in' : 'out',
+        amount: Number(m.amount) || 0,
+        currency: m.currency || 'UZS',
+        note: m.reason || m.categoryName || m.supplierName || null,
+        cashierName: m.cashierName ?? null,
+        url: '/kassa/operations',
+      },
+    });
+  }
+
+  // ── Owner phone events (MOBILE.md Q9) — also sent to Telegram ──────────────
+
+  /** A storefront order arrived and waits for the shop to confirm it. */
+  notifyOnlineOrder(
+    businessId: string,
+    o: {
+      orderId: string;
+      totalAmount: string | number;
+      itemCount?: number | null;
+      customerName?: string | null;
+      customerPhone?: string | null;
+    },
+  ): void {
+    const lines = [
+      '🛒 Yangi onlayn buyurtma',
+      `🧾 #${o.orderId.slice(0, 8).toUpperCase()}`,
+      `💰 Summa: ${uz(o.totalAmount)} so'm`,
+    ];
+    if (o.itemCount != null) lines.push(`📦 ${qty(o.itemCount)} dona`);
+    if (o.customerName) lines.push(`🙍 Mijoz: ${o.customerName}`);
+    if (o.customerPhone) lines.push(`📞 ${o.customerPhone}`);
+    this.fire(businessId, 'onlineOrders', lines.join('\n'), {
+      event: 'onlineOrder',
+      data: {
+        orderId: o.orderId,
+        total: Number(o.totalAmount) || 0,
+        itemCount: o.itemCount ?? null,
+        customerName: o.customerName ?? null,
+        url: `/sales?tab=online&order=${o.orderId}`,
+      },
+    });
+  }
+
+  /** Staff cancelled a till receipt (the owner's own actions are not reported). */
+  notifyOrderCancelled(
+    businessId: string,
+    o: {orderId: string; receiptNo?: number | null; totalAmount: string | number; by?: string | null},
+  ): void {
+    const lines = [
+      '🚩 Chek bekor qilindi',
+      ...(o.receiptNo != null ? [`🧾 Chek #${o.receiptNo}`] : []),
+      `💰 Summa: ${uz(o.totalAmount)} so'm`,
+      ...(o.by ? [`👤 ${o.by}`] : []),
+    ];
+    this.fire(businessId, 'suspicious', lines.join('\n'), {
+      event: 'orderCancelled',
+      data: {
+        orderId: o.orderId,
+        receiptNo: o.receiptNo ?? null,
+        total: Number(o.totalAmount) || 0,
+        by: o.by ?? null,
+        url: `/sales?sale=${o.orderId}`,
+      },
+    });
+  }
+
+  /** Staff rang up a receipt with a whole-receipt discount over the threshold. */
+  notifyBigDiscount(
+    businessId: string,
+    o: {
+      orderId: string;
+      receiptNo?: number | null;
+      subtotal: number;
+      discount: number;
+      total: number;
+      by?: string | null;
+    },
+  ): void {
+    const pct = o.subtotal > 0 ? (o.discount / o.subtotal) * 100 : 0;
+    const lines = [
+      `🚩 Katta chegirma — ${Math.round(pct)}%`,
+      ...(o.receiptNo != null ? [`🧾 Chek #${o.receiptNo}`] : []),
+      `🏷 Chegirma: −${uz(o.discount)} so'm`,
+      `💰 Jami: ${uz(o.total)} so'm`,
+      ...(o.by ? [`👤 ${o.by}`] : []),
+    ];
+    this.fire(businessId, 'suspicious', lines.join('\n'), {
+      event: 'bigDiscount',
+      data: {
+        orderId: o.orderId,
+        receiptNo: o.receiptNo ?? null,
+        subtotal: o.subtotal,
+        discount: o.discount,
+        total: o.total,
+        pct,
+        by: o.by ?? null,
+        url: `/sales?sale=${o.orderId}`,
+      },
+    });
+  }
+
+  /** Staff took a customer return. */
+  notifySaleReturn(
+    businessId: string,
+    r: {
+      returnId: string;
+      orderId?: string | null;
+      receiptNo?: number | null;
+      totalAmount: string | number;
+      by?: string | null;
+    },
+  ): void {
+    const lines = [
+      '🚩 Qaytarish',
+      ...(r.receiptNo != null ? [`🧾 Chek #${r.receiptNo}`] : []),
+      `💰 Summa: ${uz(r.totalAmount)} so'm`,
+      ...(r.by ? [`👤 ${r.by}`] : []),
+    ];
+    this.fire(businessId, 'suspicious', lines.join('\n'), {
+      event: 'saleReturn',
+      data: {
+        returnId: r.returnId,
+        orderId: r.orderId ?? null,
+        receiptNo: r.receiptNo ?? null,
+        total: Number(r.totalAmount) || 0,
+        by: r.by ?? null,
+        url: '/sales?tab=returns',
+      },
+    });
   }
 }

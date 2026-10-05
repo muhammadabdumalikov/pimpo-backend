@@ -154,6 +154,9 @@ export interface BranchSalesTrend {
   branches: BranchTrendSeries[];
 }
 
+
+// Whole-receipt discount share above which staff discounts alert the owner.
+const BIG_DISCOUNT_SHARE = 0.2;
 @Injectable()
 export class OrderService {
   constructor(
@@ -910,6 +913,8 @@ export class OrderService {
     // storefront's 'Pending' orders. Fire-and-forget: never delays the sale.
     if (created?.status === 'Completed') {
       this.telegramNotify.notifyCheckout(businessId, {
+        orderId: created.id,
+        receiptNo: created.receiptNo,
         totalAmount: created.totalAmount,
         subtotalAmount: created.subtotalAmount,
         discountAmount: created.discountAmount,
@@ -930,6 +935,24 @@ export class OrderService {
           lineTotal: it.lineTotal,
         })),
       });
+      // A whole-receipt discount over a fifth of the receipt, given by staff,
+      // is one of the owner's "shubhali harakat" alerts (MOBILE.md Q9).
+      const subtotal = Number(created.subtotalAmount ?? 0);
+      const discount = Number(created.discountAmount ?? 0);
+      if (
+        account?.type === 'staff' &&
+        subtotal > 0 &&
+        discount / subtotal > BIG_DISCOUNT_SHARE
+      ) {
+        this.telegramNotify.notifyBigDiscount(businessId, {
+          orderId: created.id,
+          receiptNo: created.receiptNo,
+          subtotal,
+          discount,
+          total: Number(created.totalAmount),
+          by: created.cashierName,
+        });
+      }
     }
     return created;
   }
@@ -1202,12 +1225,20 @@ export class OrderService {
         productId: firstId,
       });
     }
-    return this.create(product.businessId, {
+    const order = await this.create(product.businessId, {
       ...dto,
       userId: undefined,
       status: 'Pending',
       source: 'store',
     });
+    this.telegramNotify.notifyOnlineOrder(product.businessId, {
+      orderId: order.id,
+      totalAmount: order.totalAmount,
+      itemCount: order.itemCount,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+    });
+    return order;
   }
 
   async findAll(
@@ -1535,6 +1566,7 @@ export class OrderService {
     businessId: string,
     id: string,
     status: string,
+    account?: IAccount,
   ): Promise<OrderWithItems> {
     const existing = await this.findOne(businessId, id);
     if (!existing) {
@@ -1594,6 +1626,22 @@ export class OrderService {
         status,
         totalAmount: existing.totalAmount,
         itemCount: existing.itemCount,
+      });
+    }
+
+    // Staff cancelling a till receipt is a "shubhali harakat" for the owner.
+    // Rejecting a storefront order is routine, and the owner knows their own.
+    if (
+      status === 'Cancelled' &&
+      existing.source !== 'store' &&
+      account?.type === 'staff'
+    ) {
+      const by = await this.resolveCashier(account);
+      this.telegramNotify.notifyOrderCancelled(businessId, {
+        orderId: existing.id,
+        receiptNo: existing.receiptNo,
+        totalAmount: existing.totalAmount,
+        by: by.name,
       });
     }
 

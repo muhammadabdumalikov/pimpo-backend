@@ -10,6 +10,7 @@ import {AnnouncementPlatformController} from './announcement-platform.controller
 @Module({
   imports: [DatabaseModule, BusinessModule, SubscriptionModule, FeatureModule],
   controllers: [AnnouncementController, AnnouncementPlatformController],
+  exports: [AnnouncementService],
   providers: [AnnouncementService],
 })
 export class AnnouncementModule {}
