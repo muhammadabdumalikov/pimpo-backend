@@ -30,6 +30,7 @@ import {StockTransferModule} from './stock-transfer/stock-transfer.module';
 import {FinanceModule} from './finance/finance.module';
 import {PayrollModule} from './payroll/payroll.module';
 import {ReportModule} from './report/report.module';
+import {MobileModule} from './mobile/mobile.module';
 import {TargetModule} from './target/target.module';
 import {DigestModule} from './digest/digest.module';
 import {TelegramModule} from './telegram/telegram.module';
@@ -114,6 +115,7 @@ class JwtGlobalModule {}
     FinanceModule,
     PayrollModule,
     ReportModule,
+    MobileModule,
     TargetModule,
     DigestModule,
     TelegramModule,

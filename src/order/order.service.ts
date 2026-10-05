@@ -1223,6 +1223,9 @@ export class OrderService {
       paymentMethod?: string;
       cashierId?: string;
       sellerId?: string;
+      // Store the sale was rung up in, and the till (via its shift).
+      branchId?: string;
+      registerId?: string;
       minAmount?: number;
       maxAmount?: number;
       // Only sales with a kilogram line typed on a till that has a live scale
@@ -1279,6 +1282,25 @@ export class OrderService {
       where.push(isNull(orders.sellerId));
     } else if (options?.sellerId) {
       where.push(eq(orders.sellerId, options.sellerId));
+    }
+    if (options?.branchId) {
+      where.push(eq(orders.branchId, options.branchId));
+    }
+    if (options?.registerId) {
+      where.push(
+        inArray(
+          orders.shiftId,
+          this.dbService.db
+            .select({id: cashShifts.id})
+            .from(cashShifts)
+            .where(
+              and(
+                eq(cashShifts.businessId, businessId),
+                eq(cashShifts.registerId, options.registerId),
+              ),
+            ),
+        ),
+      );
     }
     if (options?.minAmount != null) {
       where.push(gte(orders.totalAmount, money(options.minAmount)));
