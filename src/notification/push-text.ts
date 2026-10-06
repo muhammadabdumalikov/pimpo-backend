@@ -94,7 +94,7 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
       body: Array.isArray(d.names) ? d.names.join(', ') : '',
     }),
     test: () => ({
-      title: 'Pimpo',
+      title: 'KPOS',
       body: 'Bildirishnomalar ishlayapti ✅',
     }),
   },
@@ -155,7 +155,7 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
       body: Array.isArray(d.names) ? d.names.join(', ') : '',
     }),
     test: () => ({
-      title: 'Pimpo',
+      title: 'KPOS',
       body: 'Уведомления работают ✅',
     }),
   },
