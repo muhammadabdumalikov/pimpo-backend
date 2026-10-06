@@ -185,7 +185,9 @@ export class ProductController {
     @Query('vitrina') vitrina?: string,
   ) {
     const stockFilter =
-      stock === 'in' || stock === 'low' || stock === 'out' ? stock : undefined;
+      stock === 'in' || stock === 'low' || stock === 'out' || stock === 'alert'
+        ? stock
+        : undefined;
     const result = await this.productService.findAll(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,

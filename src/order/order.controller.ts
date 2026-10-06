@@ -143,6 +143,8 @@ export class OrderController {
     @Query('paymentMethod') paymentMethod?: string,
     @Query('cashierId') cashierId?: string,
     @Query('sellerId') sellerId?: string,
+    @Query('branchId') branchId?: string,
+    @Query('registerId') registerId?: string,
     @Query('minAmount') minAmount?: string,
     @Query('maxAmount') maxAmount?: string,
     @Query('manualWeight') manualWeight?: string,
@@ -165,6 +167,8 @@ export class OrderController {
       paymentMethod,
       cashierId,
       sellerId,
+      branchId: branchId || undefined,
+      registerId: registerId || undefined,
       minAmount: num(minAmount),
       maxAmount: num(maxAmount),
       manualWeight: manualWeight === 'true',
@@ -390,8 +394,9 @@ export class OrderController {
     @CurrentBusiness() business: IBusiness,
     @Param('id') id: string,
     @Body() dto: UpdateOrderStatusDto,
+    @CurrentAccount() account: IAccount,
   ) {
-    return this.orderService.updateStatus(business.id, id, dto.status);
+    return this.orderService.updateStatus(business.id, id, dto.status, account);
   }
 
   @Delete(':id')

@@ -25,4 +25,26 @@ export class UpdateTelegramNotificationSettingsDto {
   @IsOptional()
   @IsBoolean()
   dailySales?: boolean;
+
+  @ApiPropertyOptional({description: 'A storefront (online) order arrived'})
+  @IsOptional()
+  @IsBoolean()
+  onlineOrders?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Staff cancelled a receipt, gave a discount over 20 %, or took a return',
+  })
+  @IsOptional()
+  @IsBoolean()
+  suspicious?: boolean;
+
+  @ApiPropertyOptional({description: '09:00 digest of out-of-stock / low products'})
+  @IsOptional()
+  @IsBoolean()
+  lowStock?: boolean;
+
+  @ApiPropertyOptional({description: 'Platform announcements as a phone push'})
+  @IsOptional()
+  @IsBoolean()
+  announcements?: boolean;
 }

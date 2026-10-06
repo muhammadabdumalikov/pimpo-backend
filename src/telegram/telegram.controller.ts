@@ -43,6 +43,15 @@ import {
 import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramNotifyService} from './telegram-notify.service';
 import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
+import {NOTIFY_TOGGLES, NotifyToggle} from './notification-settings';
+
+/** The toggles alone — the shared Telegram + phone push list (MOBILE.md Q9). */
+function pickToggles(s: Record<NotifyToggle, boolean>): Record<NotifyToggle, boolean> {
+  return Object.fromEntries(NOTIFY_TOGGLES.map((k) => [k, s[k]])) as Record<
+    NotifyToggle,
+    boolean
+  >;
+}
 import {UpdateStoreBotDto} from './dto/update-store-bot.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
@@ -79,13 +88,7 @@ export class TelegramController {
     summary: 'Which bot notifications the business has enabled',
   })
   async getNotificationSettings(@CurrentBusiness() business: IBusiness) {
-    const s = await this.notify.getSettings(business.id);
-    return {
-      checkout: s.checkout,
-      cashShifts: s.cashShifts,
-      cashOperations: s.cashOperations,
-      dailySales: s.dailySales,
-    };
+    return pickToggles(await this.notify.getSettings(business.id));
   }
 
   @Put('notification-settings')
@@ -95,13 +98,7 @@ export class TelegramController {
     @CurrentBusiness() business: IBusiness,
     @Body() dto: UpdateTelegramNotificationSettingsDto,
   ) {
-    const s = await this.notify.updateSettings(business.id, dto);
-    return {
-      checkout: s.checkout,
-      cashShifts: s.cashShifts,
-      cashOperations: s.cashOperations,
-      dailySales: s.dailySales,
-    };
+    return pickToggles(await this.notify.updateSettings(business.id, dto));
   }
 
   // ── Store bot (Telegram Mini App storefront) ───────────────────────────────

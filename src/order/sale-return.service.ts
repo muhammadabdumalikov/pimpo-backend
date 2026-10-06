@@ -12,6 +12,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
+import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {
   debtPayments,
   inventoryBatches,
@@ -100,6 +101,7 @@ export class SaleReturnService {
     private readonly dbService: DatabaseService,
     private readonly orderService: OrderService,
     private readonly featureService: FeatureService,
+    private readonly telegramNotify: TelegramNotifyService,
   ) {}
 
   private get db() {
@@ -393,7 +395,18 @@ export class SaleReturnService {
       await this.applyLoyalty(tx, businessId, order, result);
     });
 
-    return this.findOne(businessId, returnId);
+    const created = await this.findOne(businessId, returnId);
+    // A return taken by staff is one of the owner's "shubhali harakat" alerts.
+    if (account?.type === 'staff') {
+      this.telegramNotify.notifySaleReturn(businessId, {
+        returnId: created.id,
+        orderId: created.orderId,
+        receiptNo: created.orderReceiptNo,
+        totalAmount: created.totalAmount,
+        by: created.cashierName,
+      });
+    }
+    return created;
   }
 
   // ─── History ──────────────────────────────────────────────────────────────

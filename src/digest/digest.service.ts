@@ -7,10 +7,12 @@ import {
   orderItems,
   cashShifts,
   saleReturns,
+  products,
 } from '../database/schema';
 import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
+import {ProductService} from '../product/product.service';
 
 export interface DailyDigest {
   date: string; // YYYY-MM-DD (business zone)
@@ -36,6 +38,7 @@ export class DigestService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly telegramNotify: TelegramNotifyService,
+    private readonly productService: ProductService,
   ) {}
 
   private get db() {
@@ -182,7 +185,17 @@ export class DigestService {
         this.logger.log(`Daily digest for ${b.name} (${b.id}):\n${message}`);
         // Enqueue (or direct-send with no Redis); gated on the daily-sales toggle.
         // Routing through the queue rate-limits the 21:00 multi-business burst.
-        await this.telegramNotify.dispatch(b.id, 'dailySales', message);
+        await this.telegramNotify.dispatch(b.id, 'dailySales', message, {
+          event: 'dailySales',
+          data: {
+            date: digest.date,
+            revenue: digest.revenue,
+            orderCount: digest.orderCount,
+            avgCheck: digest.avgCheck,
+            profit: null,
+            url: '/dashboard',
+          },
+        });
         sent += 1;
       } catch (e) {
         this.logger.error(
@@ -193,5 +206,73 @@ export class DigestService {
     this.logger.log(
       `Daily digest run complete: ${sent}/${bizList.length} businesses.`,
     );
+  }
+
+  /**
+   * 09:00 Asia/Tashkent: what ran out or fell under its threshold, before the
+   * shop opens — the same counts the phone home shows, plus the out-of-stock
+   * products that were actually selling (the ones worth reordering today).
+   * Only shops that sold something in the last week; a dormant tenant's empty
+   * shelves are nobody's morning news.
+   */
+  @Cron('0 9 * * *', {name: 'low-stock-digest', timeZone: 'Asia/Tashkent'})
+  async runLowStockDigests(): Promise<void> {
+    if (process.env.DAILY_DIGEST === 'off') return;
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const active = await this.db
+      .selectDistinct({id: orders.businessId})
+      .from(orders)
+      .where(and(eq(orders.status, 'Completed'), gte(orders.createdAt, since)));
+
+    for (const {id} of active) {
+      try {
+        // Same counts as the phone home (out = nothing left; low = under the
+        // threshold the owner set — no default, or a small shop is all "low").
+        const stats = await this.productService.getStats(id);
+        const out = stats.outOfStock;
+        const low = stats.lowAlert ?? 0;
+        if (out + low === 0) continue;
+
+        const names = await this.sellingButOut(id);
+        const lines = ['📦 Qoldiq ogohlantirishi', `🔴 Tugagan: ${out} ta`];
+        if (low > 0) lines.push(`🟡 Kam qolgan: ${low} ta`);
+        if (names.length) {
+          lines.push('', 'Sotilayotgan, lekin tugaganlar:');
+          names.forEach((n, i) => lines.push(`${i + 1}. ${n}`));
+        }
+        await this.telegramNotify.dispatch(id, 'lowStock', lines.join('\n'), {
+          event: 'lowStock',
+          data: {out, low, names, url: '/products?stock=out'},
+        });
+      } catch (e) {
+        this.logger.error(`Low-stock digest failed for ${id}: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  /** Up to 5 out-of-stock products, best sellers of the last 30 days first. */
+  private async sellingButOut(businessId: string): Promise<string[]> {
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const rows = await this.db
+      .select({
+        name: products.name,
+        sold: sql<string>`SUM(${orderItems.quantity})`,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orders.id, orderItems.orderId))
+      .innerJoin(products, eq(products.id, orderItems.productId))
+      .where(
+        and(
+          eq(orderItems.businessId, businessId),
+          eq(orders.status, 'Completed'),
+          gte(orders.createdAt, since),
+          eq(products.isActive, true),
+          lte(products.quantity, 0),
+        ),
+      )
+      .groupBy(products.id, products.name)
+      .orderBy(desc(sql`SUM(${orderItems.quantity})`))
+      .limit(5);
+    return rows.map((r) => r.name);
   }
 }

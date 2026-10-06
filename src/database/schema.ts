@@ -2324,9 +2324,78 @@ export const telegramNotificationSettings = pgTable(
     cashOperations: boolean('cash_operations').notNull().default(false),
     // The 21:00 daily sales digest. Default ON to preserve prior behaviour.
     dailySales: boolean('daily_sales').notNull().default(true),
+    // The toggles below drive the owner's phone push AND Telegram — one list
+    // for both channels (MOBILE.md Q9). Default ON: each is rare and wanted.
+    // A storefront order arrived and waits to be confirmed.
+    onlineOrders: boolean('online_orders').notNull().default(true),
+    // Staff cancelled a receipt, gave a discount over 20 %, or took a return.
+    suspicious: boolean('suspicious').notNull().default(true),
+    // 09:00 digest of products that ran out / fell under their threshold.
+    lowStock: boolean('low_stock').notNull().default(true),
+    // Platform announcements as a phone push (no Telegram counterpart).
+    announcements: boolean('announcements').notNull().default(true),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
 );
+
+/**
+ * Web Push subscriptions of the owner's installed phone app (PWA). One row per
+ * browser endpoint; `locale` is the language the push text is written in.
+ * Rows whose push service answers 404/410 are deleted on the next send.
+ */
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    endpoint: text('endpoint').notNull(),
+    p256dh: varchar('p256dh', {length: 255}).notNull(),
+    auth: varchar('auth', {length: 255}).notNull(),
+    locale: varchar('locale', {length: 8}).notNull().default('uz'),
+    userAgent: varchar('user_agent', {length: 500}),
+    failureCount: integer('failure_count').notNull().default(0),
+    lastSuccessAt: timestamp('last_success_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    endpointUq: uniqueIndex('push_subscriptions_endpoint_uq').on(table.endpoint),
+    businessIdx: index('push_subscriptions_business_idx').on(table.businessId),
+  }),
+);
+export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
+
+/**
+ * The owner's notification inbox (🔔): every event that passed its toggle,
+ * whether or not a push reached a phone. The client renders the text from
+ * `event` + `data` in its own language. Pruned after 30 days.
+ */
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    event: varchar('event', {length: 32}).notNull(),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull(),
+    readAt: timestamp('read_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('notifications_business_created_idx').on(
+      table.businessId,
+      table.createdAt.desc().nullsFirst(),
+      table.id.desc().nullsFirst(),
+    ),
+    unreadIdx: index('notifications_business_unread_idx')
+      .on(table.businessId)
+      .where(sql`${table.readAt} IS NULL`),
+  }),
+);
+export type NotificationRow = typeof notifications.$inferSelect;
 
 export const telegramNotificationSettingsRelations = relations(
   telegramNotificationSettings,
@@ -3149,6 +3218,9 @@ export const announcements = pgTable(
     // Null = draft. A future value schedules it.
     publishedAt: timestamp('published_at'),
     expiresAt: timestamp('expires_at'),
+    // When the phone push for this announcement went out; null = not yet (a
+    // scheduled one is pushed by the cron once publishedAt passes).
+    pushedAt: timestamp('pushed_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },

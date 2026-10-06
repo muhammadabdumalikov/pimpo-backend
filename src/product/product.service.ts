@@ -560,12 +560,16 @@ export class ProductService {
 
   // SQL predicate for a stock-status bucket over the given quantity column
   // (products.quantity, or branch_stock.quantity in branch scope).
+  // `alert` is the owner's phone signal (MOBILE.md): only products the owner
+  // gave a threshold to — the default 10 would flag most of a small shop.
   private stockCondition(
-    stock: 'in' | 'low' | 'out',
+    stock: 'in' | 'low' | 'out' | 'alert',
     qtyCol: typeof products.quantity | typeof branchStock.quantity,
   ) {
     const threshold = sql`coalesce(${products.lowStockThreshold}, ${ProductService.DEFAULT_LOW_STOCK_THRESHOLD})`;
     if (stock === 'out') return sql`${qtyCol} <= 0`;
+    if (stock === 'alert')
+      return sql`${products.lowStockThreshold} > 0 and ${qtyCol} > 0 and ${qtyCol} <= ${products.lowStockThreshold}`;
     if (stock === 'low') return sql`${qtyCol} > 0 and ${qtyCol} <= ${threshold}`;
     return sql`${qtyCol} > ${threshold}`;
   }
@@ -580,7 +584,7 @@ export class ProductService {
       // stock as `quantity` (instead of the cross-branch sum).
       branchId?: string;
       // Filter by stock status bucket (see stockCondition).
-      stock?: 'in' | 'low' | 'out';
+      stock?: 'in' | 'low' | 'out' | 'alert';
       // Filter to one category.
       categoryId?: string;
       // Filter to one supplier — the product's default supplier. The literal
@@ -787,6 +791,8 @@ export class ProductService {
     total: number;
     inStock: number;
     lowStock: number;
+    // Low against an explicit threshold only (the phone's "kam qolgan").
+    lowAlert: number;
     outOfStock: number;
     units: number;
     supplyValue: number;
@@ -836,6 +842,7 @@ export class ProductService {
           total: sql<number>`count(*)::int`,
           inStock: sql<number>`count(*) filter (where ${this.stockCondition('in', qtyCol)})::int`,
           lowStock: sql<number>`count(*) filter (where ${this.stockCondition('low', qtyCol)})::int`,
+          lowAlert: sql<number>`count(*) filter (where ${this.stockCondition('alert', qtyCol)})::int`,
           outOfStock: sql<number>`count(*) filter (where ${this.stockCondition('out', qtyCol)})::int`,
           units: sql<number>`coalesce(sum(${posQty}), 0)::float8`,
           supplyValue: sql<number>`coalesce(sum(${posQty} * ${products.priceIn}), 0)::float8`,
@@ -864,6 +871,7 @@ export class ProductService {
             total: 0,
             inStock: 0,
             lowStock: 0,
+            lowAlert: 0,
             outOfStock: 0,
             units: 0,
             supplyValue: 0,
