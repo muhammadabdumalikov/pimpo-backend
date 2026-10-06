@@ -31,6 +31,8 @@ import {
   businessBuckets,
 } from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
+import {PriceStepService} from '../price-step/price-step.service';
+import {type AppliedPriceStep} from '../common/price-steps';
 import {
   orders,
   orderItems,
@@ -165,6 +167,7 @@ export class OrderService {
     private readonly subscriptionService: SubscriptionService,
     private readonly branchService: BranchService,
     private readonly telegramNotify: TelegramNotifyService,
+    private readonly priceSteps: PriceStepService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -594,6 +597,7 @@ export class OrderService {
             // the product card. A till reading anything else is out of date.
             cardPrice: p.priceOverride ?? p.priceOut,
             productName: p.productName,
+            productId: p.productId,
             // Same line the payment reconciliation draws: a replayed sale is
             // recorded, never refused.
             strict: !options?.replay,
@@ -908,7 +912,17 @@ export class OrderService {
       throw err;
     }
 
-    const created = (await this.findOne(businessId, orderId)) as OrderWithItems;
+    const created = (await this.findOne(businessId, orderId)) as OrderWithItems & {
+      priceChanges?: AppliedPriceStep[];
+    };
+    // The sale may have sold the last of the stock a delivery's lower price
+    // was waiting for: that price takes effect now, and the till hears about
+    // it in this response so its other baskets reprice. After the commit, on
+    // its own: a price that fails to move must never fail a sale.
+    const priceChanges = await this.priceSteps.settle(businessId, [
+      ...new Set(planned.map((p) => p.productId)),
+    ]);
+    if (priceChanges.length > 0) created.priceChanges = priceChanges;
     // Push a Telegram checkout notice for genuine completions only — skip the
     // storefront's 'Pending' orders. Fire-and-forget: never delays the sale.
     if (created?.status === 'Completed') {

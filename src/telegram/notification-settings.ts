@@ -20,7 +20,8 @@ export type NotifyToggle =
   | 'onlineOrders'
   | 'suspicious'
   | 'lowStock'
-  | 'announcements';
+  | 'announcements'
+  | 'priceChanges';
 
 export const NOTIFY_TOGGLES: NotifyToggle[] = [
   'checkout',
@@ -31,6 +32,7 @@ export const NOTIFY_TOGGLES: NotifyToggle[] = [
   'suspicious',
   'lowStock',
   'announcements',
+  'priceChanges',
 ];
 
 /**
@@ -51,6 +53,7 @@ export function defaultNotificationSettings(
     suspicious: true,
     lowStock: true,
     announcements: true,
+    priceChanges: true,
     updatedAt: new Date(),
   };
 }

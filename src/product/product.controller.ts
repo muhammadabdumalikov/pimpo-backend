@@ -165,6 +165,20 @@ export class ProductController {
     description:
       "'false' skips the count(*) and returns total: null — for paging through a list whose total the caller already has.",
   })
+  @ApiQuery({
+    name: 'priceChangedSince',
+    required: false,
+    type: String,
+    description:
+      'ISO instant: only products whose selling price moved since then (price history; delivery-line corrections excluded) — the shelf labels to reprint.',
+  })
+  @ApiQuery({
+    name: 'pricePending',
+    required: false,
+    type: Boolean,
+    description:
+      "'true' keeps only products with a delivery's lower price waiting for the older stock to sell out.",
+  })
   @ApiResponse({
     status: 200,
     description: 'List of products',
@@ -183,7 +197,12 @@ export class ProductController {
     @Query('cursor') cursor?: string,
     @Query('withTotal') withTotal?: string,
     @Query('vitrina') vitrina?: string,
+    @Query('priceChangedSince') priceChangedSince?: string,
+    @Query('pricePending') pricePending?: string,
   ) {
+    const changedSince = priceChangedSince
+      ? new Date(priceChangedSince)
+      : undefined;
     const stockFilter =
       stock === 'in' || stock === 'low' || stock === 'out' || stock === 'alert'
         ? stock
@@ -198,6 +217,11 @@ export class ProductController {
       supplierId: supplierId || undefined,
       unitId: unitId || undefined,
       vitrina: vitrina === 'true',
+      priceChangedSince:
+        changedSince && !Number.isNaN(changedSince.getTime())
+          ? changedSince
+          : undefined,
+      pricePending: pricePending === 'true',
       fields: parseFields(fields),
       cursor: cursor || undefined,
       withTotal: withTotal !== 'false',

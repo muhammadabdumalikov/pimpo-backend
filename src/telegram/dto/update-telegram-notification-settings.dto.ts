@@ -47,4 +47,12 @@ export class UpdateTelegramNotificationSettingsDto {
   @IsOptional()
   @IsBoolean()
   announcements?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "A delivery's lower price that waited for the older stock took effect — reprint the shelf label",
+  })
+  @IsOptional()
+  @IsBoolean()
+  priceChanges?: boolean;
 }

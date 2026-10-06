@@ -571,4 +571,53 @@ export class TelegramNotifyService {
       },
     });
   }
+
+  /**
+   * Waiting lower prices took effect by themselves — the stock received
+   * before their delivery sold out — so the shelf labels now show the old
+   * figure. Retail tier only in the message; the other tiers move silently.
+   */
+  notifyPriceChanges(
+    businessId: string,
+    changes: {
+      productId: string;
+      productName: string;
+      field: string;
+      from: string | null;
+      to: string;
+    }[],
+  ): void {
+    const retail = changes.filter((c) => c.field === 'priceOut');
+    if (retail.length === 0) return;
+    const shown = retail.slice(0, 15);
+    const lines = [
+      retail.length > 1
+        ? `🏷 Narx tushdi — ${retail.length} ta tovar`
+        : '🏷 Narx tushdi',
+      ...shown.map(
+        (c) =>
+          `• ${c.productName}: ${c.from != null ? `${uz(c.from)} → ` : ''}${uz(c.to)} so'm`,
+      ),
+      ...(retail.length > shown.length
+        ? [`… va yana ${retail.length - shown.length} ta`]
+        : []),
+      '',
+      'Eski qoldiq tugadi. Etiketkani almashtiring.',
+    ];
+    const one = retail[0];
+    this.fire(businessId, 'priceChanges', lines.join('\n'), {
+      event: 'priceChanged',
+      data: {
+        count: retail.length,
+        name: one.productName,
+        from: one.from != null ? Number(one.from) : null,
+        to: Number(one.to),
+        names: shown.map((c) => c.productName),
+        url:
+          retail.length > 1
+            ? '/products?priceChanged=today'
+            : `/products/${one.productId}/price-history`,
+      },
+    });
+  }
 }

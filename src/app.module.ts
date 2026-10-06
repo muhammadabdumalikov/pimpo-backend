@@ -34,6 +34,7 @@ import {MobileModule} from './mobile/mobile.module';
 import {TargetModule} from './target/target.module';
 import {DigestModule} from './digest/digest.module';
 import {TelegramModule} from './telegram/telegram.module';
+import {PriceStepModule} from './price-step/price-step.module';
 import {BillzModule} from './billz/billz.module';
 import {PlatformModule} from './platform/platform.module';
 import {LoyaltyModule} from './loyalty/loyalty.module';
@@ -119,6 +120,7 @@ class JwtGlobalModule {}
     TargetModule,
     DigestModule,
     TelegramModule,
+    PriceStepModule,
     BillzModule,
     PlatformModule,
     LoyaltyModule,

@@ -337,9 +337,14 @@ export class ReceiptController {
   })
   async unreceive(
     @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
     @Param('id') id: string,
   ) {
-    const receipt = await this.receiptService.unreceiveReceipt(business.id, id);
+    const receipt = await this.receiptService.unreceiveReceipt(
+      business.id,
+      id,
+      account,
+    );
     return {message: 'Receipt sent back to draft', receipt};
   }
 
@@ -357,6 +362,23 @@ export class ReceiptController {
     @Param('id') id: string,
   ) {
     return this.receiptService.getPriceSuggestions(business.id, id);
+  }
+
+  @Get(':id/price-steps')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary: 'The lower prices this receipt put in the queue, and their status',
+    description:
+      'Each product+tier whose lower price this delivery queued: still ' +
+      "waiting for the older stock to sell out ('waiting', with oldStock), " +
+      "taken effect ('applied') or dropped ('cancelled', with reason).",
+  })
+  @ApiParam({name: 'id', description: 'Receipt ID'})
+  async getPriceSteps(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    return {steps: await this.receiptService.getPriceSteps(business.id, id)};
   }
 
   @Post(':id/apply-prices')

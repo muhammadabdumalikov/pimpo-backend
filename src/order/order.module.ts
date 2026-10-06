@@ -9,9 +9,10 @@ import { SubscriptionModule } from '../subscription/subscription.module';
 import { BranchModule } from '../branch/branch.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { FeatureModule } from '../feature/feature.module';
+import { PriceStepModule } from '../price-step/price-step.module';
 
 @Module({
-  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule],
+  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule, PriceStepModule],
   controllers: [OrderController, SaleReturnController],
   providers: [OrderService, SaleReturnService, BusinessService],
   exports: [OrderService, SaleReturnService],

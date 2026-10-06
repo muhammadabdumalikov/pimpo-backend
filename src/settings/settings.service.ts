@@ -32,6 +32,8 @@ const DEFAULTS = {
   // %-computed selling prices round up to the next 100 so'm unless the shop
   // picks another step (or 0 to turn it off).
   priceRoundingStep: 100,
+  // A delivery's lower price waits for the older stock to sell out.
+  deferPriceDrops: true,
 };
 
 // A shop that never opened the label page still prints: 58x40 mm stock with
@@ -100,6 +102,7 @@ export class SettingsService {
           priceIncreaseMode: DEFAULTS.priceIncreaseMode,
           defaultMarkupPercent: DEFAULTS.defaultMarkupPercent,
           priceRoundingStep: DEFAULTS.priceRoundingStep,
+          deferPriceDrops: DEFAULTS.deferPriceDrops,
           updatedAt: new Date(),
         };
       },
@@ -131,6 +134,7 @@ export class SettingsService {
             ? null
             : String(dto.defaultMarkupPercent),
       priceRoundingStep: dto.priceRoundingStep ?? current.priceRoundingStep,
+      deferPriceDrops: dto.deferPriceDrops ?? current.deferPriceDrops,
     };
 
     await this.dbService.db

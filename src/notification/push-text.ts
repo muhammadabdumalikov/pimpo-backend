@@ -13,6 +13,7 @@ export type NotifyEvent =
   | 'bigDiscount'
   | 'saleReturn'
   | 'lowStock'
+  | 'priceChanged'
   | 'test';
 
 /** One inbox/push event. `data.url` is the page a tap opens. */
@@ -93,6 +94,16 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
           : `📦 ${n(d.out)} ta tovar tugadi`,
       body: Array.isArray(d.names) ? d.names.join(', ') : '',
     }),
+    priceChanged: (d) => ({
+      title:
+        n(d.count) > 1
+          ? `🏷 ${n(d.count)} ta tovar arzonlashdi — etiketkani almashtiring`
+          : `🏷 ${str(d.name)}: ${money(d.from)} → ${money(d.to)} so'm`,
+      body:
+        n(d.count) > 1
+          ? Array.isArray(d.names) ? d.names.join(', ') : ''
+          : "Eski qoldiq tugadi — etiketkani almashtiring",
+    }),
     test: () => ({
       title: 'KPOS',
       body: 'Bildirishnomalar ishlayapti ✅',
@@ -153,6 +164,16 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
           ? `📦 Закончилось ${n(d.out)} товаров, мало — ${n(d.low)}`
           : `📦 Закончилось ${n(d.out)} товаров`,
       body: Array.isArray(d.names) ? d.names.join(', ') : '',
+    }),
+    priceChanged: (d) => ({
+      title:
+        n(d.count) > 1
+          ? `🏷 Подешевело товаров: ${n(d.count)} — замените ценники`
+          : `🏷 ${str(d.name)}: ${money(d.from)} → ${money(d.to)} сум`,
+      body:
+        n(d.count) > 1
+          ? Array.isArray(d.names) ? d.names.join(', ') : ''
+          : 'Старый остаток распродан — замените ценник',
     }),
     test: () => ({
       title: 'KPOS',

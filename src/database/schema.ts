@@ -922,9 +922,20 @@ export const productPriceHistory = pgTable(
     oldPrice: decimal('old_price', {precision: 10, scale: 2}),
     newPrice: decimal('new_price', {precision: 10, scale: 2}).notNull(),
     // 'card' (the product form), 'receipt' (a delivery's price applied to the
-    // card), or 'receipt_line' (the card's price written back onto a delivery
-    // line that held a typo — that row describes the document moving).
+    // card), 'receipt_line' (the card's price written back onto a delivery
+    // line that held a typo — that row describes the document moving),
+    // 'queued' (a delivery's waiting lower price took effect), 'queue_add'
+    // (a delivery's lower price joined the queue — old_price is the card's
+    // figure that keeps selling) or 'queue_cancel' (a waiting price was
+    // dropped before it took effect — new_price is that waiting figure).
+    // Neither queue row is the shelf moving.
     source: varchar('source', {length: 20}).notNull().default('card'),
+    // Why a 'queue_cancel' row happened: 'card' (the price was set by hand),
+    // 'button' (cancelled on the product card), 'receipt' (a delivery's price
+    // went onto the card), 'replaced' (a dearer delivery took its place in
+    // the chain), 'unreceive' (its delivery was taken back), 'overtaken' (a
+    // later step took effect in the same move). Null otherwise.
+    reason: varchar('reason', {length: 20}),
     // The delivery note the price came from, when it came from one.
     receiptId: varchar('receipt_id', {length: 36}),
     cashierId: varchar('cashier_id', {length: 36}),
@@ -938,6 +949,49 @@ export const productPriceHistory = pgTable(
       table.productId,
       table.createdAt.desc().nullsFirst(),
     ),
+  }),
+);
+
+// A delivery's LOWER selling price, waiting for the stock that came in before
+// it to sell out ("navbatdagi narx"). The card stays the one price a sale is
+// valued at; a step moves it exactly once, forward, when no open lot older
+// than `triggerAt` is left in any branch. Rises never wait — they go straight
+// onto the card — so per product and field the pending values only ever fall
+// as the chain goes on. A hand edit of that field drops its steps.
+export const productPriceSteps = pgTable(
+  'product_price_steps',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    // 'priceOut' | 'priceWholesale' | 'priceBundle'
+    field: varchar('field', {length: 20}).notNull(),
+    price: decimal('price', {precision: 10, scale: 2}).notNull(),
+    // The delivery note the price came from; un-receiving it drops the step.
+    receiptId: varchar('receipt_id', {length: 36})
+      .notNull()
+      .references(() => goodsReceipts.id, {onDelete: 'cascade'}),
+    // Lots created before this moment are the "old stock" that sells first.
+    // Millisecond-truncated: lots moved between branches keep their createdAt
+    // through a JS Date, which drops the microseconds.
+    triggerAt: timestamp('trigger_at').notNull(),
+    // Who queued it — the history row written when it takes effect names them.
+    cashierId: varchar('cashier_id', {length: 36}),
+    cashierName: varchar('cashier_name', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    productIdx: index('product_price_steps_product_idx').on(
+      table.businessId,
+      table.productId,
+      table.field,
+      table.triggerAt,
+    ),
+    receiptIdx: index('product_price_steps_receipt_idx').on(table.receiptId),
   }),
 );
 
@@ -1014,6 +1068,10 @@ export const receiptSettings = pgTable('receipt_settings', {
   // The rounding itself happens in the client forms — typed amounts are never
   // rounded, and nothing here touches saved prices.
   priceRoundingStep: integer('price_rounding_step').notNull().default(100),
+  // A delivery's lower selling price waits until the stock that came in before
+  // it is sold out in every branch (product_price_steps). Off = it goes onto
+  // the card at once, the way it did before.
+  deferPriceDrops: boolean('defer_price_drops').notNull().default(true),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
@@ -1882,6 +1940,7 @@ export type BusinessSubscription = typeof businessSubscriptions.$inferSelect;
 export type NewBusinessSubscription = typeof businessSubscriptions.$inferInsert;
 export type ProductPriceHistory = typeof productPriceHistory.$inferSelect;
 export type NewProductPriceHistory = typeof productPriceHistory.$inferInsert;
+export type ProductPriceStep = typeof productPriceSteps.$inferSelect;
 export type Product = typeof products.$inferSelect;
 export type NewProduct = typeof products.$inferInsert;
 export type GlobalBarcode = typeof globalBarcodes.$inferSelect;
@@ -2334,6 +2393,9 @@ export const telegramNotificationSettings = pgTable(
     lowStock: boolean('low_stock').notNull().default(true),
     // Platform announcements as a phone push (no Telegram counterpart).
     announcements: boolean('announcements').notNull().default(true),
+    // A queued lower price took effect by itself (old stock sold out) — the
+    // shelf label needs reprinting.
+    priceChanges: boolean('price_changes').notNull().default(true),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
 );

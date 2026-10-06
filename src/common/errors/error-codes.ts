@@ -152,6 +152,7 @@ export enum ErrorCode {
   RECEIPT_RECEIVE_BEFORE_RETURN = 'RECEIPT_RECEIVE_BEFORE_RETURN',
   RECEIPT_RECEIVE_BEFORE_PRICES = 'RECEIPT_RECEIVE_BEFORE_PRICES',
   PRODUCT_PRICE_NOT_SET = 'PRODUCT_PRICE_NOT_SET',
+  PRICE_STEP_NOT_FOUND = 'PRICE_STEP_NOT_FOUND',
   RECEIPT_NO_PRICES_TO_APPLY = 'RECEIPT_NO_PRICES_TO_APPLY',
   RECEIPT_NOTHING_TO_RETURN = 'RECEIPT_NOTHING_TO_RETURN',
   RECEIPT_PRODUCT_NOT_ON_RECEIPT = 'RECEIPT_PRODUCT_NOT_ON_RECEIPT',
@@ -849,6 +850,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.PRODUCT_PRICE_NOT_SET]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'No selling price is set for "{name}"',
+  },
+  // A waiting price was applied or cancelled meanwhile (another tab, the old
+  // stock selling out) — the card already shows where it went.
+  [ErrorCode.PRICE_STEP_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'This waiting price was already applied or cancelled',
   },
   // Prices on a draft are still being typed, and the goods are not on the shelf
   // yet — there is nothing to reprice until the document is received.

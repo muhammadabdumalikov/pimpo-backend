@@ -21,6 +21,7 @@ import {
   businesses,
   branches,
   productPriceHistory,
+  productPriceSteps,
   type GoodsReceipt,
   type GoodsReceiptItem,
   type SupplierPayment,
@@ -39,6 +40,7 @@ import {
   ne,
   or,
   inArray,
+  notInArray,
   sql,
   getTableColumns,
 } from 'drizzle-orm';
@@ -46,6 +48,7 @@ import {generateId} from '../utils/uuid';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
 import {BranchService} from '../branch/branch.service';
+import {PriceStepService} from '../price-step/price-step.service';
 import {CreateReceiptDto} from './dto/create-receipt.dto';
 import {UpdateReceiptDto} from './dto/update-receipt.dto';
 import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
@@ -58,6 +61,17 @@ import {
   lockSupplierTx,
 } from '../common/supplier-credit';
 import {recordPriceChangesTx} from '../common/price-history';
+import {
+  NON_SHELF_SOURCES,
+  PRICE_FIELDS,
+  cancelPriceStepsTx,
+  cancelReceiptStepsTx,
+  hasOlderStockTx,
+  pendingStepsTx,
+  planPrice,
+  productsWithOlderStock,
+  queueStepTx,
+} from '../common/price-steps';
 import {priceFlags, isSevere, type PriceFlag} from '../common/price-risk';
 
 function money(value: number): string {
@@ -146,8 +160,16 @@ export interface PriceSuggestion {
     priceWholesale: string | null;
     priceBundle: string | null;
   };
-  /** Which of the three actually differ — the rest are left alone. */
+  /**
+   * Which of the three actually differ — the rest are left alone. A figure the
+   * card's waiting chain already ends on is not a difference: it is on its way.
+   */
   changes: PriceField[];
+  /**
+   * The changes that will not reach the card at once: drops that wait for the
+   * stock received before this delivery to sell out ("navbatdagi narx").
+   */
+  defer: PriceField[];
   /**
    * What this product cost on this receipt, in base UZS — the floor a selling
    * price is judged against, and what the margin is read from. Null when the
@@ -187,6 +209,7 @@ export class ReceiptService {
     private readonly dbService: DatabaseService,
     private readonly financeService: FinanceService,
     private readonly branchService: BranchService,
+    private readonly priceSteps: PriceStepService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -669,6 +692,7 @@ export class ReceiptService {
   async unreceiveReceipt(
     businessId: string,
     receiptId: string,
+    account?: IAccount,
   ): Promise<ReceiptWithItems> {
     // Taking goods off the shelf under an open count desyncs the count's book
     // snapshot exactly the way receiving into it does (INVENTARIZATSIYA.md
@@ -681,6 +705,7 @@ export class ReceiptService {
     if (receipt.status === 'draft') {
       throw new AppException(ErrorCode.RECEIPT_ALREADY_DRAFT);
     }
+    const actor = await this.resolveCashier(account);
 
     await this.dbService.db.transaction(async (tx) => {
       // `loadReversible` read outside this transaction, so everything it
@@ -696,6 +721,11 @@ export class ReceiptService {
       // The locked row, not the one read before it: a branch change committed
       // in between would otherwise take the stock off the wrong branch.
       await this.reverseReceiptStockTx(tx, businessId, locked, items);
+      // Its lots are gone, so are the lower prices that waited behind them.
+      await cancelReceiptStepsTx(tx, businessId, receiptId, {
+        reason: 'unreceive',
+        actor,
+      });
       await tx
         .update(goodsReceipts)
         .set({status: 'draft', updatedAt: new Date()})
@@ -706,6 +736,14 @@ export class ReceiptService {
           ),
         );
     });
+
+    // Older stock left the shelf with it: later deliveries' waiting prices
+    // may be due now.
+    await this.priceSteps.settle(businessId, [
+      ...new Set(
+        items.map((i) => i.productId).filter((id): id is string => !!id),
+      ),
+    ]);
 
     return this.findOne(businessId, receiptId) as Promise<ReceiptWithItems>;
   }
@@ -2326,6 +2364,25 @@ export class ReceiptService {
   }
 
   /**
+   * The prices this receipt put in the queue ("navbatdagi narx") and where
+   * each stands now: waiting for the older stock, taken effect, or dropped.
+   */
+  async getPriceSteps(businessId: string, receiptId: string) {
+    const [receipt] = await this.dbService.db
+      .select({id: goodsReceipts.id})
+      .from(goodsReceipts)
+      .where(
+        and(
+          eq(goodsReceipts.id, receiptId),
+          eq(goodsReceipts.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!receipt) throw new AppException(ErrorCode.RECEIPT_NOT_FOUND);
+    return this.priceSteps.receiptSteps(businessId, receiptId);
+  }
+
+  /**
    * Put the receipt's prices on the chosen products' cards. Only the products
    * asked for, and only the fields that actually differ — a card nobody picked
    * keeps the price it has.
@@ -2337,6 +2394,8 @@ export class ReceiptService {
     account?: IAccount,
   ): Promise<{
     applied: number;
+    // Products whose lower price now waits for the older stock to sell out.
+    queued: number;
     toCard: PriceSuggestion[];
     toReceipt: PriceSuggestion[];
   }> {
@@ -2358,9 +2417,20 @@ export class ReceiptService {
       throw new AppException(ErrorCode.RECEIPT_NO_PRICES_TO_APPLY);
     }
 
-    await this.writePrices(businessId, receiptId, toCard, toReceipt, account);
+    const {queued} = await this.writePrices(
+      businessId,
+      receiptId,
+      toCard,
+      toReceipt,
+      account,
+    );
 
-    return {applied: toCard.length + toReceipt.length, toCard, toReceipt};
+    return {
+      applied: toCard.length + toReceipt.length,
+      queued: queued.length,
+      toCard,
+      toReceipt,
+    };
   }
 
   /**
@@ -2407,21 +2477,76 @@ export class ReceiptService {
     toCard: PriceSuggestion[],
     toReceipt: PriceSuggestion[],
     account?: IAccount,
-  ): Promise<void> {
+  ): Promise<{queued: string[]}> {
     const actor = await this.resolveCashier(account);
 
+    const defer = await this.deferPriceDrops(businessId);
+    const queued: string[] = [];
+
     await this.dbService.db.transaction(async (tx) => {
-      // The receipt was right: the card takes its price, and the shop starts
-      // selling at it.
+      // The receipt was right: the card takes its price — at once when it is
+      // a rise, or when nothing older is left on the shelf; a drop waits in
+      // product_price_steps until the stock received before this delivery
+      // has sold out (common/price-steps.ts).
       for (const s of toCard) {
-        const set: Record<string, string | Date> = {updatedAt: new Date()};
+        // The card under lock, read fresh: the proposal was built outside
+        // this transaction, and every price decision for the product queues
+        // behind this row.
+        const [card] = await tx
+          .select({
+            priceOut: products.priceOut,
+            priceWholesale: products.priceWholesale,
+            priceBundle: products.priceBundle,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              eq(products.id, s.productId),
+            ),
+          )
+          .for('update');
+        if (!card) continue;
+
+        const set: Record<string, string | Date> = {};
+        const nowFields: PriceField[] = [];
+        let olderStock: boolean | null = null;
         for (const field of s.changes) {
           const value = s.proposed[field];
-          if (value != null) set[field] = value;
+          if (value == null) continue;
+          const cardValue = card[field] != null ? Number(card[field]) : null;
+          if (defer && olderStock == null && cardValue != null && Number(value) < cardValue) {
+            olderStock = await hasOlderStockTx(tx, businessId, s.productId, receiptId);
+          }
+          const plan = planPrice({
+            card: cardValue,
+            steps: await pendingStepsTx(tx, businessId, s.productId, field),
+            proposed: Number(value),
+            defer,
+            olderStock: olderStock ?? false,
+          });
+          if (plan.kind === 'now') {
+            set[field] = value;
+            nowFields.push(field);
+          } else if (plan.kind === 'queue') {
+            await queueStepTx(tx, {
+              businessId,
+              productId: s.productId,
+              field,
+              price: value,
+              receiptId,
+              lift: plan.lift,
+              actor,
+              cardPrice: card[field],
+            });
+            queued.push(s.productId);
+          }
         }
+        if (nowFields.length === 0) continue;
+
         await tx
           .update(products)
-          .set(set)
+          .set({...set, updatedAt: new Date()})
           .where(
             and(
               eq(products.businessId, businessId),
@@ -2433,11 +2558,16 @@ export class ReceiptService {
         await recordPriceChangesTx(tx, {
           businessId,
           productId: s.productId,
-          before: s.current,
+          before: card,
           after: Object.fromEntries(
-            s.changes.map((f) => [f, s.proposed[f]]),
+            nowFields.map((f) => [f, s.proposed[f]]),
           ) as Record<string, string | null>,
           origin: {source: 'receipt', receiptId},
+          actor,
+        });
+        // A figure written now overtakes whatever was waiting for the field.
+        await cancelPriceStepsTx(tx, businessId, s.productId, nowFields, {
+          reason: 'receipt',
           actor,
         });
       }
@@ -2485,6 +2615,18 @@ export class ReceiptService {
         });
       }
     });
+
+    return {queued: [...new Set(queued)]};
+  }
+
+  /** The shop's switch for waiting drops; on unless it was turned off. */
+  private async deferPriceDrops(businessId: string): Promise<boolean> {
+    const [row] = await this.dbService.db
+      .select({defer: receiptSettings.deferPriceDrops})
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    return row?.defer ?? true;
   }
 
   /** Shared by the proposal and by applying it, so the two cannot drift. */
@@ -2544,17 +2686,71 @@ export class ReceiptService {
     const differs = (a: string | null, b: string | null): boolean =>
       b != null && (a == null || Math.abs(Number(a) - Number(b)) > 0.005);
 
+    // Where each card's waiting chain ends: a figure already on its way to the
+    // card is not a difference to propose again.
+    const chainEnd = new Map<string, string>();
+    const steps = await this.dbService.db
+      .select({
+        productId: productPriceSteps.productId,
+        field: productPriceSteps.field,
+        price: productPriceSteps.price,
+      })
+      .from(productPriceSteps)
+      .where(
+        and(
+          eq(productPriceSteps.businessId, businessId),
+          inArray(productPriceSteps.productId, [...proposed.keys()]),
+        ),
+      )
+      .orderBy(
+        asc(productPriceSteps.triggerAt),
+        asc(productPriceSteps.createdAt),
+      );
+    for (const st of steps) chainEnd.set(`${st.productId}|${st.field}`, st.price);
+
+    // Which drops would wait: the shop's switch, and older stock on the shelf.
+    const defer = await this.deferPriceDrops(businessId);
+    const dropping = cards
+      .filter((c) => {
+        const want = proposed.get(c.id);
+        return (
+          want != null &&
+          PRICE_FIELDS.some(
+            (f) =>
+              c[f] != null && want[f] != null && Number(want[f]) < Number(c[f]),
+          )
+        );
+      })
+      .map((c) => c.id);
+    const withOlder = defer
+      ? await productsWithOlderStock(
+          this.dbService.db,
+          businessId,
+          receipt.id,
+          dropping,
+        )
+      : new Set<string>();
+
     const out: PriceSuggestion[] = [];
     for (const card of cards) {
       const want = proposed.get(card.id);
       if (!want) continue;
       const changes: PriceField[] = [];
-      if (differs(card.priceOut, want.priceOut)) changes.push('priceOut');
-      if (differs(card.priceWholesale, want.priceWholesale)) {
-        changes.push('priceWholesale');
-      }
-      if (differs(card.priceBundle, want.priceBundle)) {
-        changes.push('priceBundle');
+      const deferred: PriceField[] = [];
+      for (const field of PRICE_FIELDS) {
+        const end = chainEnd.get(`${card.id}|${field}`) ?? card[field];
+        if (!differs(card[field], want[field]) || !differs(end, want[field])) {
+          continue;
+        }
+        changes.push(field);
+        if (
+          withOlder.has(card.id) &&
+          card[field] != null &&
+          Number(card[field]) > 0 &&
+          Number(want[field]) < Number(card[field])
+        ) {
+          deferred.push(field);
+        }
       }
       if (changes.length === 0) continue;
       const current = {
@@ -2581,6 +2777,7 @@ export class ReceiptService {
         current,
         proposed: want,
         changes,
+        defer: deferred,
         priceIn: lineCost != null ? money(lineCost) : null,
         flags: [...flags],
         cardMoved: null,
@@ -2632,9 +2829,10 @@ export class ReceiptService {
             suggestions.map((s) => s.productId),
           ),
           gt(productPriceHistory.createdAt, receipt.createdAt),
-          // 'receipt_line' rows describe a DOCUMENT being corrected, not the
-          // card moving, so they are not evidence of anything here.
-          ne(productPriceHistory.source, 'receipt_line'),
+          // A DOCUMENT being corrected, a waiting price joining or leaving
+          // the queue — none of these is the card moving, so none is
+          // evidence of anything here.
+          notInArray(productPriceHistory.source, [...NON_SHELF_SOURCES]),
         ),
       )
       .orderBy(asc(productPriceHistory.createdAt));
@@ -2847,7 +3045,7 @@ export class ReceiptService {
     const returnBranchId =
       receipt.branchId ??
       (await this.branchService.ensureDefault(businessId)).id;
-    return this.dbService.db.transaction(async (tx) => {
+    const result = await this.dbService.db.transaction(async (tx) => {
       // The receipt row is taken first, before any lot or stock row — the order
       // un-receiving and deleting take them in. Taken last, a return racing an
       // un-receive of the same receipt would hold the lots while waiting for
@@ -3049,5 +3247,10 @@ export class ReceiptService {
 
       return {return: ret, receipt: updated};
     });
+
+    // Lots went back to the supplier: a waiting lower price whose older stock
+    // that was may now take effect.
+    await this.priceSteps.settle(businessId, [...requested.keys()]);
+    return result;
   }
 }

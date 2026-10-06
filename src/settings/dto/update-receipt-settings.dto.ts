@@ -90,4 +90,14 @@ export class UpdateReceiptSettingsDto {
   @IsOptional()
   @IsIn(PRICE_ROUNDING_STEPS)
   priceRoundingStep?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "A delivery's lower selling price waits until the stock received " +
+      'before it is sold out in every branch. Off: it goes onto the card at once.',
+    example: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  deferPriceDrops?: boolean;
 }

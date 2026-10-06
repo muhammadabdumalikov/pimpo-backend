@@ -17,6 +17,7 @@ import {
   businesses,
   staff,
   productPriceHistory,
+  productPriceSteps,
   type Product,
   type NewProduct,
   type Unit,
@@ -60,7 +61,12 @@ import {
 } from '../common/weight-barcode';
 import {ScaleService} from '../scale/scale.service';
 import {IAccount} from '../business/types';
-import {recordPriceChangesTx, type PriceChangeOrigin} from '../common/price-history';
+import {
+  recordPriceChangesTx,
+  type PriceChangeOrigin,
+  type PriceField,
+} from '../common/price-history';
+import {cancelPriceStepsTx} from '../common/price-steps';
 
 /**
  * How the catalogue list comes back: newest first.
@@ -602,6 +608,12 @@ export class ProductService {
       // sold in fractional units (kg/l/m, quantityType 'kg') or carrying no
       // barcode at all. Sold-out rows stay in so the till can grey them in place.
       vitrina?: boolean;
+      // Products whose selling price moved since this instant — the labels to
+      // reprint. Delivery-line corrections and waiting prices joining or
+      // leaving the queue (NON_SHELF_SOURCES) are not the shelf moving.
+      priceChangedSince?: Date;
+      // Products with a delivery's lower price waiting in product_price_steps.
+      pricePending?: boolean;
       // Sparse fieldset (common/field-selection.ts): only these columns are
       // read and returned, plus `id`. Undefined = the full row.
       fields?: Set<string>;
@@ -638,6 +650,7 @@ export class ProductService {
     const unitId = options?.unitId;
     const plu = options?.plu;
     const vitrina = options?.vitrina;
+    const priceChangedSince = options?.priceChangedSince;
 
     // Build where conditions
     const whereConditions = [
@@ -660,6 +673,26 @@ export class ProductService {
     if (vitrina) {
       whereConditions.push(
         sql`(${products.quantityType} = 'kg' or coalesce(btrim(${products.barcode}), '') = '')`,
+      );
+    }
+
+    if (priceChangedSince) {
+      // created_at is UTC wall-clock without a zone; the instant goes in as
+      // text so no driver-side Date conversion can shift it.
+      whereConditions.push(
+        sql`exists (select 1 from ${productPriceHistory} h
+          where h.business_id = ${products.businessId}
+            and h.product_id = ${products.id}
+            and h.source not in ('receipt_line', 'queue_add', 'queue_cancel')
+            and h.created_at >= (${priceChangedSince.toISOString()}::timestamptz at time zone 'UTC'))`,
+      );
+    }
+
+    if (options?.pricePending) {
+      whereConditions.push(
+        sql`exists (select 1 from ${productPriceSteps} s
+          where s.business_id = ${products.businessId}
+            and s.product_id = ${products.id})`,
       );
     }
 
@@ -1095,6 +1128,8 @@ export class ProductService {
         oldPrice: productPriceHistory.oldPrice,
         newPrice: productPriceHistory.newPrice,
         source: productPriceHistory.source,
+        // Why a waiting price was dropped ('queue_cancel' rows only).
+        reason: productPriceHistory.reason,
         receiptId: productPriceHistory.receiptId,
         // The delivery a receipt-sourced change came from, so the row can name
         // it ("Jkmooo, 11.09") and link to the document.
@@ -1198,7 +1233,7 @@ export class ProductService {
       // it was before. Prices are only ever changed by a person now, so this is
       // the whole account of how a price came to be what it is — and the answer
       // to the next "it changed by itself".
-      await this.recordPriceChanges(
+      const moved = await this.recordPriceChanges(
         tx,
         businessId,
         productId,
@@ -1207,6 +1242,12 @@ export class ProductService {
         {source: 'card'},
         actor,
       );
+      // A price set by hand is the decision: a delivery's lower price still
+      // waiting for that field would otherwise overrule it later.
+      await cancelPriceStepsTx(tx, businessId, productId, moved, {
+        reason: 'card',
+        actor,
+      });
 
       // The lots are left alone by a price change. Each one records the price
       // written on the delivery it came in on; the card above is what the shop
@@ -1315,8 +1356,8 @@ export class ProductService {
     after: Partial<NewProduct>,
     origin: PriceChangeOrigin,
     actor: {id: string | null; name: string | null},
-  ): Promise<void> {
-    await recordPriceChangesTx(tx, {
+  ): Promise<PriceField[]> {
+    return recordPriceChangesTx(tx, {
       businessId,
       productId,
       before,

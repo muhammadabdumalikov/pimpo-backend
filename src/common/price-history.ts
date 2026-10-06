@@ -16,9 +16,12 @@ export type PriceField = (typeof PRICE_FIELDS)[number];
  * 'receipt_line' — the other direction: the card's price was written back onto
  *                  the delivery line, because the line held a typo. The row
  *                  describes the DOCUMENT moving, not the shelf.
+ * 'queued'       — a delivery's lower price that waited for the older stock
+ *                  to sell out took effect (product_price_steps), by itself or
+ *                  because someone pressed "apply now".
  */
 export interface PriceChangeOrigin {
-  source: 'card' | 'receipt' | 'receipt_line';
+  source: 'card' | 'receipt' | 'receipt_line' | 'queued';
   receiptId?: string | null;
 }
 
@@ -41,7 +44,8 @@ function differs(a: string | null | undefined, b: string | null | undefined) {
 }
 
 /**
- * Write one row per selling price this edit actually moves.
+ * Write one row per selling price this edit actually moves, and name the
+ * fields that moved.
  *
  * Runs inside the caller's transaction, so the history cannot exist without the
  * change it describes — and cannot be missing from one either.
@@ -49,7 +53,7 @@ function differs(a: string | null | undefined, b: string | null | undefined) {
 export async function recordPriceChangesTx(
   tx: Tx,
   input: PriceChangeInput,
-): Promise<void> {
+): Promise<PriceField[]> {
   const rows = PRICE_FIELDS.filter((f) =>
     differs(input.before[f], input.after[f]),
   ).map((field) => ({
@@ -64,6 +68,7 @@ export async function recordPriceChangesTx(
     cashierId: input.actor.id,
     cashierName: input.actor.name,
   }));
-  if (rows.length === 0) return;
+  if (rows.length === 0) return [];
   await tx.insert(productPriceHistory).values(rows);
+  return rows.map((r) => r.field);
 }

@@ -45,6 +45,8 @@ export interface QuotedPriceInput {
   cardPrice?: number | null;
   /** Named in the error, so the cashier knows which line to look at. */
   productName: string;
+  /** In the error too, so the till can reprice exactly that line. */
+  productId?: string;
   /**
    * False for an offline sale being replayed. That sale already happened at
    * the counter and refusing it here would drop it out of the books, so an
@@ -77,6 +79,7 @@ export function resolveLinePrice(input: QuotedPriceInput): LinePrice {
     }
     throw new AppException(ErrorCode.ORDER_PRICE_NOT_BACKED, {
       name: input.productName,
+      productId: input.productId ?? null,
       quoted: displayAmount(quoted),
       expected: displayAmount(expected),
     });
