@@ -58,7 +58,6 @@ const DAY_MS = 86_400_000;
 // The phone home is re-read on every tab switch and pull; 30s keeps that from
 // re-running a dozen aggregates while staying fresh enough for "right now".
 const HOME_TTL = 30_000;
-const MONEY_TTL = 30_000;
 
 function addDays(ymd: string, days: number): string {
   const [y, m, d] = ymd.split('-').map(Number);
@@ -439,11 +438,9 @@ export class MobileService {
       this.permissions.can(account, 'debt:read'),
       this.permissions.can(account, 'receipt:read'),
     ]);
-    const data = await this.cache.wrap(
-      `mobile:money:${businessId}`,
-      () => this.computeMoney(businessId),
-      MONEY_TTL,
-    );
+    // Not cached: the owner opens "Pul" right after recording an expense or a
+    // till movement and must see it — a stale balance here reads as lost money.
+    const data = await this.computeMoney(businessId);
     return {
       ...data,
       accounts: financeRead ? data.accounts : null,
