@@ -51,6 +51,7 @@ import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {FinanceService} from '../finance/finance.service';
+import {ProductService} from '../product/product.service';
 
 export type MobilePeriod = 'today' | 'week' | 'month';
 
@@ -116,6 +117,7 @@ export class MobileService {
     private readonly subscriptions: SubscriptionService,
     private readonly branchService: BranchService,
     private readonly finance: FinanceService,
+    private readonly productService: ProductService,
   ) {}
 
   private get db() {
@@ -165,7 +167,7 @@ export class MobileService {
       prevRevenue,
       week,
       tier,
-      stockHealth,
+      stockStats,
       debts,
       pendingOnline,
       shiftRows,
@@ -178,7 +180,9 @@ export class MobileService {
       this.revenueBetween(businessId, win.prevStart, win.prevEnd),
       this.reports.getSales(businessId, {from: weekFrom, to: win.to}, 'day'),
       this.subscriptions.getEffectiveTier(businessId),
-      this.reports.getStockHealth(businessId),
+      // The same rules as the phone list's "Tugagan" / "Kam qolgan" filters
+      // (stock=out / stock=alert), so a tapped row lists exactly its count.
+      this.productService.getStats(businessId),
       this.openDebts(businessId),
       this.pendingOnlineCount(businessId),
       this.openShiftsWithCash(businessId),
@@ -193,8 +197,6 @@ export class MobileService {
       : null;
 
     const revenue = sales.totals.revenue;
-    const bucket = (key: string) =>
-      stockHealth.buckets.find((b: {key: string}) => b.key === key)?.products ?? 0;
     const overdue = debts.filter((d) => d.dueDate && d.dueDate < todayStart);
 
     const dayRevenue = new Map(
@@ -240,8 +242,8 @@ export class MobileService {
             }
           : null,
       attention: {
-        outOfStock: bucket('out'),
-        lowStock: bucket('low'),
+        outOfStock: stockStats.outOfStock,
+        lowStock: stockStats.lowAlert ?? 0,
         overdueDebts: {
           count: overdue.length,
           amount: overdue.reduce((s, d) => s + d.remaining, 0),

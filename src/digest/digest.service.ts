@@ -12,7 +12,7 @@ import {
 import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
-import {ReportService} from '../report/report.service';
+import {ProductService} from '../product/product.service';
 
 export interface DailyDigest {
   date: string; // YYYY-MM-DD (business zone)
@@ -38,7 +38,7 @@ export class DigestService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly telegramNotify: TelegramNotifyService,
-    private readonly reports: ReportService,
+    private readonly productService: ProductService,
   ) {}
 
   private get db() {
@@ -210,7 +210,7 @@ export class DigestService {
 
   /**
    * 09:00 Asia/Tashkent: what ran out or fell under its threshold, before the
-   * shop opens — the same buckets the phone home shows, plus the out-of-stock
+   * shop opens — the same counts the phone home shows, plus the out-of-stock
    * products that were actually selling (the ones worth reordering today).
    * Only shops that sold something in the last week; a dormant tenant's empty
    * shelves are nobody's morning news.
@@ -226,11 +226,11 @@ export class DigestService {
 
     for (const {id} of active) {
       try {
-        const health = await this.reports.getStockHealth(id);
-        const count = (key: string) =>
-          health.buckets.find((b: {key: string}) => b.key === key)?.products ?? 0;
-        const out = count('out');
-        const low = count('low');
+        // Same counts as the phone home (out = nothing left; low = under the
+        // threshold the owner set — no default, or a small shop is all "low").
+        const stats = await this.productService.getStats(id);
+        const out = stats.outOfStock;
+        const low = stats.lowAlert ?? 0;
         if (out + low === 0) continue;
 
         const names = await this.sellingButOut(id);

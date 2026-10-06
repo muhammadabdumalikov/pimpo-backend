@@ -9,6 +9,7 @@ import {ShiftModule} from '../shift/shift.module';
 import {TargetModule} from '../target/target.module';
 import {BranchModule} from '../branch/branch.module';
 import {FinanceModule} from '../finance/finance.module';
+import {ProductModule} from '../product/product.module';
 import {MobileController} from './mobile.controller';
 import {MobileService} from './mobile.service';
 
@@ -24,6 +25,7 @@ import {MobileService} from './mobile.service';
     TargetModule,
     BranchModule,
     FinanceModule,
+    ProductModule,
   ],
   controllers: [MobileController],
   providers: [MobileService],
