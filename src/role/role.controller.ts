@@ -32,6 +32,8 @@ import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import { PermissionService } from '../permission/permission.service';
 import { FeatureService } from '../feature/feature.service';
+import { DatabaseService } from '../database/database.service';
+import { getBusinessType } from '../common/business-type';
 import { CurrentAccount } from '../business/decorators/current-account.decorator';
 import { IAccount } from '../business/types';
 
@@ -45,6 +47,7 @@ export class RoleController {
     private readonly roleService: RoleService,
     private readonly permissions: PermissionService,
     private readonly featureService: FeatureService,
+    private readonly dbService: DatabaseService,
   ) {}
 
   @Get()
@@ -65,8 +68,16 @@ export class RoleController {
     // the keys the guards actually enforce. Declared BEFORE @Get(':id') — Nest
     // matches in declaration order and ':id' would otherwise swallow it.
     // Keys of a feature still rolling out are left out for shops without it.
-    const enabled = new Set(await this.featureService.enabledFor(business.id));
-    return PERMISSION_CATALOG.filter((p) => !p.feature || enabled.has(p.feature));
+    // Keys of another business type (the recipe key on a retail shop) too.
+    const [enabled, type] = await Promise.all([
+      this.featureService.enabledFor(business.id).then((keys) => new Set(keys)),
+      getBusinessType(this.dbService.db, business.id),
+    ]);
+    return PERMISSION_CATALOG.filter(
+      (p) =>
+        (!p.feature || enabled.has(p.feature)) &&
+        (!p.businessType || p.businessType === type),
+    );
   }
 
   @Get(':id')

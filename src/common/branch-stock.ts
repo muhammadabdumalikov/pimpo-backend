@@ -1,5 +1,5 @@
-import {and, eq, sql} from 'drizzle-orm';
-import {branchStock, products} from '../database/schema';
+import {and, asc, eq, gt, sql} from 'drizzle-orm';
+import {branchStock, inventoryBatches, products} from '../database/schema';
 import {DatabaseService} from '../database/database.service';
 import {generateId} from '../utils/uuid';
 
@@ -112,4 +112,48 @@ export async function getBranchStock(
     )
     .limit(1);
   return row ? Number(row.quantity) : 0;
+}
+
+/**
+ * Trim a branch's open lots down to its stock. A sale may draw more than the
+ * lots hold (oversell — the rule for fast-food ingredients, FASTFOOD.md Q4):
+ * the lots stop at zero while branch_stock goes negative. When a delivery then
+ * lands, its lot would hold the full amount while the stock only rose to what
+ * is left after the deficit, and FIFO would later sell the deficit a second
+ * time. So after stock arrives, the oldest lots give up whatever exceeds the
+ * stock. With the invariant intact (lots = stock) this changes nothing.
+ */
+export async function trimLotsToStockTx(
+  tx: Tx,
+  businessId: string,
+  productId: string,
+  branchId: string,
+): Promise<void> {
+  const stock = await getBranchStock(tx, productId, branchId);
+  const lots = await tx
+    .select({id: inventoryBatches.id, qtyRemaining: inventoryBatches.qtyRemaining})
+    .from(inventoryBatches)
+    .where(
+      and(
+        eq(inventoryBatches.businessId, businessId),
+        eq(inventoryBatches.productId, productId),
+        eq(inventoryBatches.branchId, branchId),
+        gt(inventoryBatches.qtyRemaining, 0),
+      ),
+    )
+    .orderBy(asc(inventoryBatches.createdAt))
+    .for('update');
+  const held = lots.reduce((sum, l) => sum + l.qtyRemaining, 0);
+  let excess = Math.round((held - Math.max(stock, 0)) * 1000) / 1000;
+  for (const lot of lots) {
+    if (excess <= 0) break;
+    const take = Math.min(excess, lot.qtyRemaining);
+    await tx
+      .update(inventoryBatches)
+      .set({
+        qtyRemaining: sql`ROUND((${inventoryBatches.qtyRemaining} - ${take})::numeric, 3)`,
+      })
+      .where(eq(inventoryBatches.id, lot.id));
+    excess = Math.round((excess - take) * 1000) / 1000;
+  }
 }

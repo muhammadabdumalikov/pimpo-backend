@@ -23,7 +23,7 @@ import {
 } from '../database/schema';
 import {generateId} from '../utils/uuid';
 import {consumeBatches} from '../order/costing';
-import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
+import {applyBranchStockDelta, getBranchStock, trimLotsToStockTx} from '../common/branch-stock';
 import {IAccount} from '../business/types';
 import {CreateStockTakeDto} from './dto/create-stock-take.dto';
 import {CountItemsDto} from './dto/count-items.dto';
@@ -612,6 +612,12 @@ export class StockTakeService {
           branchId,
           diffQty,
         );
+        // Counted up from below zero (an ingredient sold ahead of its
+        // nakladnoy): the surplus lot also covers that deficit, so the lots
+        // must not end up holding more than the count.
+        if (diffQty > 0) {
+          await trimLotsToStockTx(tx, businessId, item.productId, branchId);
+        }
       }
 
       // (products.quantity + branch_stock were adjusted per changed line above.)

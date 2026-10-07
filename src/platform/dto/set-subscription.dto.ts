@@ -8,11 +8,11 @@ import { IsEnum, IsOptional, IsDateString } from 'class-validator';
 export class SetSubscriptionDto {
   @ApiProperty({
     description: 'Subscription tier to place the business on',
-    enum: ['free', 'basic', 'pro', 'proplus'],
+    enum: ['free', 'basic', 'pro', 'proplus', 'food'],
     example: 'pro',
   })
-  @IsEnum(['free', 'basic', 'pro', 'proplus'])
-  tier: 'free' | 'basic' | 'pro' | 'proplus';
+  @IsEnum(['free', 'basic', 'pro', 'proplus', 'food'])
+  tier: 'free' | 'basic' | 'pro' | 'proplus' | 'food';
 
   @ApiPropertyOptional({
     description:

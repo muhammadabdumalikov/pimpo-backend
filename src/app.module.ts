@@ -6,6 +6,7 @@ import {DatabaseModule} from './database/database.module';
 import {BusinessModule} from './business/business.module';
 import {SubscriptionModule} from './subscription/subscription.module';
 import {ProductModule} from './product/product.module';
+import {RecipeModule} from './recipe/recipe.module';
 import {CategoryModule} from './category/category.module';
 import {StoreModule} from './store/store.module';
 import {DebtModule} from './debt/debt.module';
@@ -92,6 +93,7 @@ class JwtGlobalModule {}
     BusinessModule,
     SubscriptionModule,
     ProductModule,
+    RecipeModule,
     CategoryModule,
     StoreModule,
     DebtModule,

@@ -34,6 +34,14 @@ export const businesses = pgTable('businesses', {
   // owner opts in from Settings. See ECOMMERCE.md F3/T13.
   storeSlug: varchar('store_slug', {length: 63}).unique(),
   storeEnabled: boolean('store_enabled').default(false).notNull(),
+  // What kind of business this is: 'retail' (a shop — the default, and every
+  // business before FASTFOOD.md) or 'food' (a fast-food kitchen: dishes with
+  // recipes, a daily queue number, the kitchen ticket). Picked at sign-up, then
+  // changed only from the platform console. It switches defaults and unlocks
+  // the food features; it never deletes data.
+  businessType: varchar('business_type', {length: 10})
+    .default('retail')
+    .notNull(),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -227,6 +235,24 @@ export const products = pgTable(
     // Packaging/measure code that goes with the MXIK code on the fiscal receipt
     // ('PackageCode'). Sourced from the same classifier row.
     packageCode: varchar('package_code', {length: 20}),
+    // What the card is (FASTFOOD.md §2):
+    //   'stock' — goods kept in stock and received on delivery notes. Every
+    //             retail product, and a kitchen's ingredients and resale goods.
+    //   'dish'  — a dish or combo: sold, holds no stock of its own; selling one
+    //             draws its recipe's ingredients instead (recipe_items).
+    //   'semi'  — a semi-finished item (sauce, marinade): never sold, no stock;
+    //             its recipe yields `recipeYield` units and is opened up inside
+    //             the dishes that use it.
+    // Only a 'food' business creates dish/semi cards. Fixed once created.
+    kind: varchar('kind', {length: 8}).default('stock').notNull(),
+    // A 'stock' card that also shows as a button on the fast-food till (a can
+    // of cola is both a combo ingredient and sold on its own). Dishes always
+    // show; ingredients like meat never do.
+    showInMenu: boolean('show_in_menu').default(false).notNull(),
+    // 'semi' only: how much one batch of its recipe makes, in the card's own
+    // unit ("this makes 2 kg of sauce"). 30 g of it in a dish draws 30/2000 of
+    // each ingredient. Also where cooking loss lives (1 kg raw → 0.7 kg fried).
+    recipeYield: doublePrecision('recipe_yield'),
     isActive: boolean('is_active').default(true).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -514,6 +540,13 @@ export const orders = pgTable(
     returnedAmount: decimal('returned_amount', {precision: 12, scale: 2})
       .notNull()
       .default('0'),
+    // Fast-food queue number ("navbat raqami") — 1, 2, 3… restarting every
+    // business day (queue_sequences). What the customer is called by; printed
+    // big on the receipt and the kitchen ticket. Null for retail sales.
+    queueNo: integer('queue_no'),
+    // Fast-food: 'dine_in' ("Shu yerda") | 'takeaway' ("Olib ketish"). Packaging
+    // lines of a recipe are drawn only for takeaway. Null for retail sales.
+    serviceType: varchar('service_type', {length: 10}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -589,6 +622,9 @@ export const orderItems = pgTable(
     // null = no live scale at that till (order/weight-source.ts). Audit only —
     // nothing prices or costs off it.
     weightSource: varchar('weight_source', {length: 10}),
+    // Kitchen note for the line ("piyozsiz, achchiq") — printed under it on the
+    // kitchen ticket. Never changes what the recipe draws.
+    note: varchar('note', {length: 200}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -3377,3 +3413,113 @@ export const devices = pgTable(
 );
 
 export type Device = typeof devices.$inferSelect;
+
+// ── Fast-food (FASTFOOD.md) ────────────────────────────────────────────────
+
+// One line of a dish's or semi-finished item's recipe ("texnologik karta"):
+// `quantity` of `componentId`, in the component's own unit (0.120 kg of meat,
+// 1 piece of bread, 30 g = 0.030 kg of a sauce). A component is a stock card
+// (drawn from its lots when the dish sells), a semi-finished card (opened up
+// into its own recipe) or another dish (a combo). Nesting is capped at three
+// levels and cycles are refused when a recipe is saved (recipe.service.ts).
+export const recipeItems = pgTable(
+  'recipe_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // The dish/semi card this line belongs to.
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    componentId: varchar('component_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    quantity: doublePrecision('quantity').notNull(),
+    // Packaging (container, cup, bag): drawn only when the sale is takeaway.
+    takeawayOnly: boolean('takeaway_only').default(false).notNull(),
+    sortOrder: integer('sort_order').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    productComponentUq: uniqueIndex('recipe_items_product_component_uq').on(
+      table.productId,
+      table.componentId,
+    ),
+    // "Which recipes use this card" — cycle checks and the card's usage list.
+    businessComponentIdx: index('recipe_items_business_component_idx').on(
+      table.businessId,
+      table.componentId,
+    ),
+  }),
+);
+
+export type RecipeItem = typeof recipeItems.$inferSelect;
+
+// What one sold dish line actually drew from stock, per ingredient: the recipe
+// opened all the way down to stock cards, times the line quantity, with the
+// cost those lots were valued at. It is what a return marked "not prepared"
+// and an owner deleting the sale put back, and what an ingredient-usage report
+// reads. The order line's cost_total is the sum of its rows.
+export const orderItemComponents = pgTable(
+  'order_item_components',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    orderId: varchar('order_id', {length: 36})
+      .notNull()
+      .references(() => orders.id, {onDelete: 'cascade'}),
+    orderItemId: varchar('order_item_id', {length: 36})
+      .notNull()
+      .references(() => orderItems.id, {onDelete: 'cascade'}),
+    // Loose like order_items.product_id: the history outlives the card.
+    productId: varchar('product_id', {length: 36}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    // Total drawn for the whole line (not per portion).
+    quantity: doublePrecision('quantity').notNull(),
+    costTotal: decimal('cost_total', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    orderItemIdx: index('order_item_components_item_idx').on(table.orderItemId),
+    businessProductIdx: index('order_item_components_business_product_idx').on(
+      table.businessId,
+      table.productId,
+    ),
+  }),
+);
+
+export type OrderItemComponent = typeof orderItemComponents.$inferSelect;
+
+// Per-business counter behind orders.queue_no. One row per business holding
+// the business day it last counted for: the first sale of a new day starts
+// again at 1. Bumped with an atomic upsert inside the sale's transaction.
+export const queueSequences = pgTable('queue_sequences', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Business day (Asia/Tashkent) as 'YYYY-MM-DD'.
+  day: varchar('day', {length: 10}).notNull(),
+  lastNo: integer('last_no').notNull().default(0),
+});
+
+// Fast-food settings of one business. A missing row means the defaults.
+export const foodSettings = pgTable('food_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Ready-made kitchen notes offered on a line ("piyozsiz", "achchiq").
+  notePresets: jsonb('note_presets').$type<string[]>().notNull().default([]),
+  // Food-cost share above which the menu-cost report flags a dish, in percent.
+  foodCostTarget: decimal('food_cost_target', {precision: 5, scale: 2})
+    .notNull()
+    .default('35'),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type FoodSettings = typeof foodSettings.$inferSelect;

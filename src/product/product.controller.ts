@@ -32,6 +32,7 @@ import {BulkCreateProductDto} from './dto/bulk-create-product.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import {parseFields} from '../common/field-selection';
+import {isProductKind, type ProductKind} from '../common/business-type';
 
 @ApiTags('products')
 @Controller('products')
@@ -145,6 +146,20 @@ export class ProductController {
       'Comma-separated product fields to return (plus id), e.g. name,priceOut,quantity. Omit for the full row.',
   })
   @ApiQuery({
+    name: 'kind',
+    required: false,
+    type: String,
+    description:
+      "Comma list of card kinds to keep: 'stock', 'dish', 'semi' (FASTFOOD.md).",
+  })
+  @ApiQuery({
+    name: 'menu',
+    required: false,
+    type: Boolean,
+    description:
+      "'true' keeps the fast-food till's buttons: every dish plus the stock cards marked showInMenu.",
+  })
+  @ApiQuery({
     name: 'vitrina',
     required: false,
     type: Boolean,
@@ -199,6 +214,8 @@ export class ProductController {
     @Query('vitrina') vitrina?: string,
     @Query('priceChangedSince') priceChangedSince?: string,
     @Query('pricePending') pricePending?: string,
+    @Query('kind') kind?: string,
+    @Query('menu') menu?: string,
   ) {
     const changedSince = priceChangedSince
       ? new Date(priceChangedSince)
@@ -222,6 +239,13 @@ export class ProductController {
           ? changedSince
           : undefined,
       pricePending: pricePending === 'true',
+      kinds: kind
+        ? kind
+            .split(',')
+            .map((k) => k.trim())
+            .filter((k): k is ProductKind => isProductKind(k))
+        : undefined,
+      menu: menu === 'true',
       fields: parseFields(fields),
       cursor: cursor || undefined,
       withTotal: withTotal !== 'false',

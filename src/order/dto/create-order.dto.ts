@@ -12,6 +12,7 @@ import {
   ValidateNested,
   IsIn,
   IsUUID,
+  MaxLength,
 } from 'class-validator';
 import {WEIGHT_SOURCES, type WeightSource} from '../weight-source';
 
@@ -68,6 +69,17 @@ export class OrderItemDto {
   @IsOptional()
   @IsIn(WEIGHT_SOURCES)
   weightSource?: WeightSource;
+
+  @ApiPropertyOptional({
+    description:
+      'Kitchen note for the line ("piyozsiz, achchiq"), printed under it on ' +
+      'the kitchen ticket. Never changes what the recipe draws.',
+    maxLength: 200,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
 }
 
 export class PaymentSplitDto {
@@ -254,4 +266,15 @@ export class CreateOrderDto {
   @IsString()
   @IsOptional()
   heldOrderId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Fast-food sales only: 'dine_in' (Shu yerda) or 'takeaway' (Olib " +
+      'ketish, the default). Recipe lines marked takeaway-only (packaging) ' +
+      'are drawn only for takeaway. Ignored for a retail business.',
+    enum: ['dine_in', 'takeaway'],
+  })
+  @IsOptional()
+  @IsIn(['dine_in', 'takeaway'])
+  serviceType?: 'dine_in' | 'takeaway';
 }

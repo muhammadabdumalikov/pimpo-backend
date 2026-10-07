@@ -1,5 +1,7 @@
 import {ApiProperty} from '@nestjs/swagger';
 import {
+  IsBoolean,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -9,6 +11,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import {PRODUCT_KINDS, type ProductKind} from '../../common/business-type';
 
 export class UpdateProductDto {
   @ApiProperty({
@@ -189,4 +192,34 @@ export class UpdateProductDto {
   @IsOptional()
   @MaxLength(20, {message: 'Package code must be at most 20 characters'})
   packageCode?: string;
+
+  @ApiProperty({
+    description:
+      "Card kind (FASTFOOD.md): 'stock' (default), 'dish' or 'semi'. Dish and " +
+      'semi cards are for food businesses only and cannot change kind later.',
+    enum: PRODUCT_KINDS,
+    required: false,
+  })
+  @IsOptional()
+  @IsIn(PRODUCT_KINDS)
+  kind?: ProductKind;
+
+  @ApiProperty({
+    description:
+      'Stock cards only: also show as a button on the fast-food till.',
+    required: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  showInMenu?: boolean;
+
+  @ApiProperty({
+    description:
+      "Semi-finished cards only: how much one batch of the recipe makes, in the card's unit.",
+    required: false,
+  })
+  @IsOptional()
+  @IsNumber({maxDecimalPlaces: 3})
+  @Min(0.001)
+  recipeYield?: number;
 }

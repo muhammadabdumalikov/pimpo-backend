@@ -6,10 +6,12 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { gateTier } from './tier';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {
@@ -58,8 +60,9 @@ export class SubscriptionController {
     status: 200,
     description: 'List of subscription plans',
   })
-  async getPlans() {
-    return await this.subscriptionService.getAllPlans();
+  async getPlans(@Query('type') type?: string) {
+    // ?type=food lists the fast-food plan; anything else the shop plans.
+    return await this.subscriptionService.getAllPlans(type === 'food' ? 'food' : 'retail');
   }
 
   @Get('plans/:id')
@@ -118,7 +121,10 @@ export class SubscriptionController {
 
     return {
       plan: subscription.plan,
-      tier: subscription.plan.tier,
+      // What the client gates on: a kitchen plan reads as the tier it gates
+      // like ('food' → 'basic'); the plan itself is in `planTier`.
+      tier: gateTier(subscription.plan.tier),
+      planTier: subscription.plan.tier,
       isActive: subscription.isActive,
       isTrial,
       startDate: subscription.startDate,

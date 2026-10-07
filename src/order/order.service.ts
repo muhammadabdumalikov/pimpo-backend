@@ -25,6 +25,7 @@ import {
 } from '../common/cursor';
 import {isStockTakeActive} from '../common/stock-take-lock';
 import {
+  businessDay,
   businessDayStart,
   businessDayEnd,
   recentBusinessMonths,
@@ -54,6 +55,8 @@ import {
   units,
   saleReturns,
   saleReturnItems,
+  orderItemComponents,
+  queueSequences,
   type Order,
   type OrderItem,
 } from '../database/schema';
@@ -73,6 +76,14 @@ import {HoldOrderDto} from './dto/hold-order.dto';
 import {UpdateOrderDto} from './dto/update-order.dto';
 import {IAccount} from '../business/types';
 import {consumeBatches, type CostingMethod} from './costing';
+import {getBusinessType} from '../common/business-type';
+import {
+  consumeDishTx,
+  loadRecipeGraph,
+  restoreDishComponentsTx,
+  type DishConsumption,
+} from '../recipe/recipe.service';
+import type {RecipeGraph} from '../recipe/recipe-graph';
 import {weightSourceFor, type WeightSource} from './weight-source';
 
 // Drizzle transaction handle (parameter of db.transaction's callback).
@@ -122,6 +133,30 @@ export async function nextReceiptNo(
       set: {lastNo: sql`${receiptSequences.lastNo} + 1`},
     })
     .returning({lastNo: receiptSequences.lastNo});
+  return row.lastNo;
+}
+
+/**
+ * Issue the next fast-food queue number ("navbat raqami") for a business inside
+ * the caller's transaction: 1, 2, 3… restarting with the first sale of each
+ * business day (Asia/Tashkent). Same row-locking upsert as nextReceiptNo.
+ */
+export async function nextQueueNo(
+  tx: DbTx,
+  businessId: string,
+  day: string = businessDay(),
+): Promise<number> {
+  const [row] = await tx
+    .insert(queueSequences)
+    .values({businessId, day, lastNo: 1})
+    .onConflictDoUpdate({
+      target: queueSequences.businessId,
+      set: {
+        lastNo: sql`CASE WHEN ${queueSequences.day} = ${day} THEN ${queueSequences.lastNo} + 1 ELSE 1 END`,
+        day,
+      },
+    })
+    .returning({lastNo: queueSequences.lastNo});
   return row.lastNo;
 }
 
@@ -460,6 +495,9 @@ export class OrderService {
       // (see quoted-price.ts). Null when the client quoted nothing.
       quotedPrice: number | null;
       weightSource: WeightSource | null;
+      // A dish draws its recipe's ingredients instead of its own stock.
+      isDish: boolean;
+      note: string | null;
     }[] = [];
     let itemCount = 0;
 
@@ -477,6 +515,12 @@ export class OrderService {
       if (!product) {
         throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
           productId: item.productId,
+        });
+      }
+      // A semi-finished card (a sauce) only exists inside dishes.
+      if (product.kind === 'semi') {
+        throw new AppException(ErrorCode.PRODUCT_NOT_SELLABLE, {
+          name: product.name,
         });
       }
       // Resolve the requested price tier to the product's configured price. An
@@ -520,6 +564,8 @@ export class OrderService {
           dto.source === 'store'
             ? null
             : weightSourceFor(product, item.weightSource),
+        isDish: product.kind === 'dish',
+        note: item.note?.trim() || null,
       });
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
@@ -549,6 +595,18 @@ export class OrderService {
       .where(eq(loyaltySettings.businessId, businessId))
       .limit(1);
 
+    // Fast-food (FASTFOOD.md): a daily queue number and the service type ride
+    // on the order; dish lines are opened up into their recipes. Loaded before
+    // the transaction like the product snapshots above.
+    const isFood = (await getBusinessType(this.dbService.db, businessId)) === 'food';
+    const serviceType = isFood ? (dto.serviceType ?? 'takeaway') : null;
+    const dishIds = planned.filter((p) => p.isDish).map((p) => p.productId);
+    const recipeGraph: RecipeGraph | null = dishIds.length
+      ? await loadRecipeGraph(this.dbService.db, businessId, dishIds)
+      : null;
+    // Stock cards the dishes drew from — their waiting prices settle too.
+    const drawnIds = new Set<string>();
+
     const orderId = generateId();
     const branchId = await this.resolveSaleBranch(
       businessId,
@@ -562,6 +620,7 @@ export class OrderService {
         // producing the COGS + batch-priced revenue snapshot. `total` is the sum of
         // the real per-batch revenue, so it must be computed here, before payments.
         const lines: {
+          id: string;
           productId: string;
           productName: string;
           priceOut: string;
@@ -571,21 +630,50 @@ export class OrderService {
           costIn: string;
           costTotal: string;
           weightSource: WeightSource | null;
+          note: string | null;
+          // Set on a dish line: what its recipe drew (stock moved already).
+          drawn: DishConsumption | null;
         }[] = [];
         let total = 0;
 
         for (const p of planned) {
-          const c = await consumeBatches(
-            tx,
-            businessId,
-            p.productId,
-            p.quantity,
-            method,
-            p.priceIn,
-            p.priceOut,
-            branchId, // draw from the sale's branch lots
-            p.priceOverride,
-          );
+          let drawn: DishConsumption | null = null;
+          let c: {costTotal: number; costIn: number; revenueTotal: number};
+          if (p.isDish) {
+            // The dish card holds no stock: its recipe's ingredients are drawn
+            // from this branch's lots instead, and they are the line's cost.
+            drawn = await consumeDishTx(tx, {
+              businessId,
+              branchId,
+              method,
+              graph: recipeGraph!,
+              dishId: p.productId,
+              quantity: p.quantity,
+              takeaway: serviceType !== 'dine_in',
+            });
+            for (const comp of drawn.components) drawnIds.add(comp.productId);
+            const unitPrice = p.priceOverride ?? p.priceOut;
+            c = {
+              costTotal: drawn.costTotal,
+              costIn:
+                p.quantity > 0
+                  ? Math.round((drawn.costTotal / p.quantity) * 100) / 100
+                  : 0,
+              revenueTotal: Math.round(unitPrice * p.quantity * 100) / 100,
+            };
+          } else {
+            c = await consumeBatches(
+              tx,
+              businessId,
+              p.productId,
+              p.quantity,
+              method,
+              p.priceIn,
+              p.priceOut,
+              branchId, // draw from the sale's branch lots
+              p.priceOverride,
+            );
+          }
           // The receipt is written at the price the customer was shown, as long
           // as it is still the price the shop names. Stock and COGS above are
           // already settled and are not touched by this.
@@ -604,6 +692,7 @@ export class OrderService {
           });
           total += settledLine.revenueTotal;
           lines.push({
+            id: generateId(),
             productId: p.productId,
             productName: p.productName,
             priceOut: money(settledLine.priceOut),
@@ -613,6 +702,8 @@ export class OrderService {
             costIn: money(c.costIn),
             costTotal: money(c.costTotal),
             weightSource: p.weightSource,
+            note: p.note,
+            drawn,
           });
         }
 
@@ -728,6 +819,7 @@ export class OrderService {
 
         const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
         const receiptNo = await nextReceiptNo(tx, businessId);
+        const queueNo = isFood ? await nextQueueNo(tx, businessId) : null;
 
         await tx.insert(orders).values({
           id: orderId,
@@ -760,11 +852,13 @@ export class OrderService {
           sellerName: seller?.name ?? null,
           shiftId,
           branchId,
+          queueNo,
+          serviceType,
         });
 
         await tx.insert(orderItems).values(
           lines.map((line) => ({
-            id: generateId(),
+            id: line.id,
             orderId,
             businessId,
             productId: line.productId,
@@ -776,8 +870,27 @@ export class OrderService {
             costIn: line.costIn,
             costTotal: line.costTotal,
             weightSource: line.weightSource,
+            note: line.note,
           })),
         );
+
+        // What each dish line drew, per ingredient — returns and deletes put
+        // exactly this back.
+        const drawnRows = lines.flatMap((line) =>
+          (line.drawn?.components ?? []).map((comp) => ({
+            id: generateId(),
+            businessId,
+            orderId,
+            orderItemId: line.id,
+            productId: comp.productId,
+            productName: comp.productName,
+            quantity: comp.quantity,
+            costTotal: money(comp.costTotal),
+          })),
+        );
+        if (drawnRows.length) {
+          await tx.insert(orderItemComponents).values(drawnRows);
+        }
 
         // Draw the sold qty from the sale's BRANCH stock and keep
         // products.quantity (the cross-branch sum) in step. The selling price
@@ -785,6 +898,8 @@ export class OrderService {
         // changes it. This used to re-point it at the new FIFO-front lot, which
         // quietly undid every hand-set price at the next sale.
         for (const line of lines) {
+          // A dish's stock moved through its ingredients above.
+          if (line.drawn) continue;
           await tx
             .insert(branchStock)
             .values({
@@ -920,7 +1035,7 @@ export class OrderService {
     // it in this response so its other baskets reprice. After the commit, on
     // its own: a price that fails to move must never fail a sale.
     const priceChanges = await this.priceSteps.settle(businessId, [
-      ...new Set(planned.map((p) => p.productId)),
+      ...new Set([...planned.map((p) => p.productId), ...drawnIds]),
     ]);
     if (priceChanges.length > 0) created.priceChanges = priceChanges;
     // Push a Telegram checkout notice for genuine completions only — skip the
@@ -1780,8 +1895,17 @@ export class OrderService {
   ): Promise<void> {
     for (const item of items) {
       if (!item.productId) continue;
+      // A dish line goes back as the ingredients it drew (FASTFOOD.md §4).
+      const restored = await restoreDishComponentsTx(tx, {
+        businessId,
+        branchId:
+          branchId ?? (await this.branchService.ensureDefault(businessId)).id,
+        orderItemId: item.id,
+        fraction: 1,
+      });
+      if (restored > 0) continue;
       const [product] = await tx
-        .select({id: products.id})
+        .select({id: products.id, kind: products.kind})
         .from(products)
         .where(
           and(
@@ -1791,6 +1915,8 @@ export class OrderService {
         )
         .limit(1);
       if (!product) continue; // product deleted since the sale
+      // A dish with no recipe drew nothing; its card never holds stock.
+      if (product.kind !== 'stock') continue;
       await tx.insert(inventoryBatches).values({
         id: generateId(),
         businessId,

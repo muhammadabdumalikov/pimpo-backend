@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsEmail, MinLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsString, IsEmail, IsIn, IsOptional, MinLength } from 'class-validator';
+import {BUSINESS_TYPES, type BusinessType} from '../../common/business-type';
 
 export class CreateBusinessDto {
   @ApiProperty({
@@ -33,4 +34,14 @@ export class CreateBusinessDto {
   @IsString()
   @MinLength(6)
   password: string;
+
+  @ApiPropertyOptional({
+    description:
+      "'retail' (default) or 'food' — a fast-food kitchen (FASTFOOD.md Q18). " +
+      'A food business starts its trial on the kitchen plan.',
+    enum: BUSINESS_TYPES,
+  })
+  @IsOptional()
+  @IsIn(BUSINESS_TYPES)
+  businessType?: BusinessType;
 }

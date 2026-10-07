@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsEmail, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsEmail, IsIn, IsOptional, MinLength } from 'class-validator';
+import { BUSINESS_TYPES, type BusinessType } from '../../common/business-type';
+import { UpdateBusinessDto } from '../../business/dto/update-business.dto';
 
 /**
  * Platform admin: create a business. Unlike self-service signup
@@ -25,4 +27,26 @@ export class CreatePlatformBusinessDto {
   @IsString()
   @MinLength(6)
   password: string;
+
+  @ApiPropertyOptional({
+    description: "'retail' (default) or 'food' — a fast-food kitchen (FASTFOOD.md)",
+    enum: BUSINESS_TYPES,
+  })
+  @IsOptional()
+  @IsIn(BUSINESS_TYPES)
+  businessType?: BusinessType;
+}
+
+/**
+ * Platform admin: update a business. Only the platform may change its type —
+ * the owner's own profile form cannot (FASTFOOD.md Q18).
+ */
+export class UpdatePlatformBusinessDto extends UpdateBusinessDto {
+  @ApiPropertyOptional({
+    description: "'retail' or 'food'. Switches defaults; never deletes data.",
+    enum: BUSINESS_TYPES,
+  })
+  @IsOptional()
+  @IsIn(BUSINESS_TYPES)
+  businessType?: BusinessType;
 }

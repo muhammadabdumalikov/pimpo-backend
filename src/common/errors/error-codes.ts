@@ -310,6 +310,18 @@ export enum ErrorCode {
   PIN_LOCKED = 'PIN_LOCKED',
   // The employee has no PIN, so the till cannot sign them in.
   PIN_NOT_SET = 'PIN_NOT_SET',
+
+  // ── Fast-food: dishes, recipes (FASTFOOD.md) ───────────────────────────────
+  PRODUCT_KIND_FOOD_ONLY = 'PRODUCT_KIND_FOOD_ONLY',
+  PRODUCT_KIND_IMMUTABLE = 'PRODUCT_KIND_IMMUTABLE',
+  PRODUCT_NOT_SELLABLE = 'PRODUCT_NOT_SELLABLE',
+  RECIPE_NOT_SUPPORTED = 'RECIPE_NOT_SUPPORTED',
+  RECIPE_COMPONENT_NOT_FOUND = 'RECIPE_COMPONENT_NOT_FOUND',
+  RECIPE_COMPONENT_DUPLICATE = 'RECIPE_COMPONENT_DUPLICATE',
+  RECIPE_QUANTITY_INVALID = 'RECIPE_QUANTITY_INVALID',
+  RECIPE_CYCLE = 'RECIPE_CYCLE',
+  RECIPE_TOO_DEEP = 'RECIPE_TOO_DEEP',
+  RECIPE_YIELD_REQUIRED = 'RECIPE_YIELD_REQUIRED',
 }
 
 export interface ErrorDefinition {
@@ -1323,6 +1335,46 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.PIN_NOT_SET]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'This employee has no PIN',
+  },
+  [ErrorCode.PRODUCT_KIND_FOOD_ONLY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Dishes and semi-finished items are for fast-food businesses',
+  },
+  [ErrorCode.PRODUCT_KIND_IMMUTABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: "A card's kind cannot be changed after it is created",
+  },
+  [ErrorCode.PRODUCT_NOT_SELLABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '{name} is a semi-finished item and cannot be sold',
+  },
+  [ErrorCode.RECIPE_NOT_SUPPORTED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only dishes and semi-finished items have a recipe',
+  },
+  [ErrorCode.RECIPE_COMPONENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Recipe component not found',
+  },
+  [ErrorCode.RECIPE_COMPONENT_DUPLICATE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '{name} is listed twice in the recipe',
+  },
+  [ErrorCode.RECIPE_QUANTITY_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Recipe quantity of {name} must be greater than zero',
+  },
+  [ErrorCode.RECIPE_CYCLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '{name} already uses this item — the recipe would go round in a circle',
+  },
+  [ErrorCode.RECIPE_TOO_DEEP]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Recipes can be nested at most {max} levels deep',
+  },
+  [ErrorCode.RECIPE_YIELD_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A semi-finished item needs a yield greater than zero',
   },
 };
 

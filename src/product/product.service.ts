@@ -35,6 +35,7 @@ import {
   sql,
   isNull,
   isNotNull,
+  inArray,
   getTableColumns,
 } from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
@@ -67,6 +68,11 @@ import {
   type PriceField,
 } from '../common/price-history';
 import {cancelPriceStepsTx} from '../common/price-steps';
+import {
+  getBusinessType,
+  hasRecipe,
+  type ProductKind,
+} from '../common/business-type';
 
 /**
  * How the catalogue list comes back: newest first.
@@ -163,8 +169,26 @@ export class ProductService {
       branchId?: string;
       mxikCode?: string;
       packageCode?: string;
+      kind?: ProductKind;
+      showInMenu?: boolean;
+      recipeYield?: number;
     },
   ): Promise<Product> {
+    // Dish and semi-finished cards (FASTFOOD.md §2) belong to food businesses.
+    // They hold no stock of their own — what they cost comes from the recipe
+    // (saved separately), so stock and cost are not taken from the form.
+    const kind: ProductKind = data.kind ?? 'stock';
+    const recipeCard = hasRecipe(kind);
+    if (
+      recipeCard &&
+      (await getBusinessType(this.dbService.db, businessId)) !== 'food'
+    ) {
+      throw new AppException(ErrorCode.PRODUCT_KIND_FOOD_ONLY);
+    }
+    if (recipeCard) {
+      data = {...data, quantity: 0, priceIn: '0'};
+    }
+
     // Enforce the plan's product limit (null = unlimited).
     const {productsLimit} =
       await this.subscriptionService.getSubscriptionLimits(businessId);
@@ -240,6 +264,9 @@ export class ProductService {
       branchId,
       mxikCode: data.mxikCode || null,
       packageCode: data.packageCode || null,
+      kind,
+      showInMenu: kind === 'stock' ? (data.showInMenu ?? false) : false,
+      recipeYield: kind === 'semi' ? (data.recipeYield ?? null) : null,
       isActive: true,
     };
 
@@ -608,6 +635,11 @@ export class ProductService {
       // sold in fractional units (kg/l/m, quantityType 'kg') or carrying no
       // barcode at all. Sold-out rows stay in so the till can grey them in place.
       vitrina?: boolean;
+      // Card kinds to keep (FASTFOOD.md §2): 'stock' | 'dish' | 'semi'.
+      kinds?: string[];
+      // The fast-food till's buttons: every dish, plus the stock cards marked
+      // showInMenu (a can of cola). Ingredients and semi-finished items stay out.
+      menu?: boolean;
       // Products whose selling price moved since this instant — the labels to
       // reprint. Delivery-line corrections and waiting prices joining or
       // leaving the queue (NON_SHELF_SOURCES) are not the shelf moving.
@@ -673,6 +705,16 @@ export class ProductService {
     if (vitrina) {
       whereConditions.push(
         sql`(${products.quantityType} = 'kg' or coalesce(btrim(${products.barcode}), '') = '')`,
+      );
+    }
+
+    if (options?.kinds?.length) {
+      whereConditions.push(inArray(products.kind, options.kinds));
+    }
+
+    if (options?.menu) {
+      whereConditions.push(
+        sql`(${products.kind} = 'dish' or (${products.kind} = 'stock' and ${products.showInMenu}))`,
       );
     }
 
@@ -1167,6 +1209,21 @@ export class ProductService {
     const existing = await this.findOne(businessId, productId);
     if (!existing) {
       throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
+    }
+
+    // A card's kind is fixed once created (FASTFOOD.md §2). A dish/semi card
+    // holds no stock and takes its cost and yield from the recipe editor, so
+    // the form cannot move those; only stock cards show in the menu by flag.
+    if (data.kind !== undefined && data.kind !== existing.kind) {
+      throw new AppException(ErrorCode.PRODUCT_KIND_IMMUTABLE);
+    }
+    data = {...data};
+    delete data.kind;
+    delete data.recipeYield;
+    if (hasRecipe(existing.kind)) {
+      delete data.quantity;
+      delete data.priceIn;
+      delete data.showInMenu;
     }
 
     // Unit change: validate it and keep the derived legacy marker in sync.

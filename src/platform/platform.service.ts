@@ -13,8 +13,9 @@ import {
   subscriptionPlans,
   billingProfiles,
 } from '../database/schema';
+import type {BusinessType} from '../common/business-type';
 import { and, count, eq, ilike, or, sql } from 'drizzle-orm';
-import { TIER_RANK, type Tier } from '../subscription/tier';
+import {TIER_RANK, type Tier, gateTier, type PlanTier} from '../subscription/tier';
 
 /** One row in the platform businesses overview table. */
 export interface PlatformBusinessRow {
@@ -49,7 +50,7 @@ export class PlatformService {
     if (!planTier) return 'free';
     const expired = endDate != null && endDate.getTime() <= Date.now();
     if (expired) return 'free';
-    return TIER_RANK[planTier as Tier] !== undefined ? (planTier as Tier) : 'free';
+    return gateTier(planTier);
   }
 
   /**
@@ -263,6 +264,7 @@ export class PlatformService {
     email?: string;
     login: string;
     password: string;
+    businessType?: BusinessType;
   }) {
     const business = await this.businessService.create(data);
     const { password: _pw, ...safe } = business;
@@ -278,6 +280,7 @@ export class PlatformService {
       login?: string;
       password?: string;
       isActive?: boolean;
+      businessType?: BusinessType;
     },
   ) {
     const business = await this.businessService.update(id, data);
@@ -293,7 +296,7 @@ export class PlatformService {
   /** Set a business's subscription tier (and optional expiry). */
   async setSubscription(
     id: string,
-    tier: Tier,
+    tier: PlanTier,
     endDate?: string,
   ) {
     const business = await this.businessService.findById(id);

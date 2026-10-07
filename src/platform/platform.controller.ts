@@ -24,8 +24,10 @@ import { PlatformAuthService } from './platform-auth.service';
 import { PlatformJwtGuard } from './platform-jwt.guard';
 import { PlatformLoginDto } from './dto/platform-login.dto';
 import { SetSubscriptionDto } from './dto/set-subscription.dto';
-import { CreatePlatformBusinessDto } from './dto/create-platform-business.dto';
-import { UpdateBusinessDto } from '../business/dto/update-business.dto';
+import {
+  CreatePlatformBusinessDto,
+  UpdatePlatformBusinessDto,
+} from './dto/create-platform-business.dto';
 import { TopUpBalanceDto, CreateDiscountDto } from '../subscription/dto/billing.dto';
 
 /**
@@ -94,7 +96,7 @@ export class PlatformController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update a business (profile / active flag / password)' })
   @ApiParam({ name: 'id', description: 'Business ID' })
-  updateBusiness(@Param('id') id: string, @Body() dto: UpdateBusinessDto) {
+  updateBusiness(@Param('id') id: string, @Body() dto: UpdatePlatformBusinessDto) {
     return this.platformService.updateBusiness(id, dto);
   }
 

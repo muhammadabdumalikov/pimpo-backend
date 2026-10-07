@@ -12,6 +12,7 @@ import {
 import { and, eq, or } from 'drizzle-orm';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/uuid';
+import type {BusinessType} from '../common/business-type';
 
 // New businesses start on a 1-month free trial of the Standart (basic) plan.
 const TRIAL_TIER = 'basic';
@@ -26,6 +27,8 @@ export class BusinessService {
     email?: string | null;
     login: string;
     password: string;
+    // 'food' only from the platform console for now (FASTFOOD.md Q18/Q23).
+    businessType?: BusinessType;
   }): Promise<Business> {
     // Check if login (or email, when provided) already exists. Email is
     // optional, so only include it in the collision check when supplied.
@@ -52,6 +55,7 @@ export class BusinessService {
       email: data.email ?? null,
       login: data.login,
       password: hashedPassword,
+      businessType: data.businessType ?? 'retail',
       isActive: true,
     };
 
@@ -65,7 +69,7 @@ export class BusinessService {
     // circular module dependency (SubscriptionModule already imports
     // BusinessModule). If the basic plan is missing for any reason, registration
     // must still succeed — the business simply falls back to the internal floor.
-    await this.startTrial(business.id).catch(() => undefined);
+    await this.startTrial(business.id, business.businessType).catch(() => undefined);
 
     return business;
   }
@@ -75,11 +79,12 @@ export class BusinessService {
    * marks when the trial expires; gating downgrades the business to the internal
    * floor once it passes (see SubscriptionService).
    */
-  private async startTrial(businessId: string): Promise<void> {
+  private async startTrial(businessId: string, businessType = 'retail'): Promise<void> {
     const [plan] = await this.dbService.db
       .select({ id: subscriptionPlans.id })
       .from(subscriptionPlans)
-      .where(eq(subscriptionPlans.tier, TRIAL_TIER))
+      // A kitchen's trial runs on the kitchen plan (FASTFOOD.md Q21).
+      .where(eq(subscriptionPlans.tier, businessType === 'food' ? 'food' : TRIAL_TIER))
       .limit(1);
     if (!plan) return;
 

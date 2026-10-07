@@ -1,4 +1,5 @@
 import type {FeatureKey} from '../feature/feature.catalog';
+import type {BusinessType} from '../common/business-type';
 
 /**
  * The canonical list of ACTION permissions.
@@ -47,6 +48,11 @@ export interface PermissionDefinition {
    * itself does not care: the flagged endpoints refuse the shop anyway.
    */
   feature?: FeatureKey;
+  /**
+   * Only offered to businesses of this type (businesses.business_type) — the
+   * recipe key means nothing to a retail shop, which has no recipes.
+   */
+  businessType?: BusinessType;
 }
 
 export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
@@ -57,6 +63,9 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'product:delete', group: 'catalog'},
   // Categories, brands and units — one key for all three dictionaries.
   {key: 'catalog:manage', group: 'catalog'},
+  // Fast-food: reading and editing dish / semi-finished recipes (they reveal
+  // the cost of every dish, so not open like the catalogue).
+  {key: 'recipe:manage', group: 'catalog', businessType: 'food'},
 
   // ── Sotuv va kassa ───────────────────────────────────────────────────────
   {key: 'sale:read', group: 'sales'},

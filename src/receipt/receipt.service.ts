@@ -45,6 +45,7 @@ import {
   getTableColumns,
 } from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
+import {trimLotsToStockTx} from '../common/branch-stock';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
 import {BranchService} from '../branch/branch.service';
@@ -537,10 +538,13 @@ export class ReceiptService {
         .update(products)
         .set({
           quantity: sql`ROUND((${products.quantity} + ${agg.qty})::numeric, 3)`,
-          priceIn: sql`CASE WHEN ${products.quantity} + ${agg.qty} > 0
+          // Stock below zero (sold ahead of its delivery) holds no value to
+          // average with: counting it would divide the new cost by what is
+          // left after the deficit and inflate it. Treat it as empty.
+          priceIn: sql`CASE WHEN GREATEST(${products.quantity}, 0) + ${agg.qty} > 0
               THEN ROUND(
-                ((${products.quantity} * ${products.priceIn} + ${money(agg.value)})
-                / (${products.quantity} + ${agg.qty}))::numeric,
+                ((GREATEST(${products.quantity}, 0) * ${products.priceIn} + ${money(agg.value)})
+                / (GREATEST(${products.quantity}, 0) + ${agg.qty}))::numeric,
                 2
               )
               ELSE ${products.priceIn} END`,
@@ -551,6 +555,12 @@ export class ReceiptService {
         );
     }
 
+    // A delivery that lands on a deficit (an ingredient sold before its
+    // nakladnoy was entered) first covers it: the lots give up the units that
+    // were already sold, so FIFO does not sell them twice.
+    for (const productId of received.keys()) {
+      await trimLotsToStockTx(tx, businessId, productId, branchId);
+    }
   }
 
   /**

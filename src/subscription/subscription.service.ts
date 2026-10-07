@@ -17,7 +17,7 @@ import {
 import { eq, and, desc } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
-import { TIER_RANK, type Tier } from './tier';
+import {TIER_RANK, type Tier, gateTier, isFoodPlanTier} from './tier';
 
 // Monthly price of each branch beyond the first (base) one. Mirrors the
 // "+150 000" extra-location line in the plan comparison table.
@@ -66,7 +66,15 @@ export class SubscriptionService implements OnModuleInit {
     await seedSubscriptionPlans(this.dbService);
   }
 
-  async getAllPlans(): Promise<SubscriptionPlan[]> {
+  async getAllPlans(
+    // Shops see the shop plans, kitchens the kitchen plan (FASTFOOD.md Q14).
+    businessType: 'retail' | 'food' = 'retail',
+  ): Promise<SubscriptionPlan[]> {
+    const plans = await this.getAllActivePlans();
+    return plans.filter((p) => isFoodPlanTier(p.tier) === (businessType === 'food'));
+  }
+
+  private async getAllActivePlans(): Promise<SubscriptionPlan[]> {
     // Global plan catalogue — rarely changes; cached with a long TTL and
     // invalidated on create/update/delete of a plan. Only active plans are
     // exposed, so the deactivated internal `free` floor never shows up in the
@@ -102,8 +110,7 @@ export class SubscriptionService implements OnModuleInit {
     if (!subscription || !subscription.isActive || this.isExpired(subscription)) {
       return 'free';
     }
-    const tier = subscription.plan.tier as Tier;
-    return TIER_RANK[tier] !== undefined ? tier : 'free';
+    return gateTier(subscription.plan.tier);
   }
 
   async getPlanByTier(tier: string): Promise<SubscriptionPlan | null> {

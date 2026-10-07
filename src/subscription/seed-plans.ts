@@ -68,6 +68,21 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       usersLimit: 50,
       branchesLimit: null,
     },
+    {
+      id: generateId(),
+      // The fast-food kitchen plan (FASTFOOD.md Q14–Q15): one point, sold to
+      // food businesses only, gating like `basic` (tier.ts gateTier). Cards
+      // count dishes, semi-finished items and ingredients alike.
+      tier: 'food',
+      name: 'Fast-food',
+      description: 'For a single fast-food kitchen',
+      price: '249000',
+      isActive: true,
+      debtsLimit: null,
+      productsLimit: 300,
+      usersLimit: 10,
+      branchesLimit: 1,
+    },
   ];
 
   for (const plan of plans) {

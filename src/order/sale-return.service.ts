@@ -33,6 +33,7 @@ import {
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {applyBranchStockDelta} from '../common/branch-stock';
+import {restoreDishComponentsTx} from '../recipe/recipe.service';
 import {businessDayEnd, businessDayStart} from '../common/business-time';
 import {generateId} from '../utils/uuid';
 import {assertReasonNote} from '../common/loss-reasons';
@@ -58,6 +59,8 @@ export type SaleReturnWithItems = SaleReturn & {items: SaleReturnItem[]};
 export interface ReturnableLine extends OrderItem {
   /** quantity − returnedQuantity, never negative. */
   returnableQuantity: number;
+  /** products.kind — a dish is returned "prepared" or "not prepared". */
+  card: string | null;
   /** Weighed goods (fractional kg) — piece goods must come back whole. */
   isKg: boolean;
 }
@@ -86,7 +89,8 @@ interface OrderReturnState {
   pointsReversedSoFar: number;
   pointsEarned: number;
   debt: {id: string; amount: number; paid: number; status: string} | null;
-  kinds: Map<string, {exists: boolean; isKg: boolean}>;
+  // `card`: products.kind — a dish line goes back as its ingredients.
+  kinds: Map<string, {exists: boolean; isKg: boolean; card: string}>;
 }
 
 /**
@@ -154,6 +158,7 @@ export class SaleReturnService {
         Math.round((it.quantity - it.returnedQuantity) * 1000) / 1000,
       ),
       isKg: this.isKg(it, state),
+      card: it.productId ? (state.kinds.get(it.productId)?.card ?? null) : null,
     }));
     const returns = await this.findAll(businessId, {orderId: order.id, limit: 100});
     return {
@@ -264,8 +269,14 @@ export class SaleReturnService {
         const item = byId.get(line.orderItemId)!;
         const unitCost = item.quantity > 0 ? Number(item.costTotal) / item.quantity : 0;
         const kind = item.productId ? state.kinds.get(item.productId) : undefined;
+        // A dish cannot sit in the yaroqsiz store: a prepared one that came
+        // back is a loss (FASTFOOD.md Q10).
         const toDefective =
-          defectiveStore && !line.restock && !!item.productId && !!kind?.exists;
+          defectiveStore &&
+          !line.restock &&
+          !!item.productId &&
+          !!kind?.exists &&
+          kind.card === 'stock';
         if (toDefective) {
           defectiveLines.push({
             productId: item.productId,
@@ -303,9 +314,26 @@ export class SaleReturnService {
           })
           .where(eq(orderItems.id, item.id));
 
+        // A dish marked "not prepared" puts its share of the ingredients back,
+        // each at the cost it was drawn at (FASTFOOD.md Q10).
+        const restoredDish = line.restock
+          ? await restoreDishComponentsTx(tx, {
+              businessId,
+              branchId,
+              orderItemId: item.id,
+              fraction: item.quantity > 0 ? line.quantity / item.quantity : 0,
+            })
+          : 0;
+
         // Back on the shelf: a fresh lot at the line's own cost/price snapshot
         // (FIFO can't hand back the exact lot it drew from), in this store.
-        if (line.restock && item.productId && kind?.exists) {
+        if (
+          line.restock &&
+          !restoredDish &&
+          item.productId &&
+          kind?.exists &&
+          kind.card === 'stock'
+        ) {
           await tx.insert(inventoryBatches).values({
             id: generateId(),
             businessId,
@@ -613,14 +641,25 @@ export class SaleReturnService {
     const productIds = items
       .map((i) => i.productId)
       .filter((id): id is string => !!id);
-    const kinds = new Map<string, {exists: boolean; isKg: boolean}>();
+    const kinds = new Map<
+      string,
+      {exists: boolean; isKg: boolean; card: string}
+    >();
     if (productIds.length) {
       const rows = await db
-        .select({id: products.id, quantityType: products.quantityType})
+        .select({
+          id: products.id,
+          quantityType: products.quantityType,
+          kind: products.kind,
+        })
         .from(products)
         .where(inArray(products.id, productIds));
       for (const r of rows) {
-        kinds.set(r.id, {exists: true, isKg: r.quantityType === 'kg'});
+        kinds.set(r.id, {
+          exists: true,
+          isKg: r.quantityType === 'kg',
+          card: r.kind,
+        });
       }
     }
 
