@@ -101,9 +101,23 @@ export function outstandingOf(receipt: GoodsReceipt): number {
   return Math.max(0, cents) / 100;
 }
 
+/**
+ * The product card behind a receipt line, as it stands today — what a shelf
+ * label prints. The line keeps its own snapshot (name, prices); the card's
+ * price is the one the till charges, so a label reads the card. Null once the
+ * product is deleted.
+ */
+export type ReceiptItemCard = {
+  name: string;
+  barcode: string | null;
+  code: string | null;
+  plu: number | null;
+  priceOut: string;
+};
+
 export type ReceiptWithItems = GoodsReceipt & {
   branchName?: string | null;
-  items: GoodsReceiptItem[];
+  items: (GoodsReceiptItem & {card?: ReceiptItemCard | null})[];
   payments?: SupplierPayment[];
   returns?: SupplierReturn[];
 };
@@ -1574,10 +1588,39 @@ export class ReceiptService {
       return null;
     }
 
-    const items = await this.dbService.db
+    const lines = await this.dbService.db
       .select()
       .from(goodsReceiptItems)
       .where(eq(goodsReceiptItems.receiptId, receiptId));
+
+    // Read separately rather than joined, so the lines keep the order they
+    // have always come back in.
+    const productIds = [
+      ...new Set(lines.map((l) => l.productId).filter((x): x is string => !!x)),
+    ];
+    const cards = productIds.length
+      ? await this.dbService.db
+          .select({
+            id: products.id,
+            name: products.name,
+            barcode: products.barcode,
+            code: products.code,
+            plu: products.plu,
+            priceOut: products.priceOut,
+          })
+          .from(products)
+          .where(
+            and(
+              eq(products.businessId, businessId),
+              inArray(products.id, productIds),
+            ),
+          )
+      : [];
+    const cardById = new Map(cards.map(({id, ...card}) => [id, card]));
+    const items = lines.map((l) => ({
+      ...l,
+      card: (l.productId && cardById.get(l.productId)) || null,
+    }));
 
     const payments = await this.getPayments(businessId, receiptId);
     const returns = await this.getReturns(businessId, receiptId);
