@@ -1,6 +1,7 @@
 import {Injectable, Inject, Logger} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
+import {itemCountOf} from '../common/item-count';
 import {ErrorCode} from '../common/errors/error-codes';
 import {isStockTakeActive} from '../common/stock-take-lock';
 import {assertReasonNote} from '../common/loss-reasons';
@@ -339,7 +340,7 @@ export class ReceiptService {
       const priceInBase = item.priceIn * rateToBase;
       total += lineTotal;
       // Weighed goods count as one item so itemCount stays whole (integer col).
-      itemCount += info.quantityType === 'kg' ? 1 : item.quantity;
+      itemCount += itemCountOf(item.quantity, info.quantityType);
 
       lines.push({
         itemId: generateId(),
@@ -3154,8 +3155,12 @@ export class ReceiptService {
           });
         }
         const pb = batchesByProduct.get(productId) ?? [];
-        const available = pb.reduce((s, b) => s + b.qtyRemaining, 0);
-        if (qty > available) {
+        // To the gram, as getReturnable shows it: summed raw, two kg lots of
+        // 1.2 and 1.145 come to 2.3449999999999998, and returning the 2.345
+        // the form offered as "all of it" would be refused.
+        const available =
+          Math.round(pb.reduce((s, b) => s + b.qtyRemaining, 0) * 1000) / 1000;
+        if (Math.round(qty * 1000) / 1000 > available) {
           throw new AppException(ErrorCode.RECEIPT_RETURN_EXCEEDS_STOCK, {
             qty,
             name,
@@ -3176,7 +3181,7 @@ export class ReceiptService {
           batchUpdates.push({id: b.id, take});
         }
         returnTotal += lineValue;
-        returnedQty += qtyTypeByProduct.get(productId) === 'kg' ? 1 : qty;
+        returnedQty += itemCountOf(qty, qtyTypeByProduct.get(productId));
         // One row per requested line, all at the product's blended unit cost;
         // the last row takes the rounding remainder so rows sum to lineValue.
         const unit = qty > 0 ? lineValue / qty : 0;

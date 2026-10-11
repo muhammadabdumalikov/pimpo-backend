@@ -35,6 +35,7 @@ import {
   type GoodsReceipt,
 } from '../database/schema';
 import {AppException} from '../common/errors/app.exception';
+import {itemCountOf} from '../common/item-count';
 import {ErrorCode} from '../common/errors/error-codes';
 import {IAccount} from '../business/types';
 import {generateId} from '../utils/uuid';
@@ -639,7 +640,7 @@ export class DefectiveService {
           reasonCode: line.reasonCode ?? dto.reasonCode ?? null,
           note: line.note?.trim() || null,
         });
-        itemCount += product.quantityType === 'kg' ? 1 : line.qty;
+        itemCount += itemCountOf(line.qty, product.quantityType);
       }
       await insertDefectiveMovementTx(
         tx,
@@ -708,7 +709,7 @@ export class DefectiveService {
           costTotal: round2(unitCost * line.qty),
           note: line.note?.trim() || null,
         });
-        itemCount += product.quantityType === 'kg' ? 1 : line.qty;
+        itemCount += itemCountOf(line.qty, product.quantityType);
       }
       await insertDefectiveMovementTx(
         tx,
@@ -770,7 +771,7 @@ export class DefectiveService {
           reasonCode: line.reasonCode ?? dto.reasonCode ?? null,
           note: line.note?.trim() || null,
         });
-        itemCount += info?.quantityType === 'kg' ? 1 : line.qty;
+        itemCount += itemCountOf(line.qty, info?.quantityType);
       }
       await insertDefectiveMovementTx(
         tx,
@@ -1608,7 +1609,7 @@ export class DefectiveService {
         reasonCode: l.reasonCode ?? p.reasonCode,
         note: l.note?.trim() || null,
       });
-      itemCount += p.info.get(l.productId)?.quantityType === 'kg' ? 1 : l.qty;
+      itemCount += itemCountOf(l.qty, p.info.get(l.productId)?.quantityType);
     }
     return {out, itemCount};
   }
@@ -1683,7 +1684,7 @@ export class DefectiveService {
         unitCost: taken.unitCost,
         costTotal: taken.costTotal,
       });
-      itemCount += product.quantityType === 'kg' ? 1 : line.qty;
+      itemCount += itemCountOf(line.qty, product.quantityType);
     }
     await insertDefectiveMovementTx(
       tx,

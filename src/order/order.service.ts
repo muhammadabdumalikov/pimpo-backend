@@ -1,5 +1,6 @@
 import {Injectable, Inject} from '@nestjs/common';
 import {AppException} from '../common/errors/app.exception';
+import {itemCountOf} from '../common/item-count';
 import {ErrorCode} from '../common/errors/error-codes';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {
@@ -569,7 +570,7 @@ export class OrderService {
       });
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
-      itemCount += product.quantityType === 'kg' ? 1 : item.quantity;
+      itemCount += itemCountOf(item.quantity, product.quantityType);
     }
 
     // VAT (QQS, inclusive) + costing method come from the business settings.
@@ -1164,7 +1165,7 @@ export class OrderService {
       subtotal += lineTotal;
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
-      itemCount += product.quantityType === 'kg' ? 1 : item.quantity;
+      itemCount += itemCountOf(item.quantity, product.quantityType);
       lines.push({
         productId: product.id,
         productName: product.name,
