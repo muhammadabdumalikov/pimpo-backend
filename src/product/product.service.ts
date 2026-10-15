@@ -39,6 +39,7 @@ import {
   getTableColumns,
 } from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
+import {claimAiImageTx} from '../ai/image/ai-image-claim';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
@@ -302,6 +303,17 @@ export class ProductService {
         });
       }
 
+      // An AI packshot on the new card is claimed here. One drawn from the
+      // name alone (text mode) is the model's guess at the packaging, so it
+      // stays in this shop and never reaches the shared catalog (AI-RASM.md Q8).
+      const aiOrigin = await claimAiImageTx(
+        tx,
+        businessId,
+        created.id,
+        created.image,
+      );
+      const sharedImage = aiOrigin === 'text' ? null : created.image;
+
       // Contribute this barcode to the shared catalog so other businesses that
       // scan it later can auto-fill the name/image. First contributor's name
       // sticks; repeat scans just bump the usage counter.
@@ -311,7 +323,7 @@ export class ProductService {
           .values({
             barcode: created.barcode,
             name: created.name,
-            image: created.image,
+            image: sharedImage,
             source: 'community',
           })
           .onConflictDoUpdate({
@@ -319,7 +331,7 @@ export class ProductService {
             set: {
               timesUsed: sql`${globalBarcodes.timesUsed} + 1`,
               // Backfill an image only if the catalog entry never had one.
-              image: sql`coalesce(${globalBarcodes.image}, ${created.image ?? null})`,
+              image: sql`coalesce(${globalBarcodes.image}, ${sharedImage ?? null})`,
               updatedAt: new Date(),
             },
           });
@@ -1285,6 +1297,33 @@ export class ProductService {
         .where(
           and(eq(products.id, productId), eq(products.businessId, businessId)),
         );
+
+      // A new picture that is an AI packshot gets claimed. One made from the
+      // shop's photo of the real pack also fills the shared catalog's empty
+      // image for this barcode — most packshots are made on existing cards,
+      // and creation is the only other place the catalog learns images.
+      // Never overwrites: the first image a barcode got stays (AI-RASM.md Q8).
+      if (rest.image && rest.image !== existing.image) {
+        const aiOrigin = await claimAiImageTx(
+          tx,
+          businessId,
+          productId,
+          rest.image,
+        );
+        const barcode =
+          rest.barcode !== undefined ? rest.barcode : existing.barcode;
+        if (aiOrigin === 'photo' && barcode) {
+          await tx
+            .update(globalBarcodes)
+            .set({image: rest.image, updatedAt: new Date()})
+            .where(
+              and(
+                eq(globalBarcodes.barcode, barcode),
+                isNull(globalBarcodes.image),
+              ),
+            );
+        }
+      }
 
       // Every selling price the shop sets is written down: who, when, and what
       // it was before. Prices are only ever changed by a person now, so this is

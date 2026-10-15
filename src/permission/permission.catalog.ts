@@ -61,6 +61,10 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'product:create', group: 'catalog'},
   {key: 'product:update', group: 'catalog'},
   {key: 'product:delete', group: 'catalog'},
+  // AI product packshots (AI-RASM.md). Every click is a paid call against the
+  // shop's monthly allowance, so it is not implied by product:update — the
+  // owner hands it to whoever fills the catalogue.
+  {key: 'product:image:generate', group: 'catalog', feature: 'ai_product_image'},
   // Categories, brands and units — one key for all three dictionaries.
   {key: 'catalog:manage', group: 'catalog'},
   // Fast-food: reading and editing dish / semi-finished recipes (they reveal

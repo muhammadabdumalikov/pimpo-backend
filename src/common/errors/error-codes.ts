@@ -295,6 +295,18 @@ export enum ErrorCode {
   INVOICE_SCAN_NOT_FOUND = 'INVOICE_SCAN_NOT_FOUND',
   INVOICE_SCAN_LIMIT = 'INVOICE_SCAN_LIMIT',
 
+  // ── AI product images (AI-RASM.md) — Pimpo's own Gemini key ───────────────
+  AI_IMAGE_NOT_CONFIGURED = 'AI_IMAGE_NOT_CONFIGURED',
+  AI_IMAGE_LIMIT_REACHED = 'AI_IMAGE_LIMIT_REACHED',
+  AI_IMAGE_BUDGET_EXHAUSTED = 'AI_IMAGE_BUDGET_EXHAUSTED',
+  AI_IMAGE_BUSY = 'AI_IMAGE_BUSY',
+  AI_IMAGE_RATE_LIMITED = 'AI_IMAGE_RATE_LIMITED',
+  AI_IMAGE_REFUSED = 'AI_IMAGE_REFUSED',
+  AI_IMAGE_FAILED = 'AI_IMAGE_FAILED',
+  AI_IMAGE_TIMEOUT = 'AI_IMAGE_TIMEOUT',
+  AI_IMAGE_PHOTO_UNREADABLE = 'AI_IMAGE_PHOTO_UNREADABLE',
+  AI_IMAGE_EXPIRED = 'AI_IMAGE_EXPIRED',
+
   // ── Desktop till devices (pimpo-desktop) ───────────────────────────────────
   // No X-Device-Token header on a device-only endpoint.
   DEVICE_TOKEN_MISSING = 'DEVICE_TOKEN_MISSING',
@@ -1301,6 +1313,48 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message:
       'You already have {max} unfinished scans. Finish or discard one first.',
+  },
+
+  // AI product images
+  [ErrorCode.AI_IMAGE_NOT_CONFIGURED]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'AI image generation is not set up on this server',
+  },
+  [ErrorCode.AI_IMAGE_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message: "This month's AI image allowance is used up; it renews on {resetsAt}",
+  },
+  [ErrorCode.AI_IMAGE_BUDGET_EXHAUSTED]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'AI image generation is paused for now. Please try again later',
+  },
+  [ErrorCode.AI_IMAGE_BUSY]: {
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    message: 'Another AI image is being made for this shop. Wait for it to finish',
+  },
+  [ErrorCode.AI_IMAGE_RATE_LIMITED]: {
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    message: 'Too many AI images in the last hour',
+  },
+  [ErrorCode.AI_IMAGE_REFUSED]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'The AI declined to make this image. Try a different photo or description',
+  },
+  [ErrorCode.AI_IMAGE_FAILED]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'The AI did not return an image. Please try again',
+  },
+  [ErrorCode.AI_IMAGE_TIMEOUT]: {
+    status: HttpStatus.GATEWAY_TIMEOUT,
+    message: 'The AI took too long to make the image',
+  },
+  [ErrorCode.AI_IMAGE_PHOTO_UNREADABLE]: {
+    status: HttpStatus.UNPROCESSABLE_ENTITY,
+    message: 'This photo could not be read. Use a JPEG, PNG or WebP image',
+  },
+  [ErrorCode.AI_IMAGE_EXPIRED]: {
+    status: HttpStatus.GONE,
+    message: 'This AI image is no longer available. Generate it again',
   },
 
   // Desktop till devices

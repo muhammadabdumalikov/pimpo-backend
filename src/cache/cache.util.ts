@@ -97,6 +97,11 @@ export const TTL = {
   // Provider model catalogue. Long: vendors ship models weekly at most, and the
   // settings page has an explicit refresh button for the impatient.
   AI_MODELS: 60 * 60 * 1000, // 1h
+  // "An AI image is being made for this shop" — a lock, not a cache. Outlives
+  // the 90s generation budget so a crashed request cannot hold it for long.
+  AI_IMAGE_BUSY: 150 * 1000, // 150s
+  // Platform budget alert already sent this month (per threshold).
+  AI_IMAGE_ALERT: 35 * 24 * 60 * 60 * 1000, // 35d
   // Wrong-PIN counter per (device, employee) on the desktop till. Outlives the
   // lock it can trigger, so the count does not reset while a guesser waits.
   DEVICE_PIN_ATTEMPTS: 15 * 60 * 1000, // 15m
@@ -204,6 +209,15 @@ export const CacheKeys = {
   /** Model catalogue for a business's configured provider. */
   aiModels: (businessId: string, provider: string) =>
     `ai:models:${businessId}:${provider}`,
+
+  /** AI product images (AI-RASM.md): hourly counter per step, per business. */
+  aiImageRate: (businessId: string, step: string, hourBucket: string) =>
+    `ai:image:rate:${businessId}:${step}:${hourBucket}`,
+  /** One image at a time per business. */
+  aiImageBusy: (businessId: string) => `ai:image:busy:${businessId}`,
+  /** Platform budget alert sent for this month and threshold. */
+  aiImageAlert: (period: string, pct: number) =>
+    `ai:image:alert:${period}:${pct}`,
 
   /** Wrong-PIN attempts for one employee on one desktop till. */
   devicePinAttempts: (deviceId: string, staffId: string) =>

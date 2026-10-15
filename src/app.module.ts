@@ -41,6 +41,7 @@ import {PlatformModule} from './platform/platform.module';
 import {LoyaltyModule} from './loyalty/loyalty.module';
 import {ScaleModule} from './scale/scale.module';
 import {AiModule} from './ai/ai.module';
+import {AiImageModule} from './ai/image/ai-image.module';
 import {FeatureModule} from './feature/feature.module';
 import {AnnouncementModule} from './announcement/announcement.module';
 import {ScheduleModule} from '@nestjs/schedule';
@@ -128,6 +129,7 @@ class JwtGlobalModule {}
     LoyaltyModule,
     ScaleModule,
     AiModule,
+    AiImageModule,
     FeatureModule,
     AnnouncementModule,
     DeviceModule,

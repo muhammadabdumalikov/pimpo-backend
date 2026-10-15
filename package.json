@@ -27,7 +27,8 @@
     "db:seed": "ts-node src/database/seed.ts",
     "db:import-mxik": "ts-node src/database/import-mxik.ts",
     "ai:schema-doc": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/gen-schema-doc.ts",
-    "ai:try-invoice": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/try-invoice.ts"
+    "ai:try-invoice": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/try-invoice.ts",
+    "ai:packshot-bakeoff": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/packshot-bakeoff.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -58,6 +59,7 @@
     "postgres": "^3.4.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
+    "sharp": "^0.35.5",
     "uuidv7": "^1.1.0",
     "web-push": "^3.6.7"
   },

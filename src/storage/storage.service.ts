@@ -1,6 +1,7 @@
 import {
   CreateBucketCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
   PutBucketPolicyCommand,
@@ -125,6 +126,38 @@ export class StorageService {
   }
 
   /**
+   * The object key behind one of OUR public URLs, or null for any other URL.
+   * Lets a caller accept "use this image" from a client without fetching an
+   * arbitrary address on the server's behalf.
+   */
+  keyFromUrl(url: string): string | null {
+    const base = this.getUrl('');
+    if (!url.startsWith(base)) return null;
+    const key = decodeURIComponent(url.slice(base.length).split('?')[0]);
+    if (!key || key.includes('..')) return null;
+    return key;
+  }
+
+  /** Read an object into memory; null when it is missing or too large. */
+  async download(
+    key: string,
+    maxBytes: number,
+  ): Promise<{data: Buffer; contentType: string | null} | null> {
+    if (!this.enabled || !this.client) return null;
+    try {
+      const res = await this.client.send(
+        new GetObjectCommand({Bucket: this.bucket, Key: key}),
+      );
+      if (!res.Body || (res.ContentLength ?? 0) > maxBytes) return null;
+      const bytes = await res.Body.transformToByteArray();
+      if (bytes.byteLength > maxBytes) return null;
+      return {data: Buffer.from(bytes), contentType: res.ContentType ?? null};
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Check if an object exists.
    */
   async exists(key: string): Promise<boolean> {
@@ -216,7 +249,9 @@ function httpStatus(e: unknown): number | undefined {
 /** HeadBucket reports a missing bucket as NotFound/NoSuchBucket (404). */
 function isBucketMissing(e: unknown): boolean {
   const name = errName(e);
-  return name === 'NotFound' || name === 'NoSuchBucket' || httpStatus(e) === 404;
+  return (
+    name === 'NotFound' || name === 'NoSuchBucket' || httpStatus(e) === 404
+  );
 }
 
 /** CreateBucket race: another instance already created/owns the bucket. */

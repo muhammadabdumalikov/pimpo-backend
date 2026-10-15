@@ -57,6 +57,17 @@ export const FEATURE_CATALOG = [
       "bilan. Kartochka bosilganda og'irlik kg yoki so'mda kiritiladi. Bunday " +
       "mahsuloti yo'q do'konda tugma chiqmaydi. Tekshiruv faqat UI'da.",
   },
+  {
+    key: 'ai_product_image',
+    name: 'AI bilan mahsulot rasmi',
+    description:
+      "Mahsulot kartochkasida «AI bilan yaratish» tugmasi: telefon surati " +
+      "yoki nomdan Gemini oq fonli katalog rasmini (packshot) yasaydi. " +
+      "Pimpo'ning o'z kalitida ishlaydi — har bir rasm bizga pul, do'konga " +
+      "oylik limit ($15 standart, platformada o'zgartiriladi). Biznes " +
+      "tarifidan; xodimga «product:image:generate» ruxsati kerak. O'chiq do'konda " +
+      'tugma ham, endpointlar ham yo\'q.',
+  },
 ] as const satisfies readonly FeatureDefinition[];
 
 /** Every key the code may check. `never` while the catalogue is empty. */

@@ -2958,6 +2958,88 @@ export const invoiceScans = pgTable(
 export type InvoiceScan = typeof invoiceScans.$inferSelect;
 export type NewInvoiceScan = typeof invoiceScans.$inferInsert;
 
+// One paid call on Pimpo's OWN Gemini key, made for a product image
+// (AI-RASM.md). Unlike ai_settings this is not the shop's key: every row is
+// money Pimpo spent, so the shop's monthly allowance and the platform budget
+// are both sums over this table — a failed call costs too and is kept.
+//
+// Two kinds per image: 'describe' (the cheap text step that drafts the English
+// packaging description) and 'image' (the packshot itself). `mode` says what
+// the picture was made from: 'photo' (the shop's own photo of the real pack)
+// or 'text' (the name alone, so the packaging is the model's guess).
+//
+// An image row is "accepted" once a product is saved with its URL; one nobody
+// took is removed from S3 after a week (`purged_at`), but the row stays — it is
+// the spend history.
+export const aiImageGenerations = pgTable(
+  'ai_image_generations',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // IAccount.id: business.id for the owner, staff.id for staff.
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    // The card it was made for. Null while the product is still being created;
+    // filled in when a saved product claims the image. No FK: the spend history
+    // outlives the card.
+    productId: varchar('product_id', {length: 36}),
+    // 'describe' | 'image'
+    kind: varchar('kind', {length: 10}).notNull(),
+    // 'photo' | 'text'
+    mode: varchar('mode', {length: 10}).notNull(),
+    model: varchar('model', {length: 60}).notNull(),
+    // The packaging description the call ran on (image) or produced (describe).
+    description: text('description'),
+    inputTokens: integer('input_tokens').default(0).notNull(),
+    outputTokens: integer('output_tokens').default(0).notNull(),
+    // What Google charges for the call, at list price. An estimate like
+    // ai_settings.monthly_cost_usd, but the one the limits are enforced on.
+    costUsd: doublePrecision('cost_usd').default(0).notNull(),
+    // 'ok' | 'failed'
+    status: varchar('status', {length: 10}).notNull(),
+    // Why a failed call failed: the model's finish reason or our error code.
+    failReason: varchar('fail_reason', {length: 40}),
+    imageKey: varchar('image_key', {length: 500}),
+    imageUrl: varchar('image_url', {length: 500}),
+    acceptedAt: timestamp('accepted_at'),
+    purgedAt: timestamp('purged_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('ai_image_generations_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    createdIdx: index('ai_image_generations_created_idx').on(table.createdAt),
+    // A product save looks its image URL up here to learn where it came from.
+    businessUrlIdx: index('ai_image_generations_business_url_idx')
+      .on(table.businessId, table.imageUrl)
+      .where(sql`${table.imageUrl} IS NOT NULL`),
+  }),
+);
+
+export type AiImageGeneration = typeof aiImageGenerations.$inferSelect;
+export type NewAiImageGeneration = typeof aiImageGenerations.$inferInsert;
+
+// A shop's AI-image allowance when the platform console moved it off the
+// default (AI_IMAGE_DEFAULT_LIMIT_USD in code). No row = the default.
+export const aiImageQuotas = pgTable('ai_image_quotas', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .notNull()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  // Monthly allowance in USD; null = the default.
+  monthlyLimitUsd: doublePrecision('monthly_limit_usd'),
+  // A one-off top-up on top of the allowance, valid only in `bonusPeriod`
+  // ('YYYY-MM', +05:00) — a shop filling its catalogue for the first time.
+  bonusUsd: doublePrecision('bonus_usd').default(0).notNull(),
+  bonusPeriod: varchar('bonus_period', {length: 7}),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type AiImageQuota = typeof aiImageQuotas.$inferSelect;
+
 // Per-business configuration for label-printing scales. The scale prints its
 // own barcode and the layout of that barcode is redrawn in the scale's own
 // menu, so the till cannot assume a fixed one — it reads whatever the shop says
