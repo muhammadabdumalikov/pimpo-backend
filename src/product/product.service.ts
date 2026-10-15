@@ -1298,11 +1298,12 @@ export class ProductService {
           and(eq(products.id, productId), eq(products.businessId, businessId)),
         );
 
-      // A new picture that is an AI packshot gets claimed. One made from the
-      // shop's photo of the real pack also fills the shared catalog's empty
-      // image for this barcode — most packshots are made on existing cards,
-      // and creation is the only other place the catalog learns images.
-      // Never overwrites: the first image a barcode got stays (AI-RASM.md Q8).
+      // A new picture that is an AI packshot gets claimed. Any new picture —
+      // uploaded, or an AI packshot of the real pack — also fills the shared
+      // catalog's EMPTY image for this barcode: the first picture a barcode
+      // gets is its shared one, and from then on only the platform console
+      // replaces it (GlobalBarcodeService). An AI picture drawn from the name
+      // alone is a guess at the pack and stays in this shop (AI-RASM.md Q8).
       if (rest.image && rest.image !== existing.image) {
         const aiOrigin = await claimAiImageTx(
           tx,
@@ -1312,7 +1313,7 @@ export class ProductService {
         );
         const barcode =
           rest.barcode !== undefined ? rest.barcode : existing.barcode;
-        if (aiOrigin === 'photo' && barcode) {
+        if (aiOrigin !== 'text' && barcode) {
           await tx
             .update(globalBarcodes)
             .set({image: rest.image, updatedAt: new Date()})

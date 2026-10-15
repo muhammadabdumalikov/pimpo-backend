@@ -307,6 +307,10 @@ export enum ErrorCode {
   AI_IMAGE_PHOTO_UNREADABLE = 'AI_IMAGE_PHOTO_UNREADABLE',
   AI_IMAGE_EXPIRED = 'AI_IMAGE_EXPIRED',
 
+  // ── Shared barcode catalogue (global_barcodes) ─────────────────────────────
+  // The platform console asked for a barcode no shop has ever saved.
+  GLOBAL_BARCODE_NOT_FOUND = 'GLOBAL_BARCODE_NOT_FOUND',
+
   // ── Desktop till devices (pimpo-desktop) ───────────────────────────────────
   // No X-Device-Token header on a device-only endpoint.
   DEVICE_TOKEN_MISSING = 'DEVICE_TOKEN_MISSING',
@@ -1076,7 +1080,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.DEFECTIVE_SHELF_EXCEEDS_STOCK]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'Cannot move {qty} of "{name}" to defective stock; only {available} in stock',
+    message:
+      'Cannot move {qty} of "{name}" to defective stock; only {available} in stock',
   },
   [ErrorCode.DEFECTIVE_OPENING_OWNER_ONLY]: {
     status: HttpStatus.FORBIDDEN,
@@ -1092,15 +1097,18 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.DEFECTIVE_RETURN_EXCEEDS_DEBT]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'This return is worth {value} {currency} but only {outstanding} is owed on the receipt',
+    message:
+      'This return is worth {value} {currency} but only {outstanding} is owed on the receipt',
   },
   [ErrorCode.DEFECTIVE_PRODUCT_NOT_FROM_SUPPLIER]: {
     status: HttpStatus.BAD_REQUEST,
-    message: '{product} is neither assigned to nor delivered by this receipt\'s supplier',
+    message:
+      "{product} is neither assigned to nor delivered by this receipt's supplier",
   },
   [ErrorCode.DEFECTIVE_PRODUCT_NO_PRICE]: {
     status: HttpStatus.BAD_REQUEST,
-    message: '{product} has no delivery price from this supplier and no purchase price on its card',
+    message:
+      '{product} has no delivery price from this supplier and no purchase price on its card',
   },
   [ErrorCode.DEFECTIVE_RECEIPT_OTHER_SUPPLIER]: {
     status: HttpStatus.BAD_REQUEST,
@@ -1120,7 +1128,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.DEFECTIVE_CREDIT_ALREADY_USED]: {
     status: HttpStatus.BAD_REQUEST,
-    message: 'This return left {amount} {currency} of credit, but only {available} is left; cancel the payment that spent it first',
+    message:
+      'This return left {amount} {currency} of credit, but only {available} is left; cancel the payment that spent it first',
   },
   [ErrorCode.SUPPLIER_CREDIT_INSUFFICIENT]: {
     status: HttpStatus.BAD_REQUEST,
@@ -1322,7 +1331,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.AI_IMAGE_LIMIT_REACHED]: {
     status: HttpStatus.FORBIDDEN,
-    message: "This month's AI image allowance is used up; it renews on {resetsAt}",
+    message:
+      "This month's AI image allowance is used up; it renews on {resetsAt}",
   },
   [ErrorCode.AI_IMAGE_BUDGET_EXHAUSTED]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
@@ -1330,7 +1340,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.AI_IMAGE_BUSY]: {
     status: HttpStatus.TOO_MANY_REQUESTS,
-    message: 'Another AI image is being made for this shop. Wait for it to finish',
+    message:
+      'Another AI image is being made for this shop. Wait for it to finish',
   },
   [ErrorCode.AI_IMAGE_RATE_LIMITED]: {
     status: HttpStatus.TOO_MANY_REQUESTS,
@@ -1338,7 +1349,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.AI_IMAGE_REFUSED]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
-    message: 'The AI declined to make this image. Try a different photo or description',
+    message:
+      'The AI declined to make this image. Try a different photo or description',
   },
   [ErrorCode.AI_IMAGE_FAILED]: {
     status: HttpStatus.BAD_GATEWAY,
@@ -1355,6 +1367,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.AI_IMAGE_EXPIRED]: {
     status: HttpStatus.GONE,
     message: 'This AI image is no longer available. Generate it again',
+  },
+
+  // Shared barcode catalogue
+  [ErrorCode.GLOBAL_BARCODE_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Barcode {barcode} is not in the shared catalogue',
   },
 
   // Desktop till devices
@@ -1420,7 +1438,8 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
   [ErrorCode.RECIPE_CYCLE]: {
     status: HttpStatus.BAD_REQUEST,
-    message: '{name} already uses this item — the recipe would go round in a circle',
+    message:
+      '{name} already uses this item — the recipe would go round in a circle',
   },
   [ErrorCode.RECIPE_TOO_DEEP]: {
     status: HttpStatus.BAD_REQUEST,
