@@ -79,6 +79,10 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   // Customer returns: goods back from a sold receipt, money out of the till.
   // Not granted to any role by default — the owner delegates it on purpose.
   {key: 'sale:return', group: 'sales'},
+  // Online (storefront) orders: accepting, assembling, dispatching,
+  // completing and cancelling them, and trimming lines while assembling
+  // (YETKAZISH.md Q21). Apart from sale:update, which also rewrites till sales.
+  {key: 'sale:online:manage', group: 'sales'},
   {key: 'shift:open', group: 'sales'},
   {key: 'shift:close', group: 'sales'},
   // Cash in / cash out on an open shift — money leaving the drawer.

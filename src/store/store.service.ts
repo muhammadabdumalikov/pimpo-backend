@@ -5,13 +5,24 @@ import { DatabaseService } from '../database/database.service';
 import {
   products,
   orders,
-  orderItems,
   businesses,
   storeBots,
+  branchStock,
 } from '../database/schema';
 import { eq, and, desc, count, inArray, ilike, sql } from 'drizzle-orm';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { tierAtLeast } from '../subscription/tier';
+import {
+  StoreSettingsService,
+  type StoreDeliverySettings,
+} from '../order/store-settings.service';
+import {
+  OnlineOrderService,
+  type StorefrontOrderView,
+} from '../order/online-order.service';
+import type { StoreFulfilment } from '../order/order.service';
+import { deliveryFeeFor } from '../order/online-order.rules';
+import type { StoreCheckoutDto } from './dto/store-checkout.dto';
 
 // The online storefront is a Business-plan (`pro`) feature. Unlike the admin
 // API there is no JWT here to hang PlanTierGuard off, so the tier is checked
@@ -31,6 +42,13 @@ const publicProductColumns = {
   quantityType: products.quantityType,
 };
 
+// On hand at the branch online orders are served from (YETKAZISH.md Q14);
+// the unscoped dev storefront (no business) keeps the all-branch total.
+const onHand = (branchId: string | null) =>
+  branchId
+    ? sql<number>`coalesce(${branchStock.quantity}, 0)::float8`
+    : sql<number>`${products.quantity}`;
+
 export type StorePublicProduct = {
   id: string;
   name: string;
@@ -46,7 +64,22 @@ export class StoreService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly storeSettings: StoreSettingsService,
+    private readonly onlineOrders: OnlineOrderService,
   ) {}
+
+  /** The branch whose stock the storefront sells; null when unscoped. */
+  private async stockBranchId(businessId: string | null): Promise<string | null> {
+    if (!businessId) return null;
+    return (await this.storeSettings.onlineBranch(businessId)).id;
+  }
+
+  private stockJoin(branchId: string | null) {
+    return and(
+      eq(branchStock.productId, products.id),
+      eq(branchStock.branchId, branchId ?? ''),
+    );
+  }
 
   /**
    * Resolve the storefront's business from the request's subdomain slug.
@@ -109,17 +142,58 @@ export class StoreService {
   }
 
   /** Public storefront branding for the resolved business (name shown in the
-   *  header/footer). Null businessId (apex, unscoped) returns a neutral name. */
-  async getInfo(
-    businessId: string | null,
-  ): Promise<{ name: string | null; slug: string | null }> {
-    if (!businessId) return { name: null, slug: null };
-    const [biz] = await this.dbService.db
-      .select({ name: businesses.name, slug: businesses.storeSlug })
-      .from(businesses)
-      .where(eq(businesses.id, businessId))
-      .limit(1);
-    return { name: biz?.name ?? null, slug: biz?.slug ?? null };
+   *  header/footer) and how orders can be handed over. Null businessId (apex,
+   *  unscoped) returns a neutral name and the default fulfilment. */
+  async getInfo(businessId: string | null): Promise<{
+    name: string | null;
+    slug: string | null;
+    fulfilment: {
+      pickupEnabled: boolean;
+      deliveryEnabled: boolean;
+      deliveryFee: number;
+      freeDeliveryFrom: number | null;
+      minDeliveryAmount: number | null;
+      pickupBranchName: string | null;
+      pickupAddress: string | null;
+    };
+  }> {
+    if (!businessId) {
+      return {
+        name: null,
+        slug: null,
+        fulfilment: {
+          pickupEnabled: true,
+          deliveryEnabled: true,
+          deliveryFee: 0,
+          freeDeliveryFrom: null,
+          minDeliveryAmount: null,
+          pickupBranchName: null,
+          pickupAddress: null,
+        },
+      };
+    }
+    const [[biz], settings] = await Promise.all([
+      this.dbService.db
+        .select({ name: businesses.name, slug: businesses.storeSlug })
+        .from(businesses)
+        .where(eq(businesses.id, businessId))
+        .limit(1),
+      this.storeSettings.get(businessId),
+    ]);
+    const branch = await this.storeSettings.onlineBranch(businessId, settings);
+    return {
+      name: biz?.name ?? null,
+      slug: biz?.slug ?? null,
+      fulfilment: {
+        pickupEnabled: settings.pickupEnabled,
+        deliveryEnabled: settings.deliveryEnabled,
+        deliveryFee: settings.deliveryFee,
+        freeDeliveryFrom: settings.freeDeliveryFrom,
+        minDeliveryAmount: settings.minDeliveryAmount,
+        pickupBranchName: branch.name,
+        pickupAddress: branch.address,
+      },
+    };
   }
 
   private scopeConditions(businessId: string | null) {
@@ -164,13 +238,16 @@ export class StoreService {
       .where(and(...conditions));
     const total = totalResult[0]?.count ?? 0;
 
+    const branchId = await this.stockBranchId(businessId);
+    const quantity = onHand(branchId);
     const list = await this.dbService.db
-      .select(publicProductColumns)
+      .select({ ...publicProductColumns, quantity })
       .from(products)
+      .leftJoin(branchStock, this.stockJoin(branchId))
       .where(and(...conditions))
       // In-stock products first (search and category listings alike), newest
       // within each group.
-      .orderBy(sql`(${products.quantity} > 0) DESC`, desc(products.createdAt))
+      .orderBy(sql`(${quantity} > 0) DESC`, desc(products.createdAt))
       .limit(limit)
       .offset(offset);
 
@@ -186,9 +263,11 @@ export class StoreService {
     businessId: string | null,
     id: string,
   ): Promise<StorePublicProduct> {
+    const branchId = await this.stockBranchId(businessId);
     const [product] = await this.dbService.db
-      .select(publicProductColumns)
+      .select({ ...publicProductColumns, quantity: onHand(branchId) })
       .from(products)
+      .leftJoin(branchStock, this.stockJoin(branchId))
       .where(and(eq(products.id, id), ...this.scopeConditions(businessId)))
       .limit(1);
 
@@ -206,22 +285,9 @@ export class StoreService {
   async findOrder(
     businessId: string | null,
     id: string,
-  ): Promise<{
-    id: string;
-    status: string;
-    totalAmount: string;
-    itemCount: number;
-    createdAt: Date;
-    items: { productName: string; quantity: number; lineTotal: string }[];
-  }> {
+  ): Promise<StorefrontOrderView> {
     const [order] = await this.dbService.db
-      .select({
-        id: orders.id,
-        status: orders.status,
-        totalAmount: orders.totalAmount,
-        itemCount: orders.itemCount,
-        createdAt: orders.createdAt,
-      })
+      .select({ id: orders.id })
       .from(orders)
       .where(
         and(
@@ -234,17 +300,8 @@ export class StoreService {
     if (!order) {
       throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
-
-    const items = await this.dbService.db
-      .select({
-        productName: orderItems.productName,
-        quantity: orderItems.quantity,
-        lineTotal: orderItems.lineTotal,
-      })
-      .from(orderItems)
-      .where(eq(orderItems.orderId, id));
-
-    return { ...order, items };
+    const [view] = await this.onlineOrders.storefrontViews([order.id]);
+    return view;
   }
 
   /**
@@ -260,24 +317,9 @@ export class StoreService {
     businessId: string | null,
     telegramUserId: string,
     limit = 30,
-  ): Promise<
-    {
-      id: string;
-      status: string;
-      totalAmount: string;
-      itemCount: number;
-      createdAt: Date;
-      items: {productName: string; quantity: number; lineTotal: string}[];
-    }[]
-  > {
+  ): Promise<StorefrontOrderView[]> {
     const rows = await this.dbService.db
-      .select({
-        id: orders.id,
-        status: orders.status,
-        totalAmount: orders.totalAmount,
-        itemCount: orders.itemCount,
-        createdAt: orders.createdAt,
-      })
+      .select({ id: orders.id })
       .from(orders)
       .where(
         and(
@@ -286,64 +328,113 @@ export class StoreService {
           ...(businessId ? [eq(orders.businessId, businessId)] : []),
         ),
       )
-      .orderBy(desc(orders.createdAt))
+      .orderBy(desc(sql`coalesce(${orders.placedAt}, ${orders.createdAt})`))
       .limit(Math.min(limit, 50));
-
-    if (rows.length === 0) return [];
-
-    const lines = await this.dbService.db
-      .select({
-        orderId: orderItems.orderId,
-        productName: orderItems.productName,
-        quantity: orderItems.quantity,
-        lineTotal: orderItems.lineTotal,
-      })
-      .from(orderItems)
-      .where(
-        inArray(
-          orderItems.orderId,
-          rows.map((r) => r.id),
-        ),
-      );
-
-    const byOrder = new Map<
-      string,
-      {productName: string; quantity: number; lineTotal: string}[]
-    >();
-    for (const line of lines) {
-      const list = byOrder.get(line.orderId) ?? [];
-      list.push({
-        productName: line.productName,
-        quantity: line.quantity,
-        lineTotal: line.lineTotal,
-      });
-      byOrder.set(line.orderId, list);
-    }
-
-    return rows.map((row) => ({...row, items: byOrder.get(row.id) ?? []}));
+    return this.onlineOrders.storefrontViews(rows.map((r) => r.id));
   }
 
   /**
-   * Pre-checkout guard: every ordered product must exist in the storefront's
-   * scope (active + store business) and have enough stock on hand. The sale
-   * itself still runs through order.service.create, which consumes batches;
-   * this check just turns a silent oversell into a clear customer-facing error.
+   * Checkout guard + fulfilment (YETKAZISH.md §4.3): every product must be in
+   * this storefront's scope and on hand at the online branch, the chosen
+   * method must be on, a delivery needs an address and the shop's minimum,
+   * and the delivery fee is fixed here, from the card prices, once (Q23).
+   */
+  async prepareCheckout(
+    businessId: string | null,
+    dto: StoreCheckoutDto,
+  ): Promise<{ branchId: string; fulfilment: StoreFulfilment }> {
+    const owner = businessId ?? (await this.ownerOf(dto.items[0]?.productId));
+    const settings = await this.storeSettings.get(owner);
+    const branch = await this.storeSettings.onlineBranch(owner, settings);
+    const subtotal = await this.assertOrderable(businessId, dto.items, branch.id);
+    return {
+      branchId: branch.id,
+      fulfilment: this.fulfilmentFor(dto, settings, subtotal),
+    };
+  }
+
+  private fulfilmentFor(
+    dto: StoreCheckoutDto,
+    settings: StoreDeliverySettings,
+    subtotal: number,
+  ): StoreFulfilment {
+    // A client that sends no choice (one method on, or an older storefront)
+    // gets pickup when the shop offers it.
+    const type =
+      dto.deliveryType ?? (settings.pickupEnabled ? 'pickup' : 'delivery');
+    const enabled =
+      type === 'pickup' ? settings.pickupEnabled : settings.deliveryEnabled;
+    if (!enabled) {
+      throw new AppException(ErrorCode.STORE_FULFILLMENT_UNAVAILABLE);
+    }
+    if (type === 'pickup') {
+      return { deliveryType: 'pickup', deliveryFee: 0, locale: dto.locale ?? null };
+    }
+    const address = dto.address?.trim();
+    if (!address) {
+      throw new AppException(ErrorCode.STORE_DELIVERY_ADDRESS_REQUIRED);
+    }
+    if (
+      settings.minDeliveryAmount != null &&
+      subtotal < settings.minDeliveryAmount
+    ) {
+      throw new AppException(ErrorCode.STORE_DELIVERY_MIN_AMOUNT, {
+        min: settings.minDeliveryAmount,
+      });
+    }
+    const located = dto.lat != null && dto.lng != null;
+    return {
+      deliveryType: 'delivery',
+      address,
+      lat: located ? dto.lat : null,
+      lng: located ? dto.lng : null,
+      deliveryFee: deliveryFeeFor(subtotal, settings),
+      locale: dto.locale ?? null,
+    };
+  }
+
+  private async ownerOf(productId?: string): Promise<string> {
+    const [row] = productId
+      ? await this.dbService.db
+          .select({ businessId: products.businessId })
+          .from(products)
+          .where(eq(products.id, productId))
+          .limit(1)
+      : [];
+    if (!row) {
+      throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+        productId: productId ?? '',
+      });
+    }
+    return row.businessId;
+  }
+
+  /**
+   * Every ordered product must exist in the storefront's scope (active +
+   * store business) and be on hand at the branch the order draws from. The
+   * sale itself still runs through order.service.create, which consumes
+   * batches; this turns a silent oversell into a clear customer-facing error.
+   * Returns the goods subtotal at card prices.
    */
   async assertOrderable(
     businessId: string | null,
     items: { productId: string; quantity: number }[],
-  ): Promise<void> {
+    branchId: string | null,
+  ): Promise<number> {
     const ids = items.map((i) => i.productId);
     const rows = await this.dbService.db
       .select({
         id: products.id,
         name: products.name,
-        quantity: products.quantity,
+        priceOut: products.priceOut,
+        quantity: onHand(branchId),
       })
       .from(products)
+      .leftJoin(branchStock, this.stockJoin(branchId))
       .where(and(inArray(products.id, ids), ...this.scopeConditions(businessId)));
     const byId = new Map(rows.map((r) => [r.id, r]));
 
+    let subtotal = 0;
     for (const item of items) {
       const product = byId.get(item.productId);
       if (!product) {
@@ -358,6 +449,8 @@ export class StoreService {
           available: product.quantity,
         });
       }
+      subtotal += Number(product.priceOut) * item.quantity;
     }
+    return subtotal;
   }
 }

@@ -10,11 +10,33 @@ import { BranchModule } from '../branch/branch.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { FeatureModule } from '../feature/feature.module';
 import { PriceStepModule } from '../price-step/price-step.module';
+import { OnlineOrderService } from './online-order.service';
+import { StoreSettingsService } from './store-settings.service';
+import {
+  OnlineOrderController,
+  StoreDeliverySettingsController,
+} from './online-order.controller';
 
 @Module({
   imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule, PriceStepModule],
-  controllers: [OrderController, SaleReturnController],
-  providers: [OrderService, SaleReturnService, BusinessService],
-  exports: [OrderService, SaleReturnService],
+  controllers: [
+    OrderController,
+    SaleReturnController,
+    OnlineOrderController,
+    StoreDeliverySettingsController,
+  ],
+  providers: [
+    OrderService,
+    SaleReturnService,
+    BusinessService,
+    OnlineOrderService,
+    StoreSettingsService,
+  ],
+  exports: [
+    OrderService,
+    SaleReturnService,
+    OnlineOrderService,
+    StoreSettingsService,
+  ],
 })
 export class OrderModule {}

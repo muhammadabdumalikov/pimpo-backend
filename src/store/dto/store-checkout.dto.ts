@@ -1,8 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsIn,
+  IsNumber,
   IsString,
   IsOptional,
+  Max,
   IsArray,
   IsInt,
   Matches,
@@ -60,4 +63,43 @@ export class StoreCheckoutDto {
   @MaxLength(4096)
   @IsOptional()
   initData?: string;
+
+  @ApiProperty({
+    description:
+      "'pickup' | 'delivery'. Optional when the shop offers only one of them.",
+    required: false,
+    enum: ['pickup', 'delivery'],
+  })
+  @IsIn(['pickup', 'delivery'])
+  @IsOptional()
+  deliveryType?: 'pickup' | 'delivery';
+
+  @ApiProperty({ description: 'Delivery address (required for delivery)', required: false })
+  @IsString()
+  @MaxLength(500)
+  @IsOptional()
+  address?: string;
+
+  @ApiProperty({ description: 'Shared location latitude', required: false })
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  @IsOptional()
+  lat?: number;
+
+  @ApiProperty({ description: 'Shared location longitude', required: false })
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  @IsOptional()
+  lng?: number;
+
+  @ApiProperty({
+    description: 'Storefront locale; the language of status messages',
+    required: false,
+    enum: ['uz', 'uzc', 'ru', 'en'],
+  })
+  @IsIn(['uz', 'uzc', 'ru', 'en'])
+  @IsOptional()
+  locale?: 'uz' | 'uzc' | 'ru' | 'en';
 }

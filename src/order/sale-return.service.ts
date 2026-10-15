@@ -181,7 +181,7 @@ export class SaleReturnService {
   ): Promise<ReturnPreview> {
     const order = await this.loadOrder(this.db, businessId, dto.orderId);
     const state = await this.loadState(this.db, businessId, order);
-    const result = this.compute(state, dto);
+    const result = this.withDeliveryFee(order, this.compute(state, dto), dto);
     return {
       ...result,
       lines: this.withNames(result, state),
@@ -223,7 +223,7 @@ export class SaleReturnService {
       // Lock the sale so two tills can't return the same units at once.
       const order = await this.loadOrder(tx, businessId, dto.orderId, true);
       const state = await this.loadState(tx, businessId, order);
-      const result = this.compute(state, dto);
+      const result = this.withDeliveryFee(order, this.compute(state, dto), dto);
       const refunds = this.resolveRefunds(order, result.refundAmount, dto);
       const byId = new Map(state.items.map((i) => [i.id, i]));
 
@@ -251,6 +251,7 @@ export class SaleReturnService {
         pointsReversed: money(result.pointsReversed),
         refundAmount: money(result.refundAmount),
         refunds,
+        deliveryFeeRefund: money(result.deliveryFeeRefund),
         costTotal: money(result.costTotal),
         // Cost that went back into stock — the shelf or the yaroqsiz tovarlar
         // ombori — and so leaves COGS. A defective unit is only a loss once
@@ -751,6 +752,31 @@ export class SaleReturnService {
       ...l,
       productName: names.get(l.orderItemId) ?? '',
     }));
+  }
+
+  /**
+   * A storefront order's delivery fee comes back only when asked for and only
+   * on the return that empties the receipt (YETKAZISH.md Q27). It is paid out
+   * with the goods (refundAmount) but kept apart from totalAmount, which stays
+   * the goods value every revenue figure nets.
+   */
+  private withDeliveryFee<R extends ReturnResult>(
+    order: Order,
+    result: R,
+    dto: {refundDeliveryFee?: boolean},
+  ): R & {deliveryFeeRefund: number} {
+    const fee = Number(order.deliveryFee ?? 0);
+    if (!dto.refundDeliveryFee || fee <= 0) {
+      return {...result, deliveryFeeRefund: 0};
+    }
+    if (!result.isFinal) {
+      throw new AppException(ErrorCode.RETURN_DELIVERY_FEE_PARTIAL);
+    }
+    return {
+      ...result,
+      refundAmount: Math.round((result.refundAmount + fee) * 100) / 100,
+      deliveryFeeRefund: fee,
+    };
   }
 
   /** The tender that carried most of the sale — the default refund route. */

@@ -23,6 +23,7 @@ const MENU_REQUIRED_PERMISSION: Record<string, string | string[]> = {
   suppliers: 'supplier:manage',
   receipts: 'receipt:read',
   checkout: 'sale:create',
+  onlineOrders: 'sale:online:manage',
   kassa: ['shift:open', 'shift:close', 'cash:movement'],
   customers: 'customer:read',
   userDebt: 'debt:read',

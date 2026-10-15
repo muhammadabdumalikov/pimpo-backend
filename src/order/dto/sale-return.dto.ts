@@ -54,6 +54,15 @@ export class PreviewSaleReturnDto {
   @ValidateNested({each: true})
   @Type(() => ReturnItemDto)
   items!: ReturnItemDto[];
+
+  @ApiPropertyOptional({
+    description:
+      "Also give back a storefront order's delivery fee. Only on a return " +
+      'that brings back everything still on the receipt.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  refundDeliveryFee?: boolean;
 }
 
 export class CreateSaleReturnDto extends PreviewSaleReturnDto {

@@ -9,6 +9,7 @@ export type NotifyEvent =
   | 'cashOperation'
   | 'dailySales'
   | 'onlineOrder'
+  | 'onlineOrderCancelled'
   | 'orderCancelled'
   | 'bigDiscount'
   | 'saleReturn'
@@ -74,6 +75,13 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
     onlineOrder: (d) => ({
       title: `🛒 Yangi onlayn buyurtma — ${money(d.total)} so'm`,
       body: join(d.customerName, d.itemCount != null ? `${n(d.itemCount)} ta tovar` : ''),
+    }),
+    onlineOrderCancelled: (d) => ({
+      title: `↩️ Mijoz onlayn buyurtmani bekor qildi — ${money(d.total)} so'm`,
+      body: join(
+        d.customerName,
+        d.itemCount != null ? `${n(d.itemCount)} ta tovar` : '',
+      ),
     }),
     orderCancelled: (d) => ({
       title: `🚩 Chek bekor qilindi — ${money(d.total)} so'm`,
@@ -145,6 +153,13 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
     onlineOrder: (d) => ({
       title: `🛒 Новый онлайн-заказ — ${money(d.total)} сум`,
       body: join(d.customerName, d.itemCount != null ? `${n(d.itemCount)} товаров` : ''),
+    }),
+    onlineOrderCancelled: (d) => ({
+      title: `↩️ Клиент отменил онлайн-заказ — ${money(d.total)} сум`,
+      body: join(
+        d.customerName,
+        d.itemCount != null ? `${n(d.itemCount)} товаров` : '',
+      ),
     }),
     orderCancelled: (d) => ({
       title: `🚩 Чек отменён — ${money(d.total)} сум`,

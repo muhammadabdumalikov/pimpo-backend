@@ -38,6 +38,7 @@ import {type AppliedPriceStep} from '../common/price-steps';
 import {
   orders,
   orderItems,
+  orderStatusEvents,
   products,
   branchStock,
   inventoryBatches,
@@ -91,6 +92,16 @@ import {weightSourceFor, type WeightSource} from './weight-source';
 type DbTx = Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0];
 
 export type OrderWithItems = Order & {items: OrderItem[]};
+
+/** What the storefront checkout settled about handing the order over. */
+export interface StoreFulfilment {
+  deliveryType: 'pickup' | 'delivery';
+  address?: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  deliveryFee: number;
+  locale?: string | null;
+}
 
 /** Receipt-only extras served next to an order (see receiptContext). */
 export interface OrderReceiptContext {
@@ -375,7 +386,10 @@ export class OrderService {
     businessId: string,
     // `telegramUserId` is server-set only (the storefront controller derives it
     // from a verified Telegram launch payload), never part of the HTTP DTO.
-    dto: CreateOrderDto & {telegramUserId?: string | null},
+    dto: CreateOrderDto & {
+      telegramUserId?: string | null;
+      fulfilment?: StoreFulfilment;
+    },
     account?: IAccount,
     // A sale coming back off the offline queue, not one being rung up now. Set
     // by createBatch and nothing else — it is the ENDPOINT that knows, not the
@@ -855,7 +869,33 @@ export class OrderService {
           branchId,
           queueNo,
           serviceType,
+          // Storefront fulfilment (YETKAZISH.md) — server-built, never from
+          // the HTTP DTO.
+          ...(isStoreSale
+            ? {
+                deliveryType: dto.fulfilment?.deliveryType ?? 'pickup',
+                deliveryAddress: dto.fulfilment?.address ?? null,
+                deliveryLat: dto.fulfilment?.lat ?? null,
+                deliveryLng: dto.fulfilment?.lng ?? null,
+                deliveryFee: money(dto.fulfilment?.deliveryFee ?? 0),
+                locale: dto.fulfilment?.locale ?? null,
+                placedAt: new Date(),
+              }
+            : {}),
         });
+
+        // The order's first history row: the customer placed it.
+        if (isStoreSale) {
+          await tx.insert(orderStatusEvents).values({
+            id: generateId(),
+            businessId,
+            orderId,
+            fromStatus: null,
+            toStatus: dto.status ?? 'Pending',
+            actorType: 'customer',
+            actorName: customerName,
+          });
+        }
 
         await tx.insert(orderItems).values(
           lines.map((line) => ({
@@ -1339,7 +1379,10 @@ export class OrderService {
    * belong to it (enforced by create()'s per-product business check).
    */
   async createStore(
-    dto: CreateOrderDto & {telegramUserId?: string | null},
+    dto: CreateOrderDto & {
+      telegramUserId?: string | null;
+      fulfilment?: StoreFulfilment;
+    },
   ): Promise<OrderWithItems> {
     const firstId = dto.items[0]?.productId;
     if (!firstId) {
@@ -1367,6 +1410,9 @@ export class OrderService {
       itemCount: order.itemCount,
       customerName: order.customerName,
       customerPhone: order.customerPhone,
+      deliveryType: order.deliveryType as 'pickup' | 'delivery' | null,
+      deliveryAddress: order.deliveryAddress,
+      deliveryFee: order.deliveryFee,
     });
     return order;
   }
@@ -1692,6 +1738,13 @@ export class OrderService {
       .orderBy(desc(orders.createdAt));
   }
 
+  /**
+   * Status change of a TILL sale. The only move a till sale has is to
+   * Cancelled (a receipt voided after the fact, or a parked cart dropped);
+   * anything else would take a real sale out of revenue without a trace.
+   * Storefront orders run their own state machine (OnlineOrderService) — the
+   * controller routes them there before this is reached.
+   */
   async updateStatus(
     businessId: string,
     id: string,
@@ -1703,15 +1756,25 @@ export class OrderService {
       throw new AppException(ErrorCode.ORDER_NOT_FOUND);
     }
     if (existing.status === status) return existing;
+    if (existing.source === 'store') {
+      throw new AppException(ErrorCode.ORDER_STATUS_TRANSITION_INVALID, {
+        from: existing.status,
+        to: status,
+      });
+    }
     // A held sale never decremented stock, so promoting it here would create a
     // sale that no inventory ever backed. It must be completed via checkout.
     if (existing.status === 'Held' && status !== 'Cancelled') {
       throw new AppException(ErrorCode.HELD_SALE_CHECKOUT_REQUIRED);
     }
-    // Cancelling a store order restored its stock (below) — reopening it would
-    // sell inventory that was already put back.
     if (existing.status === 'Cancelled') {
       throw new AppException(ErrorCode.ORDER_CANCELLED_IMMUTABLE);
+    }
+    if (status !== 'Cancelled') {
+      throw new AppException(ErrorCode.ORDER_STATUS_TRANSITION_INVALID, {
+        from: existing.status,
+        to: status,
+      });
     }
     // Goods and money already came back through a return; cancelling the rest
     // of the receipt would reverse those lines a second time.
@@ -1719,53 +1782,13 @@ export class OrderService {
       throw new AppException(ErrorCode.ORDER_HAS_RETURNS);
     }
 
-    // A storefront order consumed stock when it was placed, so cancelling it
-    // puts the goods back: one restock batch per line (at the line's cost/price
-    // snapshot, in the order's branch) + the branch/product quantities.
-    const restock =
-      status === 'Cancelled' &&
-      existing.source === 'store' &&
-      existing.status !== 'Held';
-    if (restock) {
-      await this.dbService.db.transaction(async (tx) => {
-        await this.restockOrderLinesTx(
-          tx,
-          businessId,
-          existing.items,
-          existing.branchId,
-        );
-        await tx
-          .update(orders)
-          .set({status, updatedAt: new Date()})
-          .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
-      });
-    } else {
-      await this.dbService.db
-        .update(orders)
-        .set({status, updatedAt: new Date()})
-        .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
-    }
-
-    // Storefront order placed from the Telegram mini app: tell the customer
-    // their order moved on. Fire-and-forget — the shop's status change must
-    // never wait on (or fail with) Telegram.
-    if (existing.source === 'store' && existing.telegramUserId) {
-      this.telegramNotify.notifyStoreOrderStatus(businessId, {
-        telegramUserId: existing.telegramUserId,
-        orderId: existing.id,
-        status,
-        totalAmount: existing.totalAmount,
-        itemCount: existing.itemCount,
-      });
-    }
+    await this.dbService.db
+      .update(orders)
+      .set({status, updatedAt: new Date()})
+      .where(and(eq(orders.businessId, businessId), eq(orders.id, id)));
 
     // Staff cancelling a till receipt is a "shubhali harakat" for the owner.
-    // Rejecting a storefront order is routine, and the owner knows their own.
-    if (
-      status === 'Cancelled' &&
-      existing.source !== 'store' &&
-      account?.type === 'staff'
-    ) {
+    if (account?.type === 'staff') {
       const by = await this.resolveCashier(account);
       this.telegramNotify.notifyOrderCancelled(businessId, {
         orderId: existing.id,
@@ -1888,10 +1911,14 @@ export class OrderService {
    * the line's cost. Stock level and inventory value are restored; lot identity
    * is not. Shared by cancelling a storefront order and by deleting a sale.
    */
-  private async restockOrderLinesTx(
+  // `quantity` on each item is the amount to put back. A line only partly
+  // coming back (an online order trimmed while assembling) passes that part
+  // plus `restockFraction` = part / line, so a dish restores the same share of
+  // its ingredients.
+  async restockOrderLinesTx(
     tx: DbTx,
     businessId: string,
-    items: OrderItem[],
+    items: (OrderItem & {restockFraction?: number})[],
     branchId: string | null,
   ): Promise<void> {
     for (const item of items) {
@@ -1902,7 +1929,7 @@ export class OrderService {
         branchId:
           branchId ?? (await this.branchService.ensureDefault(businessId)).id,
         orderItemId: item.id,
-        fraction: 1,
+        fraction: item.restockFraction ?? 1,
       });
       if (restored > 0) continue;
       const [product] = await tx
@@ -2122,6 +2149,7 @@ export class OrderService {
     cash: number;
     card: number;
     debt: number;
+    deliveryIncome: number;
   }> {
     const where = [
       eq(orders.businessId, businessId),
@@ -2140,6 +2168,8 @@ export class OrderService {
         count: count(),
         units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
         revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        // Storefront delivery fees — income, but not goods (YETKAZISH.md Q15).
+        delivery: sql<string>`COALESCE(SUM(${orders.deliveryFee}), 0)`,
       })
       .from(orders)
       .where(whereSql);
@@ -2189,9 +2219,14 @@ export class OrderService {
         itemCount: saleReturns.itemCount,
         debtReduced: saleReturns.debtReduced,
         refunds: saleReturns.refunds,
+        deliveryFeeRefund: saleReturns.deliveryFeeRefund,
       })
       .from(saleReturns)
       .where(and(...rwhere));
+    const retDelivery = returnRows.reduce(
+      (sum, r) => sum + Number(r.deliveryFeeRefund ?? 0),
+      0,
+    );
     let retValue = 0;
     let retUnits = 0;
     let retDebt = 0;
@@ -2214,6 +2249,7 @@ export class OrderService {
       cash: methodTotal('cash') - (refundBy.get('cash') ?? 0),
       card: methodTotal('card') - (refundBy.get('card') ?? 0),
       debt: Math.max(0, Number(debtRow.total) - Number(debtRow.paid) - retDebt),
+      deliveryIncome: Number(totals.delivery) - retDelivery,
     };
   }
 

@@ -38,13 +38,17 @@ import {businessDay} from '../common/business-time';
 const isYmd = (v?: string): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import { OnlineOrderService } from './online-order.service';
 
 @ApiTags('orders')
 @Controller('orders')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class OrderController {
-  constructor(private readonly orderService: OrderService) {}
+  constructor(
+    private readonly orderService: OrderService,
+    private readonly onlineOrders: OnlineOrderService,
+  ) {}
 
   @Post()
   @RequirePermission('sale:create')
@@ -396,6 +400,17 @@ export class OrderController {
     @Body() dto: UpdateOrderStatusDto,
     @CurrentAccount() account: IAccount,
   ) {
+    // A storefront order runs its own flow; an older client still sending
+    // the old values (Confirmed/Completed/Cancelled) is mapped onto it.
+    const order = await this.orderService.findOne(business.id, id);
+    if (order?.source === 'store') {
+      return this.onlineOrders.legacyStatus(
+        business.id,
+        id,
+        dto.status,
+        account,
+      );
+    }
     return this.orderService.updateStatus(business.id, id, dto.status, account);
   }
 

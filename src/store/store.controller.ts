@@ -13,6 +13,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiHeader } fro
 import { StoreService } from './store.service';
 import { CategoryService } from '../category/category.service';
 import { OrderService } from '../order/order.service';
+import { OnlineOrderService } from '../order/online-order.service';
 import { StoreCheckoutDto } from './dto/store-checkout.dto';
 import { AppException } from '../common/errors/app.exception';
 import { ErrorCode } from '../common/errors/error-codes';
@@ -32,6 +33,7 @@ export class StoreController {
     private readonly storeService: StoreService,
     private readonly categoryService: CategoryService,
     private readonly orderService: OrderService,
+    private readonly onlineOrders: OnlineOrderService,
   ) {}
 
   @Get('info')
@@ -140,9 +142,13 @@ export class StoreController {
     @Query('store') store?: string,
   ) {
     const businessId = await this.storeService.resolveBusinessId(store);
-    // Scope + stock guard: products must be in this store's catalog and on
-    // hand, else the customer gets a clear error instead of an oversell.
-    await this.storeService.assertOrderable(businessId, dto.items);
+    // Scope + stock guard (products in this store's catalog and on hand at
+    // the online branch) and the fulfilment: pickup or delivery, address,
+    // minimum and the delivery fee, fixed here once.
+    const {branchId, fulfilment} = await this.storeService.prepareCheckout(
+      businessId,
+      dto,
+    );
 
     // Mini-app checkout: a launch payload that verifies against the bot token
     // binds the order to that Telegram user (durable history + status DMs). An
@@ -162,14 +168,34 @@ export class StoreController {
       phone: dto.phone,
       note: dto.note || undefined,
       telegramUserId: telegramUser?.id ?? null,
+      branchId,
+      fulfilment,
     });
 
     return {
       id: order.id,
       status: order.status,
+      deliveryType: order.deliveryType,
       totalAmount: order.totalAmount,
+      deliveryFee: order.deliveryFee,
+      payable: (
+        Number(order.totalAmount) + Number(order.deliveryFee)
+      ).toFixed(2),
       itemCount: order.itemCount,
       createdAt: order.createdAt,
     };
+  }
+
+  @Post('orders/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Customer cancels their own order while the shop has not taken it',
+  })
+  @ApiParam({ name: 'id', description: 'Order ID (issued at checkout)' })
+  @ApiQuery({ name: 'store', required: false, type: String, description: 'Store subdomain slug' })
+  async cancelOrder(@Param('id') id: string, @Query('store') store?: string) {
+    const businessId = await this.storeService.resolveBusinessId(store);
+    await this.onlineOrders.cancelByCustomer(businessId, id);
+    return this.storeService.findOrder(businessId, id);
   }
 }

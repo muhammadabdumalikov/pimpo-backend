@@ -1055,7 +1055,10 @@ export class ProductService {
       })
       .from(orderItems)
       .innerJoin(orders, eq(orders.id, orderItems.orderId))
-      .where(and(...where));
+      // The totals are what was SOLD: a cancelled receipt and an online order
+      // still being assembled or delivered stay listed below (tagged), but
+      // never add up here (YETKAZISH.md Q28).
+      .where(and(...where, eq(orders.status, 'Completed')));
 
     // The line id is part of the sort key, not decoration: one receipt can
     // carry the same product on two lines (an offline sale synced without the

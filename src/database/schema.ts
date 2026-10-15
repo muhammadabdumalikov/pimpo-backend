@@ -547,10 +547,44 @@ export const orders = pgTable(
     // Fast-food: 'dine_in' ("Shu yerda") | 'takeaway' ("Olib ketish"). Packaging
     // lines of a recipe are drawn only for takeaway. Null for retail sales.
     serviceType: varchar('service_type', {length: 10}),
+    // ── Storefront fulfilment (YETKAZISH.md) — null on till sales ──
+    // 'pickup' | 'delivery'. A storefront order with null predates delivery
+    // and reads as pickup.
+    deliveryType: varchar('delivery_type', {length: 10}),
+    deliveryAddress: varchar('delivery_address', {length: 500}),
+    deliveryLat: doublePrecision('delivery_lat'),
+    deliveryLng: doublePrecision('delivery_lng'),
+    // Fixed at checkout and never recomputed. Deliberately OUTSIDE
+    // totalAmount: every sales/goods figure keeps reading totalAmount as the
+    // goods, the customer pays totalAmount + deliveryFee, and `payments`
+    // cover that sum. Reports show it as its own "Yetkazish xizmati" line.
+    deliveryFee: decimal('delivery_fee', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // Courier picked when the order left (a staff id, may hold no login);
+    // name and phone snapshotted for the customer message and the slip.
+    courierId: varchar('courier_id', {length: 36}),
+    courierName: varchar('courier_name', {length: 255}),
+    courierPhone: varchar('courier_phone', {length: 32}),
+    // When the customer placed the order. A storefront order becomes a sale
+    // on the day it is completed (createdAt moves then), so this keeps the
+    // original moment for the order card and the stock-as-of report.
+    placedAt: timestamp('placed_at'),
+    // Storefront locale at checkout ('uz' | 'uzc' | 'ru' | 'en'): the
+    // language of the customer's Telegram status messages.
+    locale: varchar('locale', {length: 5}),
+    // Why a storefront order was cancelled — ONLINE_CANCEL_REASONS code.
+    cancelReason: varchar('cancel_reason', {length: 20}),
+    cancelNote: varchar('cancel_note', {length: 255}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
+    // The online-orders list: one shop's storefront orders by status, oldest
+    // waiting first (0096). Partial — till sales are the bulk of the table.
+    businessStoreStatusIdx: index('orders_business_store_status_idx')
+      .on(table.businessId, table.status, table.placedAt)
+      .where(sql`${table.source} = 'store'`),
     // One receipt number per business (NULLs — Held drafts — never collide).
     uniqueReceiptNo: uniqueIndex('orders_business_receipt_no_uq').on(
       table.businessId,
@@ -3144,6 +3178,11 @@ export const saleReturns = pgTable(
       .default('0'),
     // [{ method: payment-method code, amount }] — 'cash' leaves the drawer.
     refunds: jsonb('refunds'),
+    // Storefront delivery fee given back on a full return (YETKAZISH.md Q27).
+    // Outside totalAmount like orders.deliveryFee; included in refundAmount.
+    deliveryFeeRefund: decimal('delivery_fee_refund', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
     // COGS of all returned lines, and of the part put back on the shelf. Only
     // the restocked cost leaves COGS; a defective line stays a loss.
     costTotal: decimal('cost_total', {precision: 12, scale: 2})
@@ -3605,3 +3644,72 @@ export const foodSettings = pgTable('food_settings', {
 });
 
 export type FoodSettings = typeof foodSettings.$inferSelect;
+
+// ─── Online-order delivery (YETKAZISH.md) ────────────────────────────────────
+
+// One row per status move of a storefront order (Q10): who moved it, when,
+// with which courier or cancel reason. Feeds the order timeline in the admin
+// drawer and the customer's tracking stepper. Orders placed before 0096 have
+// no history.
+export const orderStatusEvents = pgTable(
+  'order_status_events',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    orderId: varchar('order_id', {length: 36})
+      .notNull()
+      .references(() => orders.id, {onDelete: 'cascade'}),
+    // Null on the first event (the order being placed).
+    fromStatus: varchar('from_status', {length: 20}),
+    toStatus: varchar('to_status', {length: 20}).notNull(),
+    // 'owner' | 'staff' | 'customer' | 'system'
+    actorType: varchar('actor_type', {length: 10}).notNull(),
+    actorId: varchar('actor_id', {length: 36}),
+    actorName: varchar('actor_name', {length: 255}),
+    courierName: varchar('courier_name', {length: 255}),
+    reason: varchar('reason', {length: 20}),
+    note: varchar('note', {length: 255}),
+    // Anything else worth keeping with the move (e.g. lines removed while
+    // assembling: [{name, from, to}]).
+    meta: jsonb('meta'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    orderIdx: index('order_status_events_order_idx').on(
+      table.orderId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type OrderStatusEvent = typeof orderStatusEvents.$inferSelect;
+
+// How a shop hands over online orders (Q3, Q4, Q14, Q19). Not on
+// `businesses`: that row is spread wholesale into login/profile payloads.
+// A missing row means the defaults (both methods on, free delivery, the
+// default branch).
+export const storeSettings = pgTable('store_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  pickupEnabled: boolean('pickup_enabled').default(true).notNull(),
+  deliveryEnabled: boolean('delivery_enabled').default(true).notNull(),
+  deliveryFee: decimal('delivery_fee', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
+  // Goods total from which delivery is free; null = never free by amount.
+  freeDeliveryFrom: decimal('free_delivery_from', {precision: 12, scale: 2}),
+  // Goods total below which delivery is not offered; null = no minimum.
+  minDeliveryAmount: decimal('min_delivery_amount', {precision: 12, scale: 2}),
+  // The branch online orders are stocked, assembled and picked up from;
+  // null = the business default branch.
+  onlineBranchId: varchar('online_branch_id', {length: 36}).references(
+    () => branches.id,
+    {onDelete: 'set null'},
+  ),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type StoreSettings = typeof storeSettings.$inferSelect;

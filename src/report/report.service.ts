@@ -46,6 +46,7 @@ import {
   notInArray,
 } from 'drizzle-orm';
 import {capitalRow, liveRow} from '../finance/ledger-rules';
+import {IN_PROGRESS_STATUSES} from '../order/online-order.rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
 import {creditBalances} from '../common/supplier-credit';
@@ -183,6 +184,9 @@ export class ReportService {
         gross: sql<string>`COALESCE(SUM(${orders.subtotalAmount}), 0)`,
         discounts: sql<string>`COALESCE(SUM(${orders.discountAmount}), 0)`,
         net: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        // Storefront delivery fees (YETKAZISH.md Q15): income with no cost,
+        // kept off goods revenue and margin, its own P&L line.
+        delivery: sql<string>`COALESCE(SUM(${orders.deliveryFee}), 0)`,
         orderCount: sql<string>`COUNT(*)`,
       })
       .from(orders)
@@ -249,6 +253,7 @@ export class ReportService {
       .select({
         value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
         restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+        deliveryRefund: sql<string>`COALESCE(SUM(${saleReturns.deliveryFeeRefund}), 0)`,
       })
       .from(saleReturns)
       .where(this.returnWhere(businessId, range));
@@ -286,8 +291,14 @@ export class ReportService {
     }));
     const totalOtherIncome = otherIncome.reduce((s, e) => s + e.amount, 0);
     const cashDifference = Number(diffRow?.difference ?? 0);
+    const deliveryIncome =
+      Number(rev?.delivery ?? 0) - Number(retRow?.deliveryRefund ?? 0);
     const netProfit =
-      grossProfit + totalOtherIncome - totalExpenses + cashDifference;
+      grossProfit +
+      deliveryIncome +
+      totalOtherIncome -
+      totalExpenses +
+      cashDifference;
 
     return {
       from: range?.from ?? null,
@@ -298,6 +309,7 @@ export class ReportService {
       cogs,
       grossProfit,
       grossMargin,
+      deliveryIncome,
       otherIncome,
       totalOtherIncome,
       expenses,
@@ -399,7 +411,10 @@ export class ReportService {
       map.set(pid, (map.get(pid) ?? 0) + delta);
     };
 
-    // Sold after cutoff → add back.
+    // Sold after cutoff → add back. A storefront order takes its stock when
+    // the customer places it, though it becomes a sale only when handed over
+    // (and is dated then — YETKAZISH.md Q13), so it counts from placed_at and
+    // already while it is still being assembled or delivered (Q28).
     const sold = await this.db
       .select({
         productId: orderItems.productId,
@@ -410,8 +425,18 @@ export class ReportService {
       .where(
         and(
           eq(orderItems.businessId, businessId),
-          eq(orders.status, 'Completed'),
-          gt(orders.createdAt, cutoff),
+          or(
+            and(
+              ne(orders.source, 'store'),
+              eq(orders.status, 'Completed'),
+              gt(orders.createdAt, cutoff),
+            ),
+            and(
+              eq(orders.source, 'store'),
+              inArray(orders.status, [...IN_PROGRESS_STATUSES, 'Completed']),
+              gt(sql`coalesce(${orders.placedAt}, ${orders.createdAt})`, cutoff),
+            ),
+          ),
         ),
       )
       .groupBy(orderItems.productId);
@@ -1180,6 +1205,7 @@ export class ReportService {
         revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
         discounts: sql<string>`COALESCE(SUM(${orders.discountAmount}), 0)`,
         units: sql<string>`COALESCE(SUM(${orders.itemCount}), 0)`,
+        delivery: sql<string>`COALESCE(SUM(${orders.deliveryFee}), 0)`,
       })
       .from(orders)
       .where(where)
@@ -1213,6 +1239,7 @@ export class ReportService {
         value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
         units: sql<string>`COALESCE(SUM(${saleReturns.itemCount}), 0)`,
         restockedCost: sql<string>`COALESCE(SUM(${saleReturns.restockedCost}), 0)`,
+        deliveryRefund: sql<string>`COALESCE(SUM(${saleReturns.deliveryFeeRefund}), 0)`,
       })
       .from(saleReturns)
       .where(this.returnWhere(businessId, range))
@@ -1249,6 +1276,9 @@ export class ReportService {
         profit,
         avgCheck: orderCount > 0 ? revenue / orderCount : 0,
         margin: revenue > 0 ? (profit / revenue) * 100 : 0,
+        // Storefront delivery fees: outside revenue/avgCheck/margin (Q15).
+        deliveryIncome:
+          Number(r?.delivery ?? 0) - Number(ret?.deliveryRefund ?? 0),
       };
     });
 
@@ -1273,6 +1303,7 @@ export class ReportService {
         profit: tProfit,
         avgCheck: tOrders > 0 ? tRevenue / tOrders : 0,
         margin: tRevenue > 0 ? (tProfit / tRevenue) * 100 : 0,
+        deliveryIncome: sum((b) => b.deliveryIncome),
       },
     };
   }

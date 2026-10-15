@@ -19,7 +19,13 @@ export const SCHEMA_DOC_NOTES = `
 # Accounting rules
 
 - Every sales, revenue, or profit figure filters \`orders.status = 'Completed'\`.
-  Pending, Held and Cancelled orders are not sales.
+  Pending, Held and Cancelled orders are not sales, nor are online orders
+  still Assembling, Delivering or ReadyForPickup. A completed online order
+  (source = 'store') is dated by created_at = the moment it was handed over;
+  placed_at is when the customer ordered.
+- orders.delivery_fee (online orders) is NOT part of total_amount: the
+  customer paid total_amount + delivery_fee. Goods revenue is total_amount;
+  delivery income is SUM(delivery_fee) minus sale_returns.delivery_fee_refund.
 - COGS lives on order_items.cost_total, but it is 0 on rows created before the
   costing migration. Always fall back:
     COALESCE(NULLIF(oi.cost_total, 0), oi.quantity * p.price_in)

@@ -19,6 +19,10 @@ import {TELEGRAM_QUEUE, TelegramJobData} from './telegram.constants';
 import {NotifyToggle, readNotificationSettings} from './notification-settings';
 import {NotificationService} from '../notification/notification.service';
 import {Notice} from '../notification/push-text';
+import {
+  buildStoreOrderMessage,
+  StoreOrderMessage,
+} from './store-order-messages';
 
 /**
  * The togglable events that also go to Telegram. `announcements` is the one
@@ -81,14 +85,6 @@ function dateTime(date?: Date | null): string {
 
 // Cap the product list so a huge cart can't blow past Telegram's 4096-char limit.
 const MAX_ITEM_LINES = 40;
-
-// Customer-facing headlines for an online order's status. Wording matches the
-// storefront's own status labels (Uzbek — the storefront's default locale).
-const STORE_STATUS_HEADLINES: Record<string, string> = {
-  Confirmed: '✅ Buyurtmangiz qabul qilindi',
-  Completed: '📦 Buyurtmangiz topshirildi. Xaridingiz uchun rahmat!',
-  Cancelled: '❌ Buyurtmangiz rad etildi',
-};
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: 'Naqd',
@@ -325,19 +321,8 @@ export class TelegramNotifyService {
    */
   notifyStoreOrderStatus(
     businessId: string,
-    o: {
-      telegramUserId: string;
-      orderId: string;
-      status: string;
-      totalAmount: string | number;
-      itemCount?: number | null;
-    },
+    o: Omit<StoreOrderMessage, 'shopName'> & {telegramUserId: string},
   ): void {
-    const headline = STORE_STATUS_HEADLINES[o.status];
-    // Only the transitions the shopper cares about; 'Pending' is the state they
-    // already saw at checkout.
-    if (!headline) return;
-
     void (async () => {
       // The shop's own store bot, else the platform bot (single-bot setups).
       const [row] = await this.db
@@ -349,14 +334,10 @@ export class TelegramNotifyService {
       const token = row?.botToken ?? process.env.TELEGRAM_BOT_TOKEN;
       if (!token) return;
 
-      const lines = [headline, ''];
-      lines.push(`🧾 Buyurtma: #${o.orderId.slice(0, 8).toUpperCase()}`);
-      if (o.itemCount != null) lines.push(`📦 Jami: ${qty(o.itemCount)} dona`);
-      lines.push(`💰 Summa: ${uz(o.totalAmount)} so'm`);
-      if (row?.name) lines.push('', `🏪 ${row.name}`);
-
+      const text = buildStoreOrderMessage({...o, shopName: row?.name ?? null});
+      if (!text) return;
       // A private chat's id is the user's own id.
-      await this.sender.sendMessage(o.telegramUserId, lines.join('\n'), token);
+      await this.sender.sendMessage(o.telegramUserId, text, token);
     })().catch((e) =>
       this.logger.warn(
         `store order status DM failed (user ${o.telegramUserId}): ${
@@ -462,8 +443,12 @@ export class TelegramNotifyService {
       itemCount?: number | null;
       customerName?: string | null;
       customerPhone?: string | null;
+      deliveryType?: 'pickup' | 'delivery' | null;
+      deliveryAddress?: string | null;
+      deliveryFee?: string | number | null;
     },
   ): void {
+    const fee = Number(o.deliveryFee) || 0;
     const lines = [
       '🛒 Yangi onlayn buyurtma',
       `🧾 #${o.orderId.slice(0, 8).toUpperCase()}`,
@@ -472,8 +457,47 @@ export class TelegramNotifyService {
     if (o.itemCount != null) lines.push(`📦 ${qty(o.itemCount)} dona`);
     if (o.customerName) lines.push(`🙍 Mijoz: ${o.customerName}`);
     if (o.customerPhone) lines.push(`📞 ${o.customerPhone}`);
+    if (o.deliveryType === 'delivery') {
+      lines.push(
+        fee > 0 ? `🚚 Yetkazish: ${uz(fee)} so'm` : '🚚 Yetkazish: bepul',
+      );
+      if (o.deliveryAddress) lines.push(`📍 ${o.deliveryAddress}`);
+    } else if (o.deliveryType === 'pickup') {
+      lines.push('🏪 Olib ketadi');
+    }
     this.fire(businessId, 'onlineOrders', lines.join('\n'), {
       event: 'onlineOrder',
+      data: {
+        orderId: o.orderId,
+        total: Number(o.totalAmount) || 0,
+        itemCount: o.itemCount ?? null,
+        customerName: o.customerName ?? null,
+        url: `/sales?tab=online&order=${o.orderId}`,
+      },
+    });
+  }
+
+  /** The customer cancelled their own online order before the shop took it. */
+  notifyOnlineOrderCancelledByCustomer(
+    businessId: string,
+    o: {
+      orderId: string;
+      totalAmount: string | number;
+      itemCount?: number | null;
+      customerName?: string | null;
+      customerPhone?: string | null;
+    },
+  ): void {
+    const lines = [
+      '↩️ Mijoz onlayn buyurtmani bekor qildi',
+      `🧾 #${o.orderId.slice(0, 8).toUpperCase()}`,
+      `💰 Summa: ${uz(o.totalAmount)} so'm`,
+    ];
+    if (o.itemCount != null) lines.push(`📦 ${qty(o.itemCount)} dona`);
+    if (o.customerName) lines.push(`🙍 Mijoz: ${o.customerName}`);
+    if (o.customerPhone) lines.push(`📞 ${o.customerPhone}`);
+    this.fire(businessId, 'onlineOrders', lines.join('\n'), {
+      event: 'onlineOrderCancelled',
       data: {
         orderId: o.orderId,
         total: Number(o.totalAmount) || 0,

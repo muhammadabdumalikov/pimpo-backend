@@ -200,6 +200,21 @@ export enum ErrorCode {
   STORE_NOT_FOUND = 'STORE_NOT_FOUND',
   STORE_SLUG_TAKEN = 'STORE_SLUG_TAKEN',
   STORE_SLUG_INVALID = 'STORE_SLUG_INVALID',
+  // Online-order delivery (YETKAZISH.md)
+  ORDER_NOT_ONLINE = 'ORDER_NOT_ONLINE',
+  ORDER_STATUS_TRANSITION_INVALID = 'ORDER_STATUS_TRANSITION_INVALID',
+  ORDER_CANCEL_NOTE_REQUIRED = 'ORDER_CANCEL_NOTE_REQUIRED',
+  ORDER_ITEMS_EDIT_NOT_ALLOWED = 'ORDER_ITEMS_EDIT_NOT_ALLOWED',
+  ORDER_ITEM_QTY_INCREASE = 'ORDER_ITEM_QTY_INCREASE',
+  ORDER_ITEMS_ALL_REMOVED = 'ORDER_ITEMS_ALL_REMOVED',
+  ORDER_PAYMENT_MISMATCH = 'ORDER_PAYMENT_MISMATCH',
+  COURIER_NOT_FOUND = 'COURIER_NOT_FOUND',
+  STORE_NO_FULFILLMENT_METHOD = 'STORE_NO_FULFILLMENT_METHOD',
+  STORE_FULFILLMENT_UNAVAILABLE = 'STORE_FULFILLMENT_UNAVAILABLE',
+  STORE_DELIVERY_ADDRESS_REQUIRED = 'STORE_DELIVERY_ADDRESS_REQUIRED',
+  STORE_DELIVERY_MIN_AMOUNT = 'STORE_DELIVERY_MIN_AMOUNT',
+  STORE_ORDER_NOT_CANCELLABLE = 'STORE_ORDER_NOT_CANCELLABLE',
+  RETURN_DELIVERY_FEE_PARTIAL = 'RETURN_DELIVERY_FEE_PARTIAL',
 
   // ── Stock-take ─────────────────────────────────────────────────────────────
   STOCK_TAKE_IN_PROGRESS = 'STOCK_TAKE_IN_PROGRESS',
@@ -1023,6 +1038,63 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.STORE_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Store not found',
+  },
+  // Online-order delivery (YETKAZISH.md)
+  [ErrorCode.ORDER_NOT_ONLINE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This is not an online order',
+  },
+  [ErrorCode.ORDER_STATUS_TRANSITION_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'An order in {from} cannot move to {to}',
+  },
+  [ErrorCode.ORDER_CANCEL_NOTE_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Write why the order is cancelled',
+  },
+  [ErrorCode.ORDER_ITEMS_EDIT_NOT_ALLOWED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Order lines can only change while the order is being assembled',
+  },
+  [ErrorCode.ORDER_ITEM_QTY_INCREASE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The quantity of "{name}" can only go down',
+  },
+  [ErrorCode.ORDER_ITEMS_ALL_REMOVED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'An order cannot lose every line; cancel it instead',
+  },
+  [ErrorCode.ORDER_PAYMENT_MISMATCH]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The payments must add up to {expected}',
+  },
+  [ErrorCode.COURIER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Courier not found',
+  },
+  [ErrorCode.STORE_NO_FULFILLMENT_METHOD]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'At least one of pickup or delivery must stay on',
+  },
+  [ErrorCode.STORE_FULFILLMENT_UNAVAILABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This fulfilment method is not available',
+  },
+  [ErrorCode.STORE_DELIVERY_ADDRESS_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A delivery address is required',
+  },
+  [ErrorCode.STORE_DELIVERY_MIN_AMOUNT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Delivery starts from {min}',
+  },
+  [ErrorCode.STORE_ORDER_NOT_CANCELLABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The store has already accepted this order',
+  },
+  [ErrorCode.RETURN_DELIVERY_FEE_PARTIAL]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The delivery fee is only refunded on a full return',
   },
   [ErrorCode.STORE_SLUG_TAKEN]: {
     status: HttpStatus.CONFLICT,
