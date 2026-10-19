@@ -75,6 +75,7 @@ import {
   queueStepTx,
 } from '../common/price-steps';
 import {priceFlags, isSevere, type PriceFlag} from '../common/price-risk';
+import {netUnitPrice, resolveDiscount} from './receipt-discount';
 
 function money(value: number): string {
   return value.toFixed(2);
@@ -128,10 +129,13 @@ interface ReceiptLine {
   itemId: string;
   productId: string;
   productName: string;
-  // priceIn is in the receipt currency; priceInBase is the same in UZS (the
-  // base used for inventory batches + weighted-average cost).
+  // priceIn is the NET unit cost in the receipt currency (its share of the
+  // receipt discount taken off); priceInBase is the same in UZS (the base used
+  // for inventory batches + weighted-average cost). docPriceIn is the price
+  // as printed, kept only when a discount made the two differ.
   priceIn: string;
   priceInBase: string;
+  docPriceIn: string | null;
   currency: string;
   priceOut: string;
   priceWholesale: string | null;
@@ -152,7 +156,10 @@ interface PreparedReceipt {
     string,
     {name: string; priceOut: string; quantityType?: string | null}
   >;
+  // What is owed: the lines' gross less the discount ("К оплате").
   total: number;
+  discountAmount: number;
+  discountPct: number | null;
   itemCount: number;
 }
 
@@ -300,7 +307,8 @@ export class ReceiptService {
     // (otherwise a second line for the same product would overwrite the first).
     const received = new Map<string, {qty: number; value: number}>();
     const lines: ReceiptLine[] = [];
-    let total = 0;
+    // The lines as printed, summed ("Итог"); the discount comes off this.
+    let gross = 0;
     let itemCount = 0;
 
     for (const item of dto.items) {
@@ -334,11 +342,10 @@ export class ReceiptService {
         item.priceWholesale != null ? money(item.priceWholesale) : null;
       const priceBundle =
         item.priceBundle != null ? money(item.priceBundle) : null;
-      // Line total is in the receipt currency; the base cost (UZS) drives the
-      // inventory batch + weighted-average product cost.
+      // Line total is the line as printed, in the receipt currency. Its cost
+      // is settled below, once the gross the discount comes off is known.
       const lineTotal = item.priceIn * item.quantity;
-      const priceInBase = item.priceIn * rateToBase;
-      total += lineTotal;
+      gross += lineTotal;
       // Weighed goods count as one item so itemCount stays whole (integer col).
       itemCount += itemCountOf(item.quantity, info.quantityType);
 
@@ -347,7 +354,8 @@ export class ReceiptService {
         productId: item.productId,
         productName: info.name,
         priceIn: money(item.priceIn),
-        priceInBase: money(priceInBase),
+        priceInBase: money(item.priceIn * rateToBase),
+        docPriceIn: null,
         currency,
         priceOut: money(priceOut),
         priceWholesale,
@@ -355,11 +363,32 @@ export class ReceiptService {
         quantity: item.quantity,
         lineTotal: money(lineTotal),
       });
+    }
 
-      const agg = received.get(item.productId) ?? {qty: 0, value: 0};
-      agg.qty += item.quantity;
-      agg.value += priceInBase * item.quantity;
-      received.set(item.productId, agg);
+    // The supplier's discount is spread over the lines pro rata: each unit
+    // costs its printed price less the same fraction. The printed price stays
+    // on the line for the document; the net one is what the goods cost.
+    const discount = resolveDiscount(gross, dto);
+    if (discount.amount > 0 && Math.round(discount.amount * 100) > Math.round(gross * 100)) {
+      throw new AppException(ErrorCode.RECEIPT_DISCOUNT_EXCEEDS_TOTAL, {
+        discount: money(discount.amount),
+        total: money(gross),
+      });
+    }
+    for (const line of lines) {
+      if (discount.amount > 0) {
+        const doc = Number(line.priceIn);
+        const net = netUnitPrice(doc, gross, discount.amount);
+        line.docPriceIn = line.priceIn;
+        line.priceIn = money(net);
+        line.priceInBase = money(net * rateToBase);
+      }
+      // The base cost (UZS) drives the inventory batch + weighted-average
+      // product cost.
+      const agg = received.get(line.productId) ?? {qty: 0, value: 0};
+      agg.qty += line.quantity;
+      agg.value += Number(line.priceInBase) * line.quantity;
+      received.set(line.productId, agg);
     }
 
     return {
@@ -369,7 +398,9 @@ export class ReceiptService {
       lines,
       received,
       productInfo,
-      total,
+      total: gross - discount.amount,
+      discountAmount: discount.amount,
+      discountPct: discount.pct,
       itemCount,
     };
   }
@@ -426,6 +457,8 @@ export class ReceiptService {
       received,
       productInfo,
       total,
+      discountAmount,
+      discountPct,
       itemCount,
     } = await this.prepareReceipt(businessId, dto);
 
@@ -446,6 +479,8 @@ export class ReceiptService {
         branchId,
         status: draft ? 'draft' : 'received',
         totalAmount: money(total),
+        discountAmount: money(discountAmount),
+        discountPct: discountPct != null ? String(discountPct) : null,
         currency,
         usdRate: currency === 'USD' ? money(rateToBase) : null,
         itemCount,
@@ -460,6 +495,7 @@ export class ReceiptService {
           productId: line.productId,
           productName: line.productName,
           priceIn: line.priceIn,
+          docPriceIn: line.docPriceIn,
           currency: line.currency,
           priceOut: line.priceOut,
           priceWholesale: line.priceWholesale,
@@ -646,6 +682,7 @@ export class ReceiptService {
         productName: it.productName,
         priceIn: it.priceIn,
         priceInBase: money(priceInBase),
+        docPriceIn: it.docPriceIn,
         currency: it.currency ?? 'UZS',
         priceOut,
         priceWholesale: it.priceWholesale,
@@ -1094,8 +1131,16 @@ export class ReceiptService {
     // Stock, cost and price tiers are not touched here — a draft applies none
     // of that until it is received — so only the document's own fields are
     // taken off the prepared payload.
-    const {supplierName, currency, rateToBase, lines, total, itemCount} =
-      await this.prepareReceipt(businessId, dto);
+    const {
+      supplierName,
+      currency,
+      rateToBase,
+      lines,
+      total,
+      discountAmount,
+      discountPct,
+      itemCount,
+    } = await this.prepareReceipt(businessId, dto);
 
     // Keep the receipt on its current branch unless the edit moves it.
     const branchId =
@@ -1122,6 +1167,7 @@ export class ReceiptService {
           productId: line.productId,
           productName: line.productName,
           priceIn: line.priceIn,
+          docPriceIn: line.docPriceIn,
           currency: line.currency,
           priceOut: line.priceOut,
           priceWholesale: line.priceWholesale,
@@ -1138,6 +1184,8 @@ export class ReceiptService {
           supplierName,
           branchId,
           totalAmount: money(total),
+          discountAmount: money(discountAmount),
+          discountPct: discountPct != null ? String(discountPct) : null,
           currency,
           usdRate: currency === 'USD' ? money(rateToBase) : null,
           itemCount,

@@ -94,6 +94,17 @@ export interface ParsedInvoice {
   linesTotal: number;
   /** The two totals agree. Null when the document printed no grand total. */
   totalsMatch: boolean | null;
+  /** Whole-document discount percent as printed ("Скидка 8%"), or null. */
+  discountPercent: number | null;
+  /** Whole-document discount amount as printed, or null. */
+  discountAmount: number | null;
+  /** The amount to pay after the discount ("К оплате"), or null. */
+  payableAmount: number | null;
+  /**
+   * totalAmount − discountAmount agrees with payableAmount. Null unless all
+   * three were printed.
+   */
+  discountMatch: boolean | null;
   lines: ParsedInvoiceLine[];
   /**
    * Every row's printed № advanced. Null when the document carries no number
@@ -205,6 +216,14 @@ export class InvoiceService {
       lines.reduce((sum, l) => sum + (l.lineTotal ?? l.quantity * l.priceIn), 0),
     );
     const totalAmount = raw.totalAmount > 0 ? round2(raw.totalAmount) : null;
+    const discountPercent =
+      raw.discountPercent > 0 && raw.discountPercent < 100
+        ? raw.discountPercent
+        : null;
+    const discountAmount =
+      raw.discountAmount > 0 ? round2(raw.discountAmount) : null;
+    const payableAmount =
+      raw.payableAmount > 0 ? round2(raw.payableAmount) : null;
 
     this.logger.log(
       `invoice.parse business=${businessId} model=${model} ms=${Date.now() - startedAt}` +
@@ -226,6 +245,14 @@ export class InvoiceService {
         totalAmount === null
           ? null
           : Math.abs(totalAmount - linesTotal) <= TOTAL_TOLERANCE,
+      discountPercent,
+      discountAmount,
+      payableAmount,
+      discountMatch:
+        totalAmount === null || discountAmount === null || payableAmount === null
+          ? null
+          : Math.abs(totalAmount - discountAmount - payableAmount) <=
+            TOTAL_TOLERANCE,
       lines,
       sequenceOk,
       skippedLines: Math.min(raw.lines.length, MAX_LINES) - usable.length,
@@ -314,6 +341,10 @@ function normaliseRaw(data: unknown): RawInvoice {
     documentDate: asString(obj.documentDate),
     currency: asString(obj.currency),
     totalAmount: asNumber(obj.totalAmount),
+    // A discount printed as "-157 667" still means 157 667 off.
+    discountPercent: Math.abs(asNumber(obj.discountPercent)),
+    discountAmount: Math.abs(asNumber(obj.discountAmount)),
+    payableAmount: asNumber(obj.payableAmount),
     lines: lines.map((entry): RawInvoiceLine => {
       const line = (entry ?? {}) as Record<string, unknown>;
       return {

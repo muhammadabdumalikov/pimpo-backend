@@ -757,6 +757,17 @@ export const goodsReceipts = pgTable('goods_receipts', {
   usdRate: decimal('usd_rate', {precision: 12, scale: 4}),
   itemCount: integer('item_count').notNull().default(0),
   note: varchar('note', {length: 500}),
+  // Whole-document discount the supplier printed under the lines ("Скидка").
+  // totalAmount is what is owed AFTER it ("К оплате"); the lines' gross
+  // ("Итог") is totalAmount + discountAmount. The discount is spread over the
+  // lines pro rata into their net unit cost (goods_receipt_items.price_in).
+  discountAmount: decimal('discount_amount', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
+  // The percent the discount was typed as. Set only while the percent drives
+  // the amount (it is re-applied when the lines change); null when the amount
+  // was typed and stays fixed.
+  discountPct: decimal('discount_pct', {precision: 7, scale: 4}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -904,8 +915,14 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   productId: varchar('product_id', {length: 36}),
   productName: varchar('product_name', {length: 255}).notNull(),
   // Unit cost paid on this receipt, in the receipt's currency (feeds the
-  // weighted-average product cost after conversion to base UZS).
+  // weighted-average product cost after conversion to base UZS). NET of the
+  // receipt's discount share — the true cost every lot, average, return and
+  // report reads.
   priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
+  // The unit price as printed on the supplier's document, before the
+  // receipt-level discount. Null when the receipt has no discount (then it
+  // equals priceIn). Only the document view and sale-price markup read it.
+  docPriceIn: decimal('doc_price_in', {precision: 10, scale: 2}),
   // Entry currency of priceIn (snapshot of the receipt currency).
   currency: varchar('currency', {length: 3}).notNull().default('UZS'),
   // Retail + wholesale + bundle selling prices entered on this line (snapshot).
@@ -917,6 +934,7 @@ export const goodsReceiptItems = pgTable('goods_receipt_items', {
   priceBundle: decimal('price_bundle', {precision: 10, scale: 2}),
   // doublePrecision: weighed goods can be received in fractional kg.
   quantity: doublePrecision('quantity').notNull(),
+  // quantity × the document price (docPriceIn ?? priceIn): the line as printed.
   lineTotal: decimal('line_total', {precision: 12, scale: 2}).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

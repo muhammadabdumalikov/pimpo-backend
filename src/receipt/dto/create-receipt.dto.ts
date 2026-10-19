@@ -8,6 +8,7 @@ import {
   IsBoolean,
   IsIn,
   Min,
+  Max,
   ArrayMinSize,
   ValidateNested,
   MaxLength,
@@ -119,4 +120,28 @@ export class CreateReceiptDto {
   @IsOptional()
   @MaxLength(500)
   note?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Whole-document supplier discount as an amount, in the receipt ' +
+      'currency. Spread over the lines pro rata into their net cost. Ignored ' +
+      'when discountPct is given.',
+    example: 157667,
+  })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @IsOptional()
+  discountAmount?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Whole-document supplier discount as a percent of the lines’ gross. ' +
+      'When given it drives the amount, which follows the lines on every edit.',
+    example: 8,
+  })
+  @IsNumber({ maxDecimalPlaces: 4 })
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  discountPct?: number;
 }

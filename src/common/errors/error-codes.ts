@@ -145,6 +145,7 @@ export enum ErrorCode {
   RECEIPT_USD_RATE_REQUIRED = 'RECEIPT_USD_RATE_REQUIRED',
   RECEIPT_ONLY_DRAFT_RECEIVABLE = 'RECEIPT_ONLY_DRAFT_RECEIVABLE',
   RECEIPT_LINE_QUANTITY_REQUIRED = 'RECEIPT_LINE_QUANTITY_REQUIRED',
+  RECEIPT_DISCOUNT_EXCEEDS_TOTAL = 'RECEIPT_DISCOUNT_EXCEEDS_TOTAL',
   RECEIPT_ONLY_DRAFT_EDITABLE = 'RECEIPT_ONLY_DRAFT_EDITABLE',
   RECEIPT_ONLY_DRAFT_DELETABLE = 'RECEIPT_ONLY_DRAFT_DELETABLE',
   RECEIPT_ALREADY_DRAFT = 'RECEIPT_ALREADY_DRAFT',
@@ -821,6 +822,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.RECEIPT_LINE_QUANTITY_REQUIRED]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Enter a quantity for "{name}" before receiving this receipt',
+  },
+  // The supplier's discount cannot be more than the lines it is taken off —
+  // a net cost below zero is a typo (an amount typed into the percent box).
+  [ErrorCode.RECEIPT_DISCOUNT_EXCEEDS_TOTAL]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The discount ({discount}) is more than the receipt total ({total})',
   },
   // Raised when a caller edits or deletes an already-received receipt without
   // saying so outright. Both are possible — they move real stock — and the

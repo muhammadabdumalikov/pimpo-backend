@@ -21,6 +21,9 @@ export const INVOICE_SCHEMA: JsonSchemaObject = {
     'documentDate',
     'currency',
     'totalAmount',
+    'discountPercent',
+    'discountAmount',
+    'payableAmount',
     'lines',
   ],
   properties: {
@@ -45,8 +48,29 @@ export const INVOICE_SCHEMA: JsonSchemaObject = {
     totalAmount: {
       type: 'number',
       description:
-        'The grand total printed on the document (0 if there is none). ' +
-        'Copied verbatim, never recomputed — it is the checksum for the lines.',
+        'The total of the goods rows printed on the document (Итог / Jami / ' +
+        'Всего), BEFORE any discount — when a discount is printed under it, ' +
+        'this is the figure above the discount (0 if there is none). Copied ' +
+        'verbatim, never recomputed — it is the checksum for the lines.',
+    },
+    discountPercent: {
+      type: 'number',
+      description:
+        'The whole-document discount percent printed under the total ' +
+        '(Скидка / Chegirma, e.g. "Скидка 8%" → 8), or 0 if none is printed.',
+    },
+    discountAmount: {
+      type: 'number',
+      description:
+        'The whole-document discount AMOUNT printed under the total ' +
+        '(Скидка / Chegirma), as a positive number, or 0 if none is printed. ' +
+        'Copied, never computed from the percent.',
+    },
+    payableAmount: {
+      type: 'number',
+      description:
+        'The amount to pay after the discount (К оплате / Итого к оплате / ' +
+        "To'lanadi), or 0 if the document prints no such separate line.",
     },
     lines: {
       type: 'array',
@@ -139,7 +163,11 @@ ONE ROW AT A TIME — THE MOST IMPORTANT RULE
 - Ruled lines, merged cells and a name that wraps onto a second line do not start a new row: a wrapped name belongs to the row above it.
 
 WHAT IS A LINE
-- Only rows of actual goods. NEVER emit a line for: ЖАМИ / JAMI / ИТОГО / Всего / Total, НДС / QQS / VAT, delivery or service charges, subtotals, page headers or signature blocks.
+- Only rows of actual goods. NEVER emit a line for: ЖАМИ / JAMI / ИТОГО / Всего / Total, Скидка / Chegirma / discount, К оплате, НДС / QQS / VAT, delivery or service charges, subtotals, page headers or signature blocks.
+
+TOTALS AND DISCOUNT
+- The footer may read: Итог (goods total) → Скидка N% (a discount amount) → К оплате (what is paid). Put Итог in totalAmount, N in discountPercent, the discount's printed amount in discountAmount and К оплате in payableAmount.
+- Copy each one as printed. Never compute a missing one from the others; a figure that is not printed is 0.
 - Keep every goods row, including repeats of the same product.
 - Preserve the printed order.
 
@@ -183,6 +211,9 @@ export interface RawInvoice {
   documentDate: string;
   currency: string;
   totalAmount: number;
+  discountPercent: number;
+  discountAmount: number;
+  payableAmount: number;
   lines: RawInvoiceLine[];
 }
 
