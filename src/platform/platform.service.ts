@@ -24,6 +24,7 @@ export interface PlatformBusinessRow {
   login: string;
   email: string | null;
   isActive: boolean;
+  businessType: BusinessType;
   createdAt: Date;
   /** Effective tier after expiry/active checks (free when none/expired). */
   tier: Tier;
@@ -77,6 +78,7 @@ export class PlatformService {
             login: businesses.login,
             email: businesses.email,
             isActive: businesses.isActive,
+            businessType: businesses.businessType,
             createdAt: businesses.createdAt,
           })
           .from(businesses)
@@ -136,6 +138,7 @@ export class PlatformService {
       const endDate = sub?.endDate ?? null;
       return {
         ...b,
+        businessType: b.businessType as BusinessType,
         planTier,
         subscriptionEndDate: endDate,
         subscriptionExpired:
