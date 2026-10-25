@@ -3,6 +3,7 @@ import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {AppException} from '../common/errors/app.exception';
 import {itemCountOf} from '../common/item-count';
 import {ErrorCode} from '../common/errors/error-codes';
+import {hasRecipe} from '../common/business-type';
 import {isStockTakeActive} from '../common/stock-take-lock';
 import {assertReasonNote} from '../common/loss-reasons';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
@@ -327,6 +328,13 @@ export class ReceiptService {
         if (!product) {
           throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
             productId: item.productId,
+          });
+        }
+        // A dish/semi holds no stock — its ingredients come in instead
+        // (FASTFOOD.md §2); stock on it would never be drawn.
+        if (hasRecipe(product.kind)) {
+          throw new AppException(ErrorCode.RECEIPT_RECIPE_CARD, {
+            name: product.name,
           });
         }
         info = {

@@ -347,6 +347,7 @@ export enum ErrorCode {
   PRODUCT_KIND_FOOD_ONLY = 'PRODUCT_KIND_FOOD_ONLY',
   PRODUCT_KIND_IMMUTABLE = 'PRODUCT_KIND_IMMUTABLE',
   PRODUCT_NOT_SELLABLE = 'PRODUCT_NOT_SELLABLE',
+  RECEIPT_RECIPE_CARD = 'RECEIPT_RECIPE_CARD',
   RECIPE_NOT_SUPPORTED = 'RECIPE_NOT_SUPPORTED',
   RECIPE_COMPONENT_NOT_FOUND = 'RECIPE_COMPONENT_NOT_FOUND',
   RECIPE_COMPONENT_DUPLICATE = 'RECIPE_COMPONENT_DUPLICATE',
@@ -1498,6 +1499,11 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.PRODUCT_NOT_SELLABLE]: {
     status: HttpStatus.BAD_REQUEST,
     message: '{name} is a semi-finished item and cannot be sold',
+  },
+  [ErrorCode.RECEIPT_RECIPE_CARD]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'A dish or semi-finished card holds no stock: a delivery note takes ingredients only',
   },
   [ErrorCode.RECIPE_NOT_SUPPORTED]: {
     status: HttpStatus.BAD_REQUEST,
