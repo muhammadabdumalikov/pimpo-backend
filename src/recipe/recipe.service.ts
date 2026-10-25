@@ -24,6 +24,7 @@ import {consumeBatches, type CostingMethod} from '../order/costing';
 import {
   assertRecipeGraph,
   expandToStock,
+  manualCost,
   MAX_RECIPE_DEPTH,
   RecipeGraph,
   RecipeGraphError,
@@ -167,13 +168,15 @@ export async function consumeDishTx(
   },
 ): Promise<DishConsumption> {
   let leaves: Map<string, number>;
+  // Recipe cards with no recipe yet draw nothing; their typed cost still counts.
+  let costTotal: number;
   try {
     leaves = expandToStock(args.graph, args.dishId, args.quantity, args.takeaway);
+    costTotal = manualCost(args.graph, args.dishId, args.quantity, args.takeaway);
   } catch (err) {
     graphError(err, args.graph);
   }
   const components: DishConsumption['components'] = [];
-  let costTotal = 0;
   for (const productId of [...leaves.keys()].sort()) {
     const qty = leaves.get(productId)!;
     const leaf = args.graph.get(productId)!;
@@ -439,6 +442,10 @@ export class RecipeService {
         quantity: l.quantity,
         takeawayOnly: l.takeawayOnly ?? false,
       }));
+      // No recipe: the card costs what was typed (kept when nothing was).
+      if (node.lines.length === 0 && dto.manualCost !== undefined) {
+        node.priceIn = dto.manualCost;
+      }
       // New components may not be in the graph yet (a stock card nothing
       // used before): load them so the rules can see their kinds.
       const missing = node.lines
@@ -535,9 +542,10 @@ export class RecipeService {
     const rows = cards.map((c) => {
       const node = graph.get(c.id);
       const hasRecipe = !!node && node.lines.length > 0;
+      // Without a recipe this is the cost typed on the card (0 when none was).
       let cost = 0;
       try {
-        cost = hasRecipe ? unitCost(graph, c.id, memo) : 0;
+        cost = node ? unitCost(graph, c.id, memo) : 0;
       } catch {
         cost = 0;
       }

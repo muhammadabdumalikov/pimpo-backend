@@ -53,6 +53,18 @@ export class SaveRecipeDto {
   @IsNumber({maxDecimalPlaces: 3})
   @Min(0.001)
   recipeYield?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Cost of one unit typed by hand, used while the recipe has no lines ' +
+      '(ignored once it has any — then the recipe prices the card).',
+    example: 10650,
+  })
+  @IsOptional()
+  @IsNumber({maxDecimalPlaces: 2})
+  @Min(0)
+  @Max(1_000_000_000)
+  manualCost?: number;
 }
 
 export class UpdateFoodSettingsDto {

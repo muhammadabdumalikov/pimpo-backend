@@ -1,4 +1,4 @@
-import {Body, Controller, Get, Param, Put, Query, UseGuards} from '@nestjs/common';
+import {Body, Controller, Get, Param, Post, Put, Query, UseGuards} from '@nestjs/common';
 import {businessDay} from '../common/business-time';
 import {ApiBearerAuth, ApiOperation, ApiTags} from '@nestjs/swagger';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
@@ -7,7 +7,9 @@ import {IBusiness} from '../business/types';
 import {PermissionsGuard} from '../permission/permissions.guard';
 import {RequirePermission} from '../permission/permission.decorator';
 import {RecipeService} from './recipe.service';
+import {MenuImportService} from './menu-import.service';
 import {SaveRecipeDto, UpdateFoodSettingsDto} from './dto/recipe.dto';
+import {MenuImportDto} from './dto/menu-import.dto';
 
 // Recipes of dish / semi-finished cards (FASTFOOD.md §3). They reveal what
 // every dish costs, so reading them is gated like editing them.
@@ -16,7 +18,20 @@ import {SaveRecipeDto, UpdateFoodSettingsDto} from './dto/recipe.dto';
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 @ApiBearerAuth('JWT-auth')
 export class RecipeController {
-  constructor(private readonly recipeService: RecipeService) {}
+  constructor(
+    private readonly recipeService: RecipeService,
+    private readonly menuImportService: MenuImportService,
+  ) {}
+
+  // Declared before the ':id' routes so the segment is never read as an id.
+  @Post('menu-import')
+  @RequirePermission('recipe:manage', 'product:create')
+  @ApiOperation({
+    summary: "Import a menu (e.g. Poster's dish export): dishes, prices, categories, typed costs",
+  })
+  importMenu(@CurrentBusiness() business: IBusiness, @Body() dto: MenuImportDto) {
+    return this.menuImportService.importMenu(business.id, dto);
+  }
 
   @Get(':id/recipe')
   @RequirePermission('recipe:manage')

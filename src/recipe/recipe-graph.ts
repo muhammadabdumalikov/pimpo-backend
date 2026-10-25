@@ -5,7 +5,9 @@
 // recipe makes ONE dish; a semi-finished item's recipe makes `yield` units of
 // it, so using 30 g of a sauce whose recipe yields 2000 g draws 30/2000 of each
 // sauce ingredient. Dishes may contain dishes (a combo). Everything bottoms out
-// in stock cards, which are what a sale actually draws from the lots.
+// in stock cards, which are what a sale actually draws from the lots — or in a
+// recipe card with no recipe yet, which costs its own priceIn (typed by hand,
+// e.g. a menu imported from Poster) and draws nothing.
 
 export type RecipeKind = 'stock' | 'dish' | 'semi';
 
@@ -22,7 +24,10 @@ export interface RecipeNode {
   kind: RecipeKind;
   /** semi only: how much one batch of its recipe makes. */
   recipeYield: number | null;
-  /** Unit cost of a stock card (its weighted-average priceIn). */
+  /**
+   * Unit cost of a stock card (its weighted-average priceIn); on a recipe card
+   * without lines, its hand-typed cost.
+   */
   priceIn: number;
   lines: RecipeLine[];
 }
@@ -49,6 +54,54 @@ export class RecipeGraphError extends Error {
   }
 }
 
+/** A recipe card whose recipe is not entered: it costs its own priceIn. */
+const isManualCost = (node: RecipeNode) =>
+  node.kind !== 'stock' && node.lines.length === 0;
+
+/**
+ * Open `quantity` units of a dish (or semi) down to its leaves: `onStock` for
+ * every stock card it draws, `onManual` for every recipe card without a recipe
+ * (the root included), each with the amount in that card's unit. `takeaway`
+ * false skips the takeaway-only (packaging) lines at every level.
+ */
+function walkRecipe(
+  graph: RecipeGraph,
+  rootId: string,
+  quantity: number,
+  takeaway: boolean,
+  onStock: (node: RecipeNode, amount: number) => void,
+  onManual: (node: RecipeNode, amount: number) => void,
+): void {
+  const walk = (nodeId: string, factor: number, depth: number) => {
+    const node = graph.get(nodeId);
+    if (!node) throw new RecipeGraphError('missing', nodeId);
+    if (depth > MAX_RECIPE_DEPTH) throw new RecipeGraphError('too_deep', nodeId);
+    for (const line of node.lines) {
+      if (line.takeawayOnly && !takeaway) continue;
+      const comp = graph.get(line.componentId);
+      if (!comp) throw new RecipeGraphError('missing', line.componentId);
+      const amount = line.quantity * factor;
+      if (comp.kind === 'stock') {
+        onStock(comp, amount);
+      } else if (isManualCost(comp)) {
+        onManual(comp, amount);
+      } else if (comp.kind === 'semi') {
+        if (!(comp.recipeYield && comp.recipeYield > 0)) {
+          throw new RecipeGraphError('no_yield', comp.id);
+        }
+        walk(comp.id, amount / comp.recipeYield, depth + 1);
+      } else {
+        walk(comp.id, amount, depth + 1);
+      }
+    }
+  };
+
+  const root = graph.get(rootId);
+  if (!root) throw new RecipeGraphError('missing', rootId);
+  if (isManualCost(root)) onManual(root, quantity);
+  else walk(rootId, quantity, 1);
+}
+
 /**
  * Open `quantity` units of a dish (or semi) down to the stock cards it draws:
  * stock card id → total quantity, rounded to 3 decimals, zeros dropped.
@@ -61,30 +114,14 @@ export function expandToStock(
   takeaway: boolean,
 ): Map<string, number> {
   const raw = new Map<string, number>();
-
-  const walk = (nodeId: string, factor: number, depth: number) => {
-    const node = graph.get(nodeId);
-    if (!node) throw new RecipeGraphError('missing', nodeId);
-    if (depth > MAX_RECIPE_DEPTH) throw new RecipeGraphError('too_deep', nodeId);
-    for (const line of node.lines) {
-      if (line.takeawayOnly && !takeaway) continue;
-      const comp = graph.get(line.componentId);
-      if (!comp) throw new RecipeGraphError('missing', line.componentId);
-      const amount = line.quantity * factor;
-      if (comp.kind === 'stock') {
-        raw.set(comp.id, (raw.get(comp.id) ?? 0) + amount);
-      } else if (comp.kind === 'semi') {
-        if (!(comp.recipeYield && comp.recipeYield > 0)) {
-          throw new RecipeGraphError('no_yield', comp.id);
-        }
-        walk(comp.id, amount / comp.recipeYield, depth + 1);
-      } else {
-        walk(comp.id, amount, depth + 1);
-      }
-    }
-  };
-
-  walk(rootId, quantity, 1);
+  walkRecipe(
+    graph,
+    rootId,
+    quantity,
+    takeaway,
+    (comp, amount) => raw.set(comp.id, (raw.get(comp.id) ?? 0) + amount),
+    () => undefined,
+  );
 
   const out = new Map<string, number>();
   for (const [id, qty] of raw) {
@@ -92,6 +129,31 @@ export function expandToStock(
     if (q > 0) out.set(id, q);
   }
   return out;
+}
+
+/**
+ * What `quantity` units of a dish cost through the recipe cards that have no
+ * recipe yet (their hand-typed priceIn) — the part of a sale's cost that no
+ * stock draw carries. 0 when every recipe on the way is entered.
+ */
+export function manualCost(
+  graph: RecipeGraph,
+  rootId: string,
+  quantity: number,
+  takeaway: boolean,
+): number {
+  let cost = 0;
+  walkRecipe(
+    graph,
+    rootId,
+    quantity,
+    takeaway,
+    () => undefined,
+    (node, amount) => {
+      cost += amount * node.priceIn;
+    },
+  );
+  return cost;
 }
 
 /**
@@ -134,9 +196,10 @@ export function assertRecipeGraph(graph: RecipeGraph): void {
 
 /**
  * Theoretical cost of one unit of a card at today's ingredient costs: a stock
- * card's priceIn; a dish's recipe; a semi's recipe divided by its yield. Every
- * line counts (packaging included — the menu-cost view prices a takeaway
- * order, the dearer case). Memoised over `memo` for the whole graph.
+ * card's priceIn; a dish's recipe; a semi's recipe divided by its yield; a
+ * recipe card with no recipe yet, its hand-typed priceIn. Every line counts
+ * (packaging included — the menu-cost view prices a takeaway order, the
+ * dearer case). Memoised over `memo` for the whole graph.
  */
 export function unitCost(
   graph: RecipeGraph,
@@ -148,7 +211,7 @@ export function unitCost(
   const node = graph.get(nodeId);
   if (!node) throw new RecipeGraphError('missing', nodeId);
   let cost: number;
-  if (node.kind === 'stock') {
+  if (node.kind === 'stock' || isManualCost(node)) {
     cost = node.priceIn;
   } else {
     let batch = 0;

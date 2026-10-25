@@ -1,6 +1,7 @@
 import {
   assertRecipeGraph,
   expandToStock,
+  manualCost,
   RecipeGraph,
   RecipeGraphError,
   RecipeKind,
@@ -159,5 +160,37 @@ describe('usersOf', () => {
       'lavash',
       'sauce',
     ]);
+  });
+});
+
+describe('a recipe card with no recipe yet (hand-typed cost)', () => {
+  // Coffee imported from Poster: priced by hand, no ingredients entered.
+  const cafe = () => {
+    const g = kitchen();
+    for (const n of [
+      node('latte', 'dish', [], {priceIn: 10650}),
+      node('breakfast', 'dish', [['latte', 1], ['lavash', 1]]),
+    ]) {
+      g.set(n.id, n);
+    }
+    return g;
+  };
+
+  it('costs its own priceIn and draws no stock', () => {
+    expect(unitCost(cafe(), 'latte')).toBe(10650);
+    expect(expandToStock(cafe(), 'latte', 3, true).size).toBe(0);
+    expect(manualCost(cafe(), 'latte', 3, true)).toBe(31950);
+  });
+
+  it('counts inside a combo next to the parts that do draw stock', () => {
+    const g = cafe();
+    const lavash = unitCost(g, 'lavash');
+    expect(unitCost(g, 'breakfast')).toBeCloseTo(10650 + lavash, 6);
+    expect(manualCost(g, 'breakfast', 2, true)).toBe(21300);
+    expect(expandToStock(g, 'breakfast', 2, true).get('bread')).toBe(2);
+  });
+
+  it('is 0 when every recipe on the way is entered', () => {
+    expect(manualCost(cafe(), 'lavash', 1, true)).toBe(0);
   });
 });
