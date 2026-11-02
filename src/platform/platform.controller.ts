@@ -30,6 +30,12 @@ import {
 } from './dto/create-platform-business.dto';
 import { TopUpBalanceDto, CreateDiscountDto } from '../subscription/dto/billing.dto';
 
+/** A real 'YYYY-MM-DD' day, or undefined — a bad value means no bound, not a 500. */
+const ymdOrUndefined = (v?: string) =>
+  v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v))
+    ? v
+    : undefined;
+
 /**
  * Platform-admin (super-admin) console: manage every tenant business, its
  * subscription and billing. Auth is a static login (PlatformAuthService) that
@@ -58,8 +64,10 @@ export class PlatformController {
   @UseGuards(PlatformJwtGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Platform overview stats' })
-  getStats() {
-    return this.platformService.getStats();
+  @ApiQuery({ name: 'from', required: false, description: 'Shops registered from this day (YYYY-MM-DD)' })
+  @ApiQuery({ name: 'to', required: false, description: 'Shops registered up to this day (YYYY-MM-DD)' })
+  getStats(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.platformService.getStats(ymdOrUndefined(from), ymdOrUndefined(to));
   }
 
   @Get('businesses')
@@ -67,8 +75,18 @@ export class PlatformController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'List all businesses with aggregate figures' })
   @ApiQuery({ name: 'search', required: false, description: 'Filter by name / login / email' })
-  listBusinesses(@Query('search') search?: string) {
-    return this.platformService.listBusinesses(search);
+  @ApiQuery({ name: 'from', required: false, description: 'Registered from this day (YYYY-MM-DD)' })
+  @ApiQuery({ name: 'to', required: false, description: 'Registered up to this day (YYYY-MM-DD)' })
+  listBusinesses(
+    @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.platformService.listBusinesses(
+      search,
+      ymdOrUndefined(from),
+      ymdOrUndefined(to),
+    );
   }
 
   @Get('businesses/:id')

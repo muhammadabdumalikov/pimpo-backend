@@ -14,7 +14,8 @@ import {
   billingProfiles,
 } from '../database/schema';
 import type {BusinessType} from '../common/business-type';
-import { and, count, eq, ilike, or, sql } from 'drizzle-orm';
+import { and, count, eq, gte, ilike, lte, or, sql } from 'drizzle-orm';
+import { businessDayEnd, businessDayStart } from '../common/business-time';
 import {TIER_RANK, type Tier, gateTier, type PlanTier} from '../subscription/tier';
 
 /** One row in the platform businesses overview table. */
@@ -54,20 +55,35 @@ export class PlatformService {
     return gateTier(planTier);
   }
 
+  /** Businesses registered within the given calendar days (both inclusive, business zone). */
+  private createdWithin(from?: string, to?: string) {
+    return and(
+      from ? gte(businesses.createdAt, businessDayStart(from)) : undefined,
+      to ? lte(businesses.createdAt, businessDayEnd(to)) : undefined,
+    );
+  }
+
   /**
    * All businesses with the aggregate figures the overview table needs. Counts
    * are computed with a handful of grouped queries (not per-row) and merged in
    * memory, so listing stays O(1) queries regardless of tenant count.
    */
-  async listBusinesses(search?: string): Promise<PlatformBusinessRow[]> {
+  async listBusinesses(
+    search?: string,
+    from?: string,
+    to?: string,
+  ): Promise<PlatformBusinessRow[]> {
     const term = search?.trim();
-    const where = term
-      ? or(
-          ilike(businesses.name, `%${term}%`),
-          ilike(businesses.login, `%${term}%`),
-          ilike(businesses.email, `%${term}%`),
-        )
-      : undefined;
+    const where = and(
+      term
+        ? or(
+            ilike(businesses.name, `%${term}%`),
+            ilike(businesses.login, `%${term}%`),
+            ilike(businesses.email, `%${term}%`),
+          )
+        : undefined,
+      this.createdWithin(from, to),
+    );
 
     const [rows, productCounts, branchCounts, staffCounts, subs, profiles] =
       await Promise.all([
@@ -210,15 +226,21 @@ export class PlatformService {
     };
   }
 
-  /** Aggregate figures for the platform dashboard home. */
-  async getStats() {
+  /**
+   * Aggregate figures for the platform dashboard home. A date range narrows
+   * every figure to the shops registered in it, so they add up to what the
+   * businesses table lists for the same range.
+   */
+  async getStats(from?: string, to?: string) {
+    const createdWithin = this.createdWithin(from, to);
     const [bizAgg, subs, productAgg] = await Promise.all([
       this.dbService.db
         .select({
           total: count(),
           active: sql<number>`count(*) filter (where ${businesses.isActive})`,
         })
-        .from(businesses),
+        .from(businesses)
+        .where(createdWithin),
       this.dbService.db
         .select({
           businessId: businessSubscriptions.businessId,
@@ -230,11 +252,13 @@ export class PlatformService {
           subscriptionPlans,
           eq(businessSubscriptions.planId, subscriptionPlans.id),
         )
-        .where(eq(businessSubscriptions.isActive, true)),
+        .innerJoin(businesses, eq(businessSubscriptions.businessId, businesses.id))
+        .where(and(eq(businessSubscriptions.isActive, true), createdWithin)),
       this.dbService.db
         .select({ c: count() })
         .from(products)
-        .where(eq(products.isActive, true)),
+        .innerJoin(businesses, eq(products.businessId, businesses.id))
+        .where(and(eq(products.isActive, true), createdWithin)),
     ]);
 
     const byTier: Record<Tier, number> = {
