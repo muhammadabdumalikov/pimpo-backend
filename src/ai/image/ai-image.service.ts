@@ -470,6 +470,31 @@ export class AiImageService {
     };
   }
 
+  /** One shop's spend over the given days (both inclusive, business zone). */
+  async businessSpend(businessId: string, from?: string, to?: string) {
+    const [totals] = await this.db
+      .select({
+        spentUsd: sql<number>`coalesce(sum(${aiImageGenerations.costUsd}), 0)`,
+        images: sql<number>`count(*) filter (where ${aiImageGenerations.kind} = 'image' and ${aiImageGenerations.status} = 'ok')`,
+        failed: sql<number>`count(*) filter (where ${aiImageGenerations.kind} = 'image' and ${aiImageGenerations.status} = 'failed')`,
+        accepted: sql<number>`count(*) filter (where ${aiImageGenerations.acceptedAt} is not null)`,
+      })
+      .from(aiImageGenerations)
+      .where(
+        and(
+          eq(aiImageGenerations.businessId, businessId),
+          from ? gte(aiImageGenerations.createdAt, businessDayStart(from)) : undefined,
+          to ? lte(aiImageGenerations.createdAt, businessDayEnd(to)) : undefined,
+        ),
+      );
+    return {
+      spentUsd: round4(Number(totals?.spentUsd ?? 0)),
+      imageCount: Number(totals?.images ?? 0),
+      acceptedCount: Number(totals?.accepted ?? 0),
+      failedCount: Number(totals?.failed ?? 0),
+    };
+  }
+
   async getQuota(businessId: string): Promise<AiImageQuotaView> {
     await this.assertBusiness(businessId);
     const period = periodOf(new Date());

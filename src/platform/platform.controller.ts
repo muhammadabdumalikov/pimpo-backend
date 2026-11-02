@@ -70,18 +70,8 @@ export class PlatformController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'List all businesses with aggregate figures' })
   @ApiQuery({ name: 'search', required: false, description: 'Filter by name / login / email' })
-  @ApiQuery({ name: 'from', required: false, description: 'Registered from this day (YYYY-MM-DD)' })
-  @ApiQuery({ name: 'to', required: false, description: 'Registered up to this day (YYYY-MM-DD)' })
-  listBusinesses(
-    @Query('search') search?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-  ) {
-    return this.platformService.listBusinesses(
-      search,
-      ymdOrUndefined(from),
-      ymdOrUndefined(to),
-    );
+  listBusinesses(@Query('search') search?: string) {
+    return this.platformService.listBusinesses(search);
   }
 
   @Get('businesses/:id')

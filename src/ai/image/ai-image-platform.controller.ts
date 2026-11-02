@@ -25,6 +25,19 @@ export class AiImagePlatformController {
     return this.images.platformSummary(ymdOrUndefined(from), ymdOrUndefined(to));
   }
 
+  @Get('businesses/:id/ai-images/spend')
+  @ApiOperation({summary: "A shop's AI image spend in a date range"})
+  @ApiParam({name: 'id', description: 'Business ID'})
+  @ApiQuery({name: 'from', required: false, description: 'First day (YYYY-MM-DD); none = no lower bound'})
+  @ApiQuery({name: 'to', required: false, description: 'Last day (YYYY-MM-DD); none = no upper bound'})
+  spend(
+    @Param('id') id: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.images.businessSpend(id, ymdOrUndefined(from), ymdOrUndefined(to));
+  }
+
   @Get('businesses/:id/ai-image-quota')
   @ApiOperation({summary: "A shop's AI image allowance and this month's use"})
   @ApiParam({name: 'id', description: 'Business ID'})

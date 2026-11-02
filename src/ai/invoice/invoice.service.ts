@@ -337,6 +337,29 @@ export class InvoiceService {
     };
   }
 
+  /** One shop's scanner spend over the given days (both inclusive, business zone). */
+  async businessSpend(businessId: string, from?: string, to?: string) {
+    const [totals] = await this.db
+      .select({
+        spentUsd: sql<number>`coalesce(sum(${aiInvoiceReads.costUsd}), 0)`,
+        reads: sql<number>`count(*)`,
+        pages: sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}), 0)`,
+      })
+      .from(aiInvoiceReads)
+      .where(
+        and(
+          eq(aiInvoiceReads.businessId, businessId),
+          from ? gte(aiInvoiceReads.createdAt, businessDayStart(from)) : undefined,
+          to ? lte(aiInvoiceReads.createdAt, businessDayEnd(to)) : undefined,
+        ),
+      );
+    return {
+      spentUsd: Number(totals?.spentUsd ?? 0),
+      readCount: Number(totals?.reads ?? 0),
+      pageCount: Number(totals?.pages ?? 0),
+    };
+  }
+
   private toParsedLine(
     line: RawInvoiceLine,
     i: number,

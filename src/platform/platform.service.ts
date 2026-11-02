@@ -68,22 +68,15 @@ export class PlatformService {
    * are computed with a handful of grouped queries (not per-row) and merged in
    * memory, so listing stays O(1) queries regardless of tenant count.
    */
-  async listBusinesses(
-    search?: string,
-    from?: string,
-    to?: string,
-  ): Promise<PlatformBusinessRow[]> {
+  async listBusinesses(search?: string): Promise<PlatformBusinessRow[]> {
     const term = search?.trim();
-    const where = and(
-      term
-        ? or(
-            ilike(businesses.name, `%${term}%`),
-            ilike(businesses.login, `%${term}%`),
-            ilike(businesses.email, `%${term}%`),
-          )
-        : undefined,
-      this.createdWithin(from, to),
-    );
+    const where = term
+      ? or(
+          ilike(businesses.name, `%${term}%`),
+          ilike(businesses.login, `%${term}%`),
+          ilike(businesses.email, `%${term}%`),
+        )
+      : undefined;
 
     const [rows, productCounts, branchCounts, staffCounts, subs, profiles] =
       await Promise.all([
