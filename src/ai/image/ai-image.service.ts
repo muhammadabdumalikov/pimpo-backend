@@ -2,7 +2,8 @@ import {CACHE_MANAGER} from '@nestjs/cache-manager';
 import {Inject, Injectable, Logger} from '@nestjs/common';
 import {Cron} from '@nestjs/schedule';
 import {Cache} from 'cache-manager';
-import {and, desc, eq, gte, isNotNull, isNull, lt, sql} from 'drizzle-orm';
+import {and, desc, eq, gte, isNotNull, isNull, lt, lte, sql} from 'drizzle-orm';
+import {businessDayEnd, businessDayStart} from '../../common/business-time';
 import {CacheKeys, TTL} from '../../cache/cache.util';
 import {AppException} from '../../common/errors/app.exception';
 import {ErrorCode} from '../../common/errors/error-codes';
@@ -398,14 +399,29 @@ export class AiImageService {
 
   // ── Platform console ─────────────────────────────────────────────────────
 
-  async platformSummary() {
+  /**
+   * Spend and top shops over the given days (both inclusive, business zone).
+   * The budget stops shops per calendar month whatever the range, so this
+   * month's spend always comes back alongside as `monthSpentUsd`.
+   */
+  async platformSummary(from?: string, to?: string) {
     const period = periodOf(new Date());
-    const from = periodStart(period);
-    const to = periodEnd(period);
-    const inMonth = and(
-      gte(aiImageGenerations.createdAt, from),
-      lt(aiImageGenerations.createdAt, to),
+    const inRange = and(
+      from ? gte(aiImageGenerations.createdAt, businessDayStart(from)) : undefined,
+      to ? lte(aiImageGenerations.createdAt, businessDayEnd(to)) : undefined,
     );
+
+    const [month] = await this.db
+      .select({
+        spentUsd: sql<number>`coalesce(sum(${aiImageGenerations.costUsd}), 0)`,
+      })
+      .from(aiImageGenerations)
+      .where(
+        and(
+          gte(aiImageGenerations.createdAt, periodStart(period)),
+          lt(aiImageGenerations.createdAt, periodEnd(period)),
+        ),
+      );
 
     const [totals] = await this.db
       .select({
@@ -416,7 +432,7 @@ export class AiImageService {
         photoImages: sql<number>`count(*) filter (where ${aiImageGenerations.kind} = 'image' and ${aiImageGenerations.status} = 'ok' and ${aiImageGenerations.mode} = 'photo')`,
       })
       .from(aiImageGenerations)
-      .where(inMonth);
+      .where(inRange);
 
     const spentExpr = sql<number>`coalesce(sum(${aiImageGenerations.costUsd}), 0)`;
     const top = await this.db
@@ -428,7 +444,7 @@ export class AiImageService {
       })
       .from(aiImageGenerations)
       .innerJoin(businesses, eq(businesses.id, aiImageGenerations.businessId))
-      .where(inMonth)
+      .where(inRange)
       .groupBy(aiImageGenerations.businessId, businesses.name)
       .orderBy(desc(spentExpr))
       .limit(20);
@@ -439,6 +455,7 @@ export class AiImageService {
       model: this.imageModel,
       budgetUsd: this.budgetUsd,
       defaultLimitUsd: AI_IMAGE_DEFAULT_LIMIT_USD,
+      monthSpentUsd: round4(Number(month?.spentUsd ?? 0)),
       spentUsd: round4(Number(totals?.spentUsd ?? 0)),
       imageCount: Number(totals?.images ?? 0),
       photoImageCount: Number(totals?.photoImages ?? 0),

@@ -23,6 +23,13 @@ export function businessDayEnd(ymd: string): Date {
   return new Date(`${ymd.slice(0, 10)}T23:59:59.999${BUSINESS_UTC_OFFSET}`);
 }
 
+/** A real 'YYYY-MM-DD' day, or undefined — a bad filter value means no bound, not a 500. */
+export function ymdOrUndefined(v?: string): string | undefined {
+  return v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v))
+    ? v
+    : undefined;
+}
+
 /** The +05:00 offset in milliseconds — the same shift, for Date arithmetic. */
 export const BUSINESS_OFFSET_MS = 5 * 3_600_000;
 

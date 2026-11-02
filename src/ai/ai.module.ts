@@ -11,6 +11,7 @@ import {AiSettingsController} from './ai-settings.controller';
 import {AiSettingsService} from './ai-settings.service';
 import {AiController} from './ai.controller';
 import {AiService} from './ai.service';
+import {InvoicePlatformController} from './invoice/invoice-platform.controller';
 import {InvoiceScanController} from './invoice/invoice-scan.controller';
 import {InvoiceScanService} from './invoice/invoice-scan.service';
 import {InvoiceController} from './invoice/invoice.controller';
@@ -45,6 +46,7 @@ import {AiToolsService} from './tools/ai-tools.service';
     AiController,
     InvoiceController,
     InvoiceScanController,
+    InvoicePlatformController,
   ],
   providers: [
     AiSettingsService,

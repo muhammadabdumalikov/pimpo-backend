@@ -1,12 +1,13 @@
-import {Body, Controller, Get, Param, Put, UseGuards} from '@nestjs/common';
-import {ApiBearerAuth, ApiOperation, ApiParam, ApiTags} from '@nestjs/swagger';
+import {Body, Controller, Get, Param, Put, Query, UseGuards} from '@nestjs/common';
+import {ApiBearerAuth, ApiOperation, ApiParam, ApiQuery, ApiTags} from '@nestjs/swagger';
+import {ymdOrUndefined} from '../../common/business-time';
 import {PlatformJwtGuard} from '../../platform/platform-jwt.guard';
 import {SetAiImageQuotaDto} from './ai-image.dto';
 import {AiImageService} from './ai-image.service';
 
 /**
- * Platform console for AI product images: this month's spend against the
- * platform budget, and each shop's allowance (Q9 — raise it for a shop filling
+ * Platform console for AI product images: spend over any date range, this
+ * month's against the platform budget, and each shop's allowance (Q9 — raise it for a shop filling
  * its catalogue, permanently or for this month only).
  */
 @ApiTags('platform')
@@ -17,9 +18,11 @@ export class AiImagePlatformController {
   constructor(private readonly images: AiImageService) {}
 
   @Get('ai-images/summary')
-  @ApiOperation({summary: 'AI image spend this month, budget, top shops'})
-  summary() {
-    return this.images.platformSummary();
+  @ApiOperation({summary: 'AI image spend in a date range, monthly budget, top shops'})
+  @ApiQuery({name: 'from', required: false, description: 'First day (YYYY-MM-DD); none = no lower bound'})
+  @ApiQuery({name: 'to', required: false, description: 'Last day (YYYY-MM-DD); none = no upper bound'})
+  summary(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.images.platformSummary(ymdOrUndefined(from), ymdOrUndefined(to));
   }
 
   @Get('businesses/:id/ai-image-quota')

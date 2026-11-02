@@ -1,9 +1,11 @@
 import {Injectable, Logger} from '@nestjs/common';
-import {and, eq} from 'drizzle-orm';
+import {and, desc, eq, gte, lte, sql} from 'drizzle-orm';
+import {businessDayEnd, businessDayStart} from '../../common/business-time';
 import {AppException} from '../../common/errors/app.exception';
 import {ErrorCode} from '../../common/errors/error-codes';
 import {DatabaseService} from '../../database/database.service';
-import {products} from '../../database/schema';
+import {aiInvoiceReads, businesses, products} from '../../database/schema';
+import {generateId} from '../../utils/uuid';
 import {AiSettingsService} from '../ai-settings.service';
 import {CatalogEntry, CatalogIndex, MatchCandidate} from './invoice-match';
 import {
@@ -192,11 +194,12 @@ export class InvoiceService {
 
     // Billed whatever the outcome — the tokens were spent even if the page
     // turned out to be unreadable.
-    await this.settings.recordUsage(businessId, {
+    const costUsd = await this.settings.recordUsage(businessId, {
       input: usage.inputTokens,
       output: usage.outputTokens,
       model,
     });
+    await this.recordRead(businessId, model, files.length, usage, costUsd);
 
     const usable = raw.lines
       .slice(0, MAX_LINES)
@@ -258,6 +261,79 @@ export class InvoiceService {
       skippedLines: Math.min(raw.lines.length, MAX_LINES) - usable.length,
       model,
       usage,
+    };
+  }
+
+  /**
+   * The console's spend history. The read is already paid for and the owner is
+   * waiting on it, so a failed write here is logged, never thrown.
+   */
+  private async recordRead(
+    businessId: string,
+    model: string,
+    pageCount: number,
+    usage: {inputTokens: number; outputTokens: number},
+    costUsd: number,
+  ): Promise<void> {
+    try {
+      await this.db.insert(aiInvoiceReads).values({
+        id: generateId(),
+        businessId,
+        model,
+        pageCount,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        costUsd,
+      });
+    } catch (err) {
+      this.logger.error(
+        `invoice.parse business=${businessId} spend not recorded: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /** Scanner spend and top shops over the given days (both inclusive, business zone). */
+  async platformSummary(from?: string, to?: string) {
+    const inRange = and(
+      from ? gte(aiInvoiceReads.createdAt, businessDayStart(from)) : undefined,
+      to ? lte(aiInvoiceReads.createdAt, businessDayEnd(to)) : undefined,
+    );
+    const spentExpr = sql<number>`coalesce(sum(${aiInvoiceReads.costUsd}), 0)`;
+
+    const [totals, top] = await Promise.all([
+      this.db
+        .select({
+          spentUsd: spentExpr,
+          reads: sql<number>`count(*)`,
+          pages: sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}), 0)`,
+        })
+        .from(aiInvoiceReads)
+        .where(inRange),
+      this.db
+        .select({
+          businessId: aiInvoiceReads.businessId,
+          name: businesses.name,
+          spentUsd: spentExpr,
+          reads: sql<number>`count(*)`,
+        })
+        .from(aiInvoiceReads)
+        .innerJoin(businesses, eq(businesses.id, aiInvoiceReads.businessId))
+        .where(inRange)
+        .groupBy(aiInvoiceReads.businessId, businesses.name)
+        .orderBy(desc(spentExpr))
+        .limit(20),
+    ]);
+
+    return {
+      spentUsd: Number(totals[0]?.spentUsd ?? 0),
+      readCount: Number(totals[0]?.reads ?? 0),
+      pageCount: Number(totals[0]?.pages ?? 0),
+      topBusinesses: top.map((r) => ({
+        businessId: r.businessId,
+        name: r.name,
+        spentUsd: Number(r.spentUsd),
+        readCount: Number(r.reads),
+      })),
     };
   }
 

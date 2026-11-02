@@ -29,12 +29,7 @@ import {
   UpdatePlatformBusinessDto,
 } from './dto/create-platform-business.dto';
 import { TopUpBalanceDto, CreateDiscountDto } from '../subscription/dto/billing.dto';
-
-/** A real 'YYYY-MM-DD' day, or undefined — a bad value means no bound, not a 500. */
-const ymdOrUndefined = (v?: string) =>
-  v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v))
-    ? v
-    : undefined;
+import { ymdOrUndefined } from '../common/business-time';
 
 /**
  * Platform-admin (super-admin) console: manage every tenant business, its

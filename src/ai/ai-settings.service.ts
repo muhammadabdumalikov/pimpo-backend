@@ -322,14 +322,17 @@ export class AiSettingsService {
     return PROVIDER_MODELS[row.provider as AiProviderId] ?? [];
   }
 
-  /** Bumps the usage counter, rolling it over at the start of a new month. */
+  /**
+   * Bumps the usage counter, rolling it over at the start of a new month.
+   * Returns the estimated cost of this call in USD.
+   */
   async recordUsage(
     businessId: string,
     spent?: {input: number; output: number; model: string},
-  ): Promise<void> {
+  ): Promise<number> {
     const period = this.currentPeriod();
     const row = await this.getRow(businessId);
-    if (!row) return;
+    if (!row) return 0;
 
     // Priced with the model that actually ran, not the one currently saved —
     // an owner comparing models mid-month would otherwise see every earlier
@@ -367,5 +370,6 @@ export class AiSettingsService {
         lastUsedAt: new Date(),
       })
       .where(eq(aiSettings.businessId, businessId));
+    return cost;
   }
 }

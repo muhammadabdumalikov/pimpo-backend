@@ -3010,6 +3010,37 @@ export const invoiceScans = pgTable(
 export type InvoiceScan = typeof invoiceScans.$inferSelect;
 export type NewInvoiceScan = typeof invoiceScans.$inferInsert;
 
+// One delivery-note read by the AI, on the shop's own key. The tokens are billed
+// whether the page proved readable or not, so every call gets a row. This is the
+// date-filterable history ai_settings.monthly_cost_usd can't give — that counter
+// mixes in the assistant and resets monthly. `cost_usd` is the same list-price
+// estimate, never an invoice.
+export const aiInvoiceReads = pgTable(
+  'ai_invoice_reads',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    model: varchar('model', {length: 60}).notNull(),
+    pageCount: integer('page_count').default(0).notNull(),
+    inputTokens: integer('input_tokens').default(0).notNull(),
+    outputTokens: integer('output_tokens').default(0).notNull(),
+    costUsd: doublePrecision('cost_usd').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('ai_invoice_reads_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    createdIdx: index('ai_invoice_reads_created_idx').on(table.createdAt),
+  }),
+);
+
+export type AiInvoiceRead = typeof aiInvoiceReads.$inferSelect;
+export type NewAiInvoiceRead = typeof aiInvoiceReads.$inferInsert;
+
 // One paid call on Pimpo's OWN Gemini key, made for a product image
 // (AI-RASM.md). Unlike ai_settings this is not the shop's key: every row is
 // money Pimpo spent, so the shop's monthly allowance and the platform budget
