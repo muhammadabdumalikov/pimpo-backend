@@ -13,6 +13,7 @@ import {
   cashRegisters,
   staff,
   businesses,
+  goodsReceipts,
   type Account,
   type FinancialCategory,
   type FinancialTransaction,
@@ -28,6 +29,7 @@ import {UpdateFinanceCategoryDto} from './dto/update-finance-category.dto';
 import {CreateTransactionDto} from './dto/create-transaction.dto';
 import {CreateTransferDto} from './dto/create-transfer.dto';
 import {QueryTransactionsDto} from './dto/query-transactions.dto';
+import {QuerySupplySummaryDto} from './dto/query-supply-summary.dto';
 import {CancelTransactionDto} from './dto/cancel-transaction.dto';
 import {
   CANCELLABLE_SOURCES,
@@ -1043,6 +1045,67 @@ export class FinanceService {
         };
       }),
     };
+  }
+
+  /**
+   * The supply side of a period, shown on the Buyurtmalar page: what came in
+   * on goods receipts and what went out to suppliers.
+   *
+   * - received: receipts past draft, dated like the receipts list (created
+   *   at), at what is owed (total_amount = net of any discount).
+   * - paid: live supplier_payment ledger rows — every way money reaches a
+   *   supplier (till, Moliya, nakladnoy, Tashqi mablag'). Payments made from
+   *   an avans move no money and write no ledger row, so they are not here.
+   *
+   * Per currency; a USD receipt never folds into so'm.
+   */
+  async getSupplySummary(businessId: string, query: QuerySupplySummaryDto) {
+    const receiptWhere: SQL[] = [
+      eq(goodsReceipts.businessId, businessId),
+      ne(goodsReceipts.status, 'draft'),
+    ];
+    const paidWhere: SQL[] = [
+      eq(financialTransactions.businessId, businessId),
+      eq(financialTransactions.source, 'supplier_payment'),
+      liveRow(),
+    ];
+    if (query.from) {
+      receiptWhere.push(
+        gte(goodsReceipts.createdAt, businessDayStart(query.from)),
+      );
+      paidWhere.push(
+        gte(financialTransactions.createdAt, businessDayStart(query.from)),
+      );
+    }
+    if (query.to) {
+      receiptWhere.push(lte(goodsReceipts.createdAt, businessDayEnd(query.to)));
+      paidWhere.push(
+        lte(financialTransactions.createdAt, businessDayEnd(query.to)),
+      );
+    }
+
+    const [received, paid] = await Promise.all([
+      this.db
+        .select({
+          currency: goodsReceipts.currency,
+          total: sql<string>`coalesce(sum(${goodsReceipts.totalAmount}), 0)`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(goodsReceipts)
+        .where(and(...receiptWhere))
+        .groupBy(goodsReceipts.currency),
+      this.db
+        .select({
+          currency: financialTransactions.currency,
+          total: sql<string>`coalesce(sum(${financialTransactions.amount}), 0)`,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(financialTransactions)
+        .where(and(...paidWhere))
+        .groupBy(financialTransactions.currency),
+    ]);
+
+    return {received, paid};
   }
 
   async getTransactions(businessId: string, query: QueryTransactionsDto) {

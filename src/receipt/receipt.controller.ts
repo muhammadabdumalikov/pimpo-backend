@@ -37,6 +37,7 @@ import {UpdateReceiptHeaderDto} from './dto/update-receipt-header.dto';
 import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ApplyPricesDto } from './dto/apply-prices.dto';
+import {QuerySupplySummaryDto} from '../finance/dto/query-supply-summary.dto';
 
 @ApiTags('receipts')
 @Controller('receipts')
@@ -120,6 +121,20 @@ export class ReceiptController {
       endDate,
       search: search || undefined,
     });
+  }
+
+  // Declared before ':id' so the path is not read as a receipt id.
+  @Get('supply-summary')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary:
+      'Goods received on receipts and money paid to suppliers, per currency',
+  })
+  async getSupplySummary(
+    @CurrentBusiness() business: IBusiness,
+    @Query() query: QuerySupplySummaryDto,
+  ) {
+    return this.receiptService.getSupplySummary(business.id, query);
   }
 
   @Get(':id')

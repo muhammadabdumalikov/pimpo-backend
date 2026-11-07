@@ -50,6 +50,7 @@ import {generateId} from '../utils/uuid';
 import {trimLotsToStockTx} from '../common/branch-stock';
 import {IAccount} from '../business/types';
 import {FinanceService} from '../finance/finance.service';
+import {QuerySupplySummaryDto} from '../finance/dto/query-supply-summary.dto';
 import {BranchService} from '../branch/branch.service';
 import {PriceStepService} from '../price-step/price-step.service';
 import {CreateReceiptDto} from './dto/create-receipt.dto';
@@ -1528,6 +1529,11 @@ export class ReceiptService {
           ),
         );
     });
+  }
+
+  /** Goods received and money paid to suppliers in a period (Buyurtmalar). */
+  getSupplySummary(businessId: string, query: QuerySupplySummaryDto) {
+    return this.financeService.getSupplySummary(businessId, query);
   }
 
   async findAll(
