@@ -51,6 +51,15 @@ export class MobileController {
     return this.mobile.getPayables(account.businessId);
   }
 
+  @Get('supply')
+  @RequirePermission('receipt:read')
+  @ApiOperation({
+    summary: 'Goods received and paid to suppliers for a phone period',
+  })
+  supply(@CurrentAccount() account: IAccount, @Query() q: MobileHomeQueryDto) {
+    return this.mobile.getSupply(account.businessId, q.period ?? 'month');
+  }
+
   @Get('expense-categories')
   @RequirePermission('finance:manage')
   @ApiOperation({summary: 'Expense categories, most used in 90 days first'})

@@ -95,6 +95,20 @@ export function periodWindow(period: MobilePeriod, now = new Date()) {
   return {from, to: today, start, prevStart, prevEnd};
 }
 
+/** The supply summary with numbers instead of decimal strings. */
+function supplyTotals(s: {
+  received: {currency: string; total: string; count: number}[];
+  paid: {currency: string; total: string; count: number}[];
+}) {
+  const num = (rows: {currency: string; total: string; count: number}[]) =>
+    rows.map((r) => ({
+      currency: r.currency,
+      amount: Number(r.total),
+      count: r.count,
+    }));
+  return {received: num(s.received), paid: num(s.paid)};
+}
+
 interface OpenDebt {
   id: string;
   userId: string | null;
@@ -449,7 +463,21 @@ export class MobileService {
       expenses: financeRead ? data.expenses : null,
       customerDebt: debtRead ? data.customerDebt : null,
       supplierDebt: receiptRead ? data.supplierDebt : null,
+      supply: receiptRead ? data.supply : null,
     };
+  }
+
+  /**
+   * Goods received and paid to suppliers for a phone period (the payables
+   * screen's Bugun / Hafta / Oy), on the same window the home screen uses.
+   */
+  async getSupply(businessId: string, period: MobilePeriod) {
+    const w = periodWindow(period);
+    const s = await this.finance.getSupplySummary(businessId, {
+      from: w.from,
+      to: w.to,
+    });
+    return {period, from: w.from, to: w.to, ...supplyTotals(s)};
   }
 
   private async computeMoney(businessId: string) {
@@ -457,14 +485,16 @@ export class MobileService {
     const todayStart = businessDayStart(today);
     const monthFrom = `${today.slice(0, 8)}01`;
 
-    const [accountRows, registers, open, debts, payables, pnl] = await Promise.all([
-      this.finance.getAccounts(businessId),
-      this.shifts.getRegisters(businessId),
-      this.openShiftsWithCash(businessId),
-      this.openDebts(businessId),
-      this.payableRows(businessId),
-      this.reports.getPnl(businessId, {from: monthFrom, to: today}),
-    ]);
+    const [accountRows, registers, open, debts, payables, pnl, supply] =
+      await Promise.all([
+        this.finance.getAccounts(businessId),
+        this.shifts.getRegisters(businessId),
+        this.openShiftsWithCash(businessId),
+        this.openDebts(businessId),
+        this.payableRows(businessId),
+        this.reports.getPnl(businessId, {from: monthFrom, to: today}),
+        this.finance.getSupplySummary(businessId, {from: monthFrom, to: today}),
+      ]);
 
     const totals = new Map<string, number>();
     const items = accountRows.map((a) => {
@@ -539,6 +569,10 @@ export class MobileService {
         total: number;
         byCategory: {categoryId: string | null; name: string; amount: number}[];
       } | null,
+      // This month's goods received and paid to suppliers, per currency.
+      supply: {month: monthFrom.slice(0, 7), ...supplyTotals(supply)} as {
+        month: string;
+      } & ReturnType<typeof supplyTotals> | null,
     };
   }
 
