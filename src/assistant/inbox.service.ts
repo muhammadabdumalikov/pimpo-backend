@@ -26,6 +26,10 @@ import type {IAccount} from '../business/types';
 import {AssistantHandoffService} from './assistant-handoff.service';
 import {AssistantTelegram} from './assistant-telegram';
 
+/** A bare "YYYY-MM-DD HH:MM:SS" from a raw subquery, read as UTC. */
+const utc = (v: unknown): Date | null =>
+  v == null ? null : v instanceof Date ? v : new Date(`${String(v).replace(' ', 'T')}Z`);
+
 export type ChatStatus = 'bot' | 'waiting' | 'human' | 'closed';
 const PAGE = 50;
 const MESSAGES_PAGE = 60;
@@ -114,8 +118,12 @@ export class InboxService {
         lastRole,
         lastMedia: sql<boolean>`(SELECT m.media IS NOT NULL FROM ${customerChatMessages} m
           WHERE m.chat_id = ${customerChats.id} ORDER BY m.created_at DESC LIMIT 1)`,
+        lastStaffId: sql<string | null>`(SELECT m.staff_account_id FROM ${customerChatMessages} m
+          WHERE m.chat_id = ${customerChats.id} ORDER BY m.created_at DESC LIMIT 1)`,
+        // Raw subqueries come back as bare text with no zone; the columns are
+        // UTC (timestamp without time zone), so say so before parsing.
         waitingSince: sql<Date | null>`(SELECT min(h.created_at) FROM ${customerChatHandoffs} h
-          WHERE h.chat_id = ${customerChats.id} AND h.status IN ('open', 'auto_replied'))`,
+          WHERE h.chat_id = ${customerChats.id} AND h.status IN ('open', 'auto_replied'))`.mapWith(utc),
       })
       .from(customerChats)
       .leftJoin(users, eq(users.id, customerChats.customerId))
@@ -137,6 +145,7 @@ export class InboxService {
           text: r.lastText,
           role: r.lastRole,
           hasMedia: !!r.lastMedia,
+          staffName: r.lastStaffId ? names.get(r.lastStaffId) ?? null : null,
           at: r.lastMessageAt,
         },
         waitingSince: r.waitingSince,
