@@ -845,10 +845,40 @@ export class ShiftService {
     businessId: string,
     shiftId: string,
   ): Promise<ShiftReport> {
+    const r = await this.getShiftReportWithUnposted(businessId, shiftId);
+    return {
+      shift: r.shift,
+      movements: r.movements,
+      reconciliation: r.reconciliation,
+      orderCount: r.orderCount,
+    };
+  }
+
+  /**
+   * The X-report plus what closing the shift right now would post to the
+   * accounts: its cash and card sales, net of refunds. Until the close those
+   * sales are in the drawer and on the terminal but in no account balance.
+   */
+  async getShiftReportWithUnposted(
+    businessId: string,
+    shiftId: string,
+  ): Promise<ShiftReport & {unposted: {cash: number; card: number}}> {
     const shift = await this.getShift(businessId, shiftId);
     const movements = await this.getShiftMovements(businessId, shiftId);
-    const {rows, orderCount} = await this.buildReconciliation(shift, movements);
-    return {shift, movements, reconciliation: rows, orderCount};
+    const {rows, orderCount, saleTotals} = await this.buildReconciliation(
+      shift,
+      movements,
+    );
+    return {
+      shift,
+      movements,
+      reconciliation: rows,
+      orderCount,
+      unposted: {
+        cash: saleTotals.cashSales - saleTotals.cashRefunds,
+        card: saleTotals.cardSales - saleTotals.cardRefunds,
+      },
+    };
   }
 
   /** Close a shift: compute the Z-report and persist it in one transaction. */

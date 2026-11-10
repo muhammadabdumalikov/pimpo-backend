@@ -10,6 +10,7 @@ import {TargetModule} from '../target/target.module';
 import {BranchModule} from '../branch/branch.module';
 import {FinanceModule} from '../finance/finance.module';
 import {ProductModule} from '../product/product.module';
+import {DebtModule} from '../debt/debt.module';
 import {MobileController} from './mobile.controller';
 import {MobileService} from './mobile.service';
 
@@ -26,6 +27,7 @@ import {MobileService} from './mobile.service';
     BranchModule,
     FinanceModule,
     ProductModule,
+    DebtModule,
   ],
   controllers: [MobileController],
   providers: [MobileService],

@@ -116,6 +116,12 @@ export class OrderController {
     required: false,
     description: "Seller id, or 'none' for sales with no seller picked",
   })
+  @ApiQuery({
+    name: 'creditedTo',
+    required: false,
+    description:
+      'Staff or owner id the sale is credited to: its seller, or its cashier when no seller was picked',
+  })
   @ApiQuery({name: 'minAmount', required: false})
   @ApiQuery({name: 'maxAmount', required: false})
   @ApiQuery({
@@ -147,6 +153,7 @@ export class OrderController {
     @Query('paymentMethod') paymentMethod?: string,
     @Query('cashierId') cashierId?: string,
     @Query('sellerId') sellerId?: string,
+    @Query('creditedTo') creditedTo?: string,
     @Query('branchId') branchId?: string,
     @Query('registerId') registerId?: string,
     @Query('minAmount') minAmount?: string,
@@ -171,6 +178,7 @@ export class OrderController {
       paymentMethod,
       cashierId,
       sellerId,
+      creditedTo: creditedTo || undefined,
       branchId: branchId || undefined,
       registerId: registerId || undefined,
       minAmount: num(minAmount),

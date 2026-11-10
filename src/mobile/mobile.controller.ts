@@ -1,4 +1,12 @@
-import {Controller, Get, Param, Query, UseGuards} from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {ApiBearerAuth, ApiOperation, ApiTags} from '@nestjs/swagger';
 import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
@@ -9,6 +17,7 @@ import {PermissionsGuard} from '../permission/permissions.guard';
 import {RequirePermission} from '../permission/permission.decorator';
 import {MobileService} from './mobile.service';
 import {
+  MobileDebtPaymentDto,
   MobileHomeQueryDto,
   MobileSalesDaysQueryDto,
   MobileStockQueryDto,
@@ -42,6 +51,26 @@ export class MobileController {
   @ApiOperation({summary: 'Customers who owe us, overdue first'})
   debtors(@CurrentAccount() account: IAccount) {
     return this.mobile.getDebtors(account.businessId);
+  }
+
+  @Get('debtors/:userId')
+  @RequirePermission('debt:read')
+  @ApiOperation({summary: "One customer's open debts, due first"})
+  debtor(@CurrentAccount() account: IAccount, @Param('userId') userId: string) {
+    return this.mobile.getDebtor(account.businessId, userId);
+  }
+
+  @Post('debtors/:userId/payments')
+  @RequirePermission('debt:manage')
+  @ApiOperation({
+    summary: "Take a payment from a customer, spread over their debts",
+  })
+  payDebtor(
+    @CurrentAccount() account: IAccount,
+    @Param('userId') userId: string,
+    @Body() body: MobileDebtPaymentDto,
+  ) {
+    return this.mobile.payDebtor(account.businessId, userId, body);
   }
 
   @Get('payables')

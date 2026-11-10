@@ -30,6 +30,14 @@ export class QueryTransactionsDto {
   @IsOptional()
   to?: string;
 
+  @ApiPropertyOptional({
+    description:
+      "'true' keeps only what the profit report counts: no money to or from suppliers, no capital rows, no storno rows",
+  })
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  operating?: 'true' | 'false';
+
   @ApiPropertyOptional({description: 'Page (1-based)', default: 1})
   @IsOptional()
   page?: string;

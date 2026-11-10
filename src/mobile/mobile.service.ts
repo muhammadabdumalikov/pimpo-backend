@@ -52,6 +52,7 @@ import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {FinanceService} from '../finance/finance.service';
 import {ProductService} from '../product/product.service';
+import {DebtService} from '../debt/debt.service';
 
 export type MobilePeriod = 'today' | 'week' | 'month';
 
@@ -132,6 +133,7 @@ export class MobileService {
     private readonly branchService: BranchService,
     private readonly finance: FinanceService,
     private readonly productService: ProductService,
+    private readonly debts: DebtService,
   ) {}
 
   private get db() {
@@ -273,7 +275,16 @@ export class MobileService {
           })),
         subscription: subscriptionDue,
       },
-      shifts: shiftRows,
+      // The home contract has no `unposted` (that is the Pul screen's).
+      shifts: shiftRows.map((s) => ({
+        id: s.id,
+        registerId: s.registerId,
+        registerName: s.registerName,
+        branchName: s.branchName,
+        cashierName: s.cashierName,
+        openedAt: s.openedAt,
+        cash: s.cash,
+      })),
       branches: branchRows.length >= 2 ? branchRows : [],
       daily: businessBuckets('day', weekFrom, win.to).map((date) => ({
         date,
@@ -399,7 +410,10 @@ export class MobileService {
     const branchName = new Map(branchList.map((b) => [b.id, b.name]));
     return Promise.all(
       open.map(async (s) => {
-        const report = await this.shifts.getShiftReport(businessId, s.id);
+        const report = await this.shifts.getShiftReportWithUnposted(
+          businessId,
+          s.id,
+        );
         const cash = report.reconciliation.find(
           (r) => r.method === 'cash' && r.currency === 'UZS',
         );
@@ -411,6 +425,8 @@ export class MobileService {
           cashierName: s.openedByCashierName ?? null,
           openedAt: new Date(s.openedAt).toISOString(),
           cash: cash?.expected ?? Number(s.openingFloat ?? 0),
+          // Sales the accounts will only get when this shift closes.
+          unposted: report.unposted.cash + report.unposted.card,
         };
       }),
     );
@@ -431,7 +447,9 @@ export class MobileService {
       .from(userDebts)
       .leftJoin(debtPayments, eq(debtPayments.debtId, userDebts.id))
       .leftJoin(users, eq(users.id, userDebts.userId))
-      .where(eq(userDebts.businessId, businessId))
+      // A debt closed by hand ("Paid" in the edit form) has no payment rows —
+      // the status is what says it is settled.
+      .where(and(eq(userDebts.businessId, businessId), ne(userDebts.status, 'Paid')))
       .groupBy(userDebts.id, userDebts.userId, userDebts.amount, userDebts.dueDate);
     return rows
       .map((r) => ({
@@ -517,9 +535,13 @@ export class MobileService {
           currency,
           balance,
         })),
+        // Open shifts' sales (UZS): money taken but not in any balance above
+        // until the shift is closed.
+        unposted: open.reduce((sum, s) => sum + s.unposted, 0),
         items,
       } as {
         totals: {currency: string; balance: number}[];
+        unposted: number;
         items: {
           id: string;
           name: string;
@@ -672,6 +694,59 @@ export class MobileService {
       overdueTotal: items.reduce((s, r) => s + r.overdueAmount, 0),
       items,
     };
+  }
+
+  /**
+   * One customer's open debts for the phone sheet: what each came from (the
+   * receipt, when there is one), what is left on it, and whether this plan
+   * may take a part of the balance.
+   */
+  async getDebtor(businessId: string, userId: string) {
+    const today = businessDayStart(businessDay());
+    const [[customer], debts, partialAllowed] = await Promise.all([
+      this.db
+        .select({name: users.name, phone: users.phone})
+        .from(users)
+        .where(and(eq(users.id, userId), eq(users.businessId, businessId)))
+        .limit(1),
+      this.debts.getCustomerOpenDebts(businessId, userId),
+      this.debts.partialPaymentsAllowed(businessId),
+    ]);
+    if (!customer) throw new AppException(ErrorCode.USER_NOT_FOUND);
+    return {
+      userId,
+      name: customer.name,
+      phone: customer.phone,
+      remaining: debts.reduce((s, d) => s + d.remaining, 0),
+      partialAllowed,
+      debts: debts.map((d) => {
+        const due = d.dueDate ? new Date(d.dueDate) : null;
+        return {
+          id: d.id,
+          orderId: d.orderId,
+          receiptNo: d.receiptNo,
+          description: d.description,
+          createdAt: d.createdAt.toISOString(),
+          dueDate: due?.toISOString() ?? null,
+          overdueDays:
+            due && due < today
+              ? Math.floor((today.getTime() - due.getTime()) / DAY_MS)
+              : null,
+          amount: d.amount,
+          paid: d.paid,
+          remaining: d.remaining,
+        };
+      }),
+    };
+  }
+
+  /** Take a payment from a customer; spread over their debts, due first. */
+  payDebtor(
+    businessId: string,
+    userId: string,
+    data: {amount: number; method?: 'cash' | 'card'},
+  ) {
+    return this.debts.payCustomer(businessId, userId, data);
   }
 
   /** Expense categories, the ones used most in the last 90 days first. */
@@ -831,7 +906,7 @@ export class MobileService {
    */
   async getSalesDays(
     businessId: string,
-    q: {from: string; to: string; branchId?: string; registerId?: string; sellerId?: string},
+    q: {from: string; to: string; branchId?: string; registerId?: string; sellerId?: string; creditedTo?: string},
   ) {
     const day = sql<string>`to_char(${orders.createdAt} + interval '5 hours', 'YYYY-MM-DD')`;
     const where = [
@@ -859,6 +934,11 @@ export class MobileService {
     }
     if (q.sellerId === 'none') where.push(isNull(orders.sellerId));
     else if (q.sellerId) where.push(eq(orders.sellerId, q.sellerId));
+    if (q.creditedTo) {
+      where.push(
+        sql`COALESCE(${orders.sellerId}, ${orders.cashierId}) = ${q.creditedTo}`,
+      );
+    }
 
     const rows = await this.db
       .select({

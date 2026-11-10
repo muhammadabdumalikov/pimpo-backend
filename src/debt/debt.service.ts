@@ -3,10 +3,11 @@ import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import { DatabaseService } from '../database/database.service';
-import { userDebts, debtPayments, users, type UserDebt, type NewDebtPayment, type DebtPayment, type NewUserDebt, type User } from '../database/schema';
-import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, sql, inArray } from 'drizzle-orm';
+import { userDebts, debtPayments, users, orders, type UserDebt, type NewDebtPayment, type DebtPayment, type NewUserDebt, type User } from '../database/schema';
+import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, ne, sql, inArray } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { gateTier, tierAtLeast } from '../subscription/tier';
 import { UserService } from '../user/user.service';
 
 @Injectable()
@@ -494,12 +495,20 @@ export class DebtService {
 
   /** Partial debt repayment + payment history are a Pro-plan feature. */
   private async requirePro(businessId: string): Promise<void> {
-    const subscription =
-      await this.subscriptionService.getBusinessSubscription(businessId);
-    const tier = subscription?.plan.tier ?? 'free';
-    if (tier !== 'pro') {
+    if (!(await this.partialPaymentsAllowed(businessId))) {
       throw new AppException(ErrorCode.DEBT_INSTALLMENT_PRO_ONLY);
     }
+  }
+
+  /**
+   * Whether this business's plan has partial repayment: Biznes and every plan
+   * above it. (The check used to be `tier !== 'pro'`, which turned Biznes+
+   * shops away from a feature their plan includes.)
+   */
+  async partialPaymentsAllowed(businessId: string): Promise<boolean> {
+    const subscription =
+      await this.subscriptionService.getBusinessSubscription(businessId);
+    return tierAtLeast(gateTier(subscription?.plan.tier), 'pro');
   }
 
   /** Total paid per debt id → Map(debtId, paidAmount). */
@@ -653,5 +662,140 @@ export class DebtService {
       .delete(debtPayments)
       .where(eq(debtPayments.id, paymentId));
     await this.recomputeDebtStatus(businessId, debt);
+  }
+
+  // ─── Customer-level settlement (the phone's "To'lov qabul qilish") ─────────
+
+  /**
+   * A customer's unsettled debts, the one due first on top (no due date last,
+   * then oldest first) — the order a payment is spread across them.
+   */
+  async getCustomerOpenDebts(businessId: string, userId: string) {
+    const rows = await this.dbService.db
+      .select({
+        id: userDebts.id,
+        orderId: userDebts.orderId,
+        receiptNo: orders.receiptNo,
+        amount: userDebts.amount,
+        dueDate: userDebts.dueDate,
+        description: userDebts.description,
+        createdAt: userDebts.createdAt,
+      })
+      .from(userDebts)
+      .leftJoin(orders, eq(orders.id, userDebts.orderId))
+      .where(
+        and(
+          eq(userDebts.businessId, businessId),
+          eq(userDebts.userId, userId),
+          ne(userDebts.status, 'Paid'),
+        ),
+      )
+      .orderBy(sql`${userDebts.dueDate} ASC NULLS LAST`, asc(userDebts.createdAt));
+
+    const paidByDebt = await this.getPaidByDebt(
+      businessId,
+      rows.map((r) => r.id),
+    );
+    return rows
+      .map((r) => {
+        const amount = Number(r.amount);
+        const paid = paidByDebt.get(r.id) ?? 0;
+        return {...r, amount, paid, remaining: amount - paid};
+      })
+      .filter((d) => d.remaining > 0.005);
+  }
+
+  /**
+   * Take one payment from a customer and spread it over their debts, the one
+   * due first settled first. Paying the whole balance works on every plan (it
+   * is what marking a debt "Paid" always did); a part of it needs the plan
+   * with installments. Runs in one transaction with the customer's debts
+   * locked, so two people settling the same customer cannot both be accepted.
+   */
+  async payCustomer(
+    businessId: string,
+    userId: string,
+    data: {amount: number; method?: 'cash' | 'card'; note?: string},
+  ): Promise<{paid: number; remaining: number; settledDebts: number}> {
+    const amount = Math.round(data.amount * 100) / 100;
+    if (!(amount > 0)) {
+      throw new AppException(ErrorCode.DEBT_PAYMENT_AMOUNT_INVALID);
+    }
+    const partialAllowed = await this.partialPaymentsAllowed(businessId);
+
+    return this.dbService.db.transaction(async (tx) => {
+      const debts = await tx
+        .select()
+        .from(userDebts)
+        .where(
+          and(
+            eq(userDebts.businessId, businessId),
+            eq(userDebts.userId, userId),
+            ne(userDebts.status, 'Paid'),
+          ),
+        )
+        .orderBy(sql`${userDebts.dueDate} ASC NULLS LAST`, asc(userDebts.createdAt))
+        .for('update');
+      if (debts.length === 0) throw new AppException(ErrorCode.DEBT_NOT_FOUND);
+
+      const paidRows = await tx
+        .select({
+          debtId: debtPayments.debtId,
+          paid: sql`SUM(${debtPayments.amount})`.mapWith(Number),
+        })
+        .from(debtPayments)
+        .where(
+          and(
+            eq(debtPayments.businessId, businessId),
+            inArray(
+              debtPayments.debtId,
+              debts.map((d) => d.id),
+            ),
+          ),
+        )
+        .groupBy(debtPayments.debtId);
+      const paidByDebt = new Map(paidRows.map((r) => [r.debtId, r.paid ?? 0]));
+
+      const open = debts
+        .map((d) => ({
+          id: d.id,
+          remaining: Number(d.amount) - (paidByDebt.get(d.id) ?? 0),
+        }))
+        .filter((d) => d.remaining > 0.005);
+      const total = open.reduce((sum, d) => sum + d.remaining, 0);
+      if (open.length === 0) throw new AppException(ErrorCode.DEBT_NOT_FOUND);
+      if (amount > total + 0.005) {
+        throw new AppException(ErrorCode.DEBT_PAYMENT_EXCEEDS_BALANCE, {
+          remaining: total.toFixed(2),
+        });
+      }
+      if (amount < total - 0.005 && !partialAllowed) {
+        throw new AppException(ErrorCode.DEBT_INSTALLMENT_PRO_ONLY);
+      }
+
+      let left = amount;
+      let settledDebts = 0;
+      for (const debt of open) {
+        if (left <= 0.005) break;
+        const part = Math.min(left, debt.remaining);
+        const settled = part >= debt.remaining - 0.005;
+        await tx.insert(debtPayments).values({
+          id: generateId(),
+          businessId,
+          debtId: debt.id,
+          amount: part.toFixed(2),
+          method: data.method || 'cash',
+          note: data.note || null,
+        });
+        await tx
+          .update(userDebts)
+          .set({status: settled ? 'Paid' : 'Partial', updatedAt: new Date()})
+          .where(and(eq(userDebts.id, debt.id), eq(userDebts.businessId, businessId)));
+        left -= part;
+        if (settled) settledDebts += 1;
+      }
+
+      return {paid: amount, remaining: Math.max(0, total - amount), settledDebts};
+    });
   }
 }

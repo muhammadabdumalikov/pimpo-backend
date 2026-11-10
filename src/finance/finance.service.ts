@@ -18,7 +18,18 @@ import {
   type FinancialCategory,
   type FinancialTransaction,
 } from '../database/schema';
-import {eq, and, ne, desc, gte, lte, inArray, sql, type SQL} from 'drizzle-orm';
+import {
+  eq,
+  and,
+  ne,
+  desc,
+  gte,
+  lte,
+  inArray,
+  notInArray,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import {generateId} from '../utils/uuid';
 import {displayAmount} from '../common/display-amount';
 import {IAccount} from '../business/types';
@@ -1129,6 +1140,19 @@ export class FinanceService {
       conditions.push(
         lte(financialTransactions.createdAt, businessDayEnd(query.to)),
       );
+    if (query.operating === 'true') {
+      // The P&L's own notion of an expense or income (report.service): money
+      // to and from suppliers is stock, capital is the owner's. Written as a
+      // subquery because this listing does not join the categories.
+      conditions.push(
+        notInArray(financialTransactions.source, [
+          'supplier_payment',
+          'supplier_refund',
+        ]),
+        ne(financialTransactions.source, 'reversal'),
+        sql`NOT (COALESCE((SELECT fc.is_capital FROM financial_categories fc WHERE fc.id = ${financialTransactions.categoryId}), false) OR (${financialTransactions.kind} = 'income' AND ${financialTransactions.categoryId} IS NULL AND ${financialTransactions.source} IN ('manual', 'cash_movement')))`,
+      );
+    }
 
     const where = and(...conditions);
 

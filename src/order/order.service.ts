@@ -1430,6 +1430,9 @@ export class OrderService {
       paymentMethod?: string;
       cashierId?: string;
       sellerId?: string;
+      // Who the sale is credited to — the sellers report's rule: the seller
+      // picked at the till, or the cashier when nobody was picked.
+      creditedTo?: string;
       // Store the sale was rung up in, and the till (via its shift).
       branchId?: string;
       registerId?: string;
@@ -1489,6 +1492,11 @@ export class OrderService {
       where.push(isNull(orders.sellerId));
     } else if (options?.sellerId) {
       where.push(eq(orders.sellerId, options.sellerId));
+    }
+    if (options?.creditedTo) {
+      where.push(
+        sql`COALESCE(${orders.sellerId}, ${orders.cashierId}) = ${options.creditedTo}`,
+      );
     }
     if (options?.branchId) {
       where.push(eq(orders.branchId, options.branchId));
