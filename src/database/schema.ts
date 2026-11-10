@@ -3946,8 +3946,18 @@ export const customerChats = pgTable(
     // Q18: a staff member replied — the bot stays silent until this moment and
     // the customer's messages go to that staff member instead.
     humanUntil: timestamp('human_until'),
-    // Who replied last while humanUntil runs (staff/owner account id).
+    // The assignee (owner = business id, else staff id): set by the first
+    // staff reply or by hand in the inbox; forwarded messages go to them.
     humanAccountId: varchar('human_account_id', {length: 36}),
+    // Inbox "Botni to'xtatish": the bot stays out until someone resumes it.
+    botPaused: boolean('bot_paused').default(false).notNull(),
+    // Closed in the inbox; the customer's next message reopens it.
+    closedAt: timestamp('closed_at'),
+    // The KPOS customer this chat belongs to (linked in the inbox).
+    customerId: varchar('customer_id', {length: 36}).references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    lastCustomerMessageAt: timestamp('last_customer_message_at'),
     lastMessageAt: timestamp('last_message_at').defaultNow().notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
@@ -3955,6 +3965,11 @@ export const customerChats = pgTable(
     chatUq: uniqueIndex('customer_chats_business_chat_uq').on(
       table.businessId,
       table.telegramChatId,
+    ),
+    // The inbox list: newest activity first.
+    businessLastIdx: index('customer_chats_business_last_idx').on(
+      table.businessId,
+      table.lastMessageAt,
     ),
   }),
 );
@@ -3978,6 +3993,8 @@ export const customerChatMessages = pgTable(
     // Telegram media the customer sent: {kind, fileId}.
     media: jsonb('media').$type<{kind: string; fileId: string}>(),
     staffAccountId: varchar('staff_account_id', {length: 36}),
+    // Inbox review of a bot answer: 'wrong' (shown to whoever tunes the FAQ).
+    flag: varchar('flag', {length: 12}),
     // The bot's tool calls for this answer (name, args, ok, ms) — debugging.
     toolCalls: jsonb('tool_calls'),
     // Set on AI answers only: what the monthly allowance counts.
@@ -4060,3 +4077,66 @@ export const customerChatHandoffMessages = pgTable(
 
 export type CustomerChatHandoffMessage =
   typeof customerChatHandoffMessages.$inferSelect;
+
+// ─── Inbox (AI-YORDAMCHI.md, I1) ─────────────────────────────────────────────
+// Per-account read marker: unread = customer messages after last_read_at.
+export const customerChatReads = pgTable(
+  'customer_chat_reads',
+  {
+    chatId: varchar('chat_id', {length: 36})
+      .notNull()
+      .references(() => customerChats.id, {onDelete: 'cascade'}),
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    lastReadAt: timestamp('last_read_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({columns: [table.chatId, table.accountId]}),
+  }),
+);
+
+// Internal notes on a chat — staff only, never sent to the customer.
+export const customerChatNotes = pgTable(
+  'customer_chat_notes',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    chatId: varchar('chat_id', {length: 36})
+      .notNull()
+      .references(() => customerChats.id, {onDelete: 'cascade'}),
+    accountId: varchar('account_id', {length: 36}).notNull(),
+    authorName: varchar('author_name', {length: 255}).notNull(),
+    text: text('text').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    chatIdx: index('customer_chat_notes_chat_idx').on(table.chatId, table.createdAt),
+  }),
+);
+
+export type CustomerChatNote = typeof customerChatNotes.$inferSelect;
+
+// Saved answers staff insert with one click in the inbox.
+export const assistantQuickReplies = pgTable(
+  'assistant_quick_replies',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    title: varchar('title', {length: 100}).notNull(),
+    text: text('text').notNull(),
+    sortOrder: integer('sort_order').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessIdx: index('assistant_quick_replies_business_idx').on(
+      table.businessId,
+      table.sortOrder,
+    ),
+  }),
+);
+
+export type AssistantQuickReply = typeof assistantQuickReplies.$inferSelect;

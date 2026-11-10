@@ -142,8 +142,9 @@ export class AssistantService {
 
     const locale = detectLocale(text) ;
 
-    // Q18: a person is handling this chat.
-    if (chat.humanUntil && chat.humanUntil > new Date()) {
+    // Q18: a person is handling this chat — for 30 minutes after a reply, or
+    // until the bot is resumed in the inbox.
+    if (chat.botPaused || (chat.humanUntil && chat.humanUntil > new Date())) {
       await this.handoff.forwardToHuman(businessId, chat, token, text, photoFileId);
       return;
     }
@@ -340,6 +341,7 @@ export class AssistantService {
         telegramUserId: msg.from ? String(msg.from.id) : null,
         firstName: msg.from?.first_name ?? null,
         username: msg.from?.username ?? null,
+        lastCustomerMessageAt: new Date(),
       })
       .onConflictDoUpdate({
         target: [customerChats.businessId, customerChats.telegramChatId],
@@ -347,6 +349,9 @@ export class AssistantService {
           firstName: msg.from?.first_name ?? null,
           username: msg.from?.username ?? null,
           lastMessageAt: new Date(),
+          lastCustomerMessageAt: new Date(),
+          // A customer writing again reopens a closed chat.
+          closedAt: null,
         },
       })
       .returning();

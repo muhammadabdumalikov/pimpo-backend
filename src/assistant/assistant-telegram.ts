@@ -112,16 +112,12 @@ export class AssistantTelegram {
     staffChatId: string,
     caption: string,
   ): Promise<{message_id: number}> {
-    const file = await this.call<{file_path?: string}>('getFile', {file_id: fileId}, storeToken);
-    if (!file.file_path) throw new Error('getFile returned no path');
-    const res = await fetch(`${API}/file/bot${storeToken}/${file.file_path}`);
-    if (!res.ok) throw new Error(`file download HTTP ${res.status}`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    const {bytes} = await this.downloadFile(storeToken, fileId);
 
     const form = new FormData();
     form.append('chat_id', staffChatId);
     form.append('caption', caption.slice(0, 1024));
-    form.append('photo', new Blob([bytes]), 'photo.jpg');
+    form.append('photo', new Blob([new Uint8Array(bytes)]), 'photo.jpg');
     const up = await fetch(`${API}/bot${this.platformToken()}/sendPhoto`, {
       method: 'POST',
       body: form,
@@ -131,6 +127,22 @@ export class AssistantTelegram {
       throw new Error(`sendPhoto failed: ${data.description ?? up.status}`);
     }
     return data.result;
+  }
+
+  /** Bytes of a file a customer sent the store bot (photos are < 20 MB). */
+  async downloadFile(
+    storeToken: string,
+    fileId: string,
+  ): Promise<{bytes: Buffer; contentType: string}> {
+    const file = await this.call<{file_path?: string}>('getFile', {file_id: fileId}, storeToken);
+    if (!file.file_path) throw new Error('getFile returned no path');
+    const res = await fetch(`${API}/file/bot${storeToken}/${file.file_path}`);
+    if (!res.ok) throw new Error(`file download HTTP ${res.status}`);
+    const ext = file.file_path.split('.').pop()?.toLowerCase();
+    const contentType =
+      ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'mp4' ? 'video/mp4'
+        : ext === 'oga' || ext === 'ogg' ? 'audio/ogg' : ext === 'pdf' ? 'application/pdf' : 'image/jpeg';
+    return {bytes: Buffer.from(await res.arrayBuffer()), contentType};
   }
 
   // ── Webhook of a shop's store bot ──────────────────────────────────────────

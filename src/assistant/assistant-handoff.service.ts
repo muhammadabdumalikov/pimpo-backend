@@ -342,50 +342,15 @@ export class AssistantHandoffService implements OnModuleInit {
 
     let rowId: string;
     try {
-      rowId = await this.sendToCustomer(chat, token, text, 'staff', link.accountId);
+      rowId = await this.replyAsStaff(chat, token, text, {
+        accountId: link.accountId,
+        name: link.accountName,
+        skipStaffChatId: staffChatId,
+      });
     } catch (e) {
       this.logger.warn(`staff reply relay failed: ${(e as Error).message}`);
       await this.safeSend(staffChatId, '⚠️ Mijozga yetkazib bo\'lmadi (botni bloklagan bo\'lishi mumkin).');
       return true;
-    }
-
-    const now = new Date();
-    await this.db
-      .update(customerChats)
-      .set({humanUntil: new Date(now.getTime() + HUMAN_WINDOW_MS), humanAccountId: link.accountId})
-      .where(eq(customerChats.id, chat.id));
-
-    // First reply claims it; the other copies say who took it.
-    if (handoff.status !== 'claimed') {
-      const claimed = await this.db
-        .update(customerChatHandoffs)
-        .set({
-          status: 'claimed',
-          claimedByAccountId: link.accountId,
-          claimedByName: link.accountName,
-          claimedAt: now,
-        })
-        .where(
-          and(
-            eq(customerChatHandoffs.id, handoff.id),
-            inArray(customerChatHandoffs.status, ['open', 'auto_replied']),
-          ),
-        )
-        .returning({id: customerChatHandoffs.id});
-      if (claimed.length) {
-        const copies = await this.db
-          .select()
-          .from(customerChatHandoffMessages)
-          .where(eq(customerChatHandoffMessages.handoffId, handoff.id));
-        for (const c of copies) {
-          if (c.staffChatId === staffChatId) continue;
-          await this.tg.editMessageText(
-            c.staffChatId,
-            c.messageId,
-            `✅ ${link.accountName} javob berdi — ${this.customerLabel(chat)}`,
-          );
-        }
-      }
     }
 
     // A photo question ("shu bormi?") means nothing without the photo, so it
@@ -400,6 +365,61 @@ export class AssistantHandoffService implements OnModuleInit {
       /* confirmation only */
     }
     return true;
+  }
+
+  /**
+   * A person answers the customer — from Telegram (reply to a handoff copy)
+   * or from the inbox. Sends through the shop's bot, records it, makes the
+   * person the assignee, keeps the bot out for 30 minutes (Q18) and claims
+   * every open handoff of the chat, telling the other staff who took it.
+   * Returns the stored message id. Throws when Telegram refuses the send.
+   */
+  async replyAsStaff(
+    chat: CustomerChat,
+    storeToken: string,
+    text: string,
+    actor: {accountId: string; name: string; skipStaffChatId?: string},
+  ): Promise<string> {
+    const rowId = await this.sendToCustomer(chat, storeToken, text, 'staff', actor.accountId);
+    const now = new Date();
+    await this.db
+      .update(customerChats)
+      .set({
+        humanUntil: new Date(now.getTime() + HUMAN_WINDOW_MS),
+        humanAccountId: actor.accountId,
+      })
+      .where(eq(customerChats.id, chat.id));
+
+    const claimed = await this.db
+      .update(customerChatHandoffs)
+      .set({
+        status: 'claimed',
+        claimedByAccountId: actor.accountId,
+        claimedByName: actor.name,
+        claimedAt: now,
+      })
+      .where(
+        and(
+          eq(customerChatHandoffs.chatId, chat.id),
+          inArray(customerChatHandoffs.status, ['open', 'auto_replied']),
+        ),
+      )
+      .returning({id: customerChatHandoffs.id});
+    if (claimed.length) {
+      const copies = await this.db
+        .select()
+        .from(customerChatHandoffMessages)
+        .where(inArray(customerChatHandoffMessages.handoffId, claimed.map((c) => c.id)));
+      for (const c of copies) {
+        if (c.staffChatId === actor.skipStaffChatId) continue;
+        await this.tg.editMessageText(
+          c.staffChatId,
+          c.messageId,
+          `✅ ${actor.name} javob berdi — ${this.customerLabel(chat)}`,
+        );
+      }
+    }
+    return rowId;
   }
 
   /** "FAQ'ga qo'shish": the customer's question before this staff answer + the answer. */

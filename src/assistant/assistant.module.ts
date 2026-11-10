@@ -10,6 +10,8 @@ import {AssistantToolsService} from './assistant-tools';
 import {AssistantHandoffService} from './assistant-handoff.service';
 import {AssistantSettingsService} from './assistant-settings.service';
 import {AssistantTelegram} from './assistant-telegram';
+import {InboxService} from './inbox.service';
+import {InboxController} from './inbox.controller';
 import {
   AssistantSettingsController,
   AssistantWebhookController,
@@ -25,13 +27,14 @@ import {
     TelegramModule,
     OrderModule,
   ],
-  controllers: [AssistantWebhookController, AssistantSettingsController],
+  controllers: [AssistantWebhookController, AssistantSettingsController, InboxController],
   providers: [
     AssistantService,
     AssistantToolsService,
     AssistantHandoffService,
     AssistantSettingsService,
     AssistantTelegram,
+    InboxService,
   ],
 })
 export class AssistantModule {}

@@ -338,6 +338,9 @@ export enum ErrorCode {
   ASSISTANT_WEBHOOK_FAILED = 'ASSISTANT_WEBHOOK_FAILED',
   ASSISTANT_FAQ_NOT_FOUND = 'ASSISTANT_FAQ_NOT_FOUND',
   ASSISTANT_NOT_CONFIGURED = 'ASSISTANT_NOT_CONFIGURED',
+  INBOX_CHAT_NOT_FOUND = 'INBOX_CHAT_NOT_FOUND',
+  INBOX_SEND_FAILED = 'INBOX_SEND_FAILED',
+  INBOX_AGENT_INVALID = 'INBOX_AGENT_INVALID',
 
   // ── Shared barcode catalogue (global_barcodes) ─────────────────────────────
   // The platform console asked for a barcode no shop has ever saved.
@@ -1458,6 +1461,18 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.ASSISTANT_NOT_CONFIGURED]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
     message: 'The AI assistant is not set up on this server',
+  },
+  [ErrorCode.INBOX_CHAT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Chat not found',
+  },
+  [ErrorCode.INBOX_SEND_FAILED]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'Telegram did not deliver the message (the customer may have blocked the bot)',
+  },
+  [ErrorCode.INBOX_AGENT_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This person cannot answer customers',
   },
   [ErrorCode.AI_IMAGE_NOT_CONFIGURED]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
