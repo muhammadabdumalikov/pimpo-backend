@@ -241,6 +241,8 @@ export class MobileService {
         orderCount: sales.totals.orderCount,
         avgCheck: sales.totals.avgCheck,
         profit: sales.totals.profit as number | null,
+        // Part of the revenue sold on credit — owed, not in hand.
+        onCredit: sales.totals.onCredit ?? 0,
       },
       compare: {
         from: win.prevStart.toISOString(),

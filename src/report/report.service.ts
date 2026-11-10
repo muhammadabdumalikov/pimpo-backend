@@ -1246,6 +1246,18 @@ export class ReportService {
       .groupBy(retBucket);
     const retMap = new Map(returnRows.map((r) => [r.period, r]));
 
+    // How much of this revenue was sold on credit (nasiya): the debts the
+    // range's sales opened, at what was owed at the till. A later return
+    // lowers the debt's own amount, so this stays net of returned goods.
+    const [creditRow] = await this.db
+      .select({
+        amount: sql<string>`COALESCE(SUM(${userDebts.amount}), 0)`,
+        orders: sql<string>`COUNT(DISTINCT ${orders.id})`,
+      })
+      .from(userDebts)
+      .innerJoin(orders, eq(orders.id, userDebts.orderId))
+      .where(where);
+
     // A day with only returns still gets a row.
     const periods = Array.from(
       new Set([
@@ -1304,6 +1316,9 @@ export class ReportService {
         avgCheck: tOrders > 0 ? tRevenue / tOrders : 0,
         margin: tRevenue > 0 ? (tProfit / tRevenue) * 100 : 0,
         deliveryIncome: sum((b) => b.deliveryIncome),
+        // Part of `revenue` that is still owed, not money in hand.
+        onCredit: Number(creditRow?.amount ?? 0),
+        creditOrders: Number(creditRow?.orders ?? 0),
       },
     };
   }
@@ -1544,6 +1559,30 @@ export class ReportService {
     });
     for (const [method, refunds] of refundMap) {
       rawMethods.push({method, amount: -refunds, orders: 0, refunds});
+    }
+
+    // Sold on credit (nasiya): a sale's `payments` hold only what was paid at
+    // the till, so the unpaid part never showed up here and the report's
+    // total fell short of the revenue. It is its own way of "paying" — the
+    // debt the sale opened, already net of goods returned against it.
+    const [credit] = (await this.db.execute(sql`
+      SELECT COALESCE(SUM(d.amount), 0) AS amount,
+             COUNT(DISTINCT o.id) AS orders
+      FROM user_debts d
+      JOIN orders o ON o.id = d.order_id
+      WHERE ${sql.join(conds, sql` AND `)}
+    `)) as unknown as Array<{amount: string; orders: string}>;
+    if (
+      Number(credit?.amount ?? 0) > 0 &&
+      !rawMethods.some((m) => m.method === 'debt')
+    ) {
+      rawMethods.push({
+        method: 'debt',
+        amount: Number(credit.amount),
+        orders: Number(credit.orders),
+        refunds: 0,
+      });
+      rawMethods.sort((a, b) => b.amount - a.amount);
     }
     const total = rawMethods.reduce((s, m) => s + m.amount, 0);
     const methods = rawMethods.map((m) => ({
