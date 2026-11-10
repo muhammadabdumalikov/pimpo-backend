@@ -2,6 +2,7 @@ import {Module} from '@nestjs/common';
 import {DatabaseModule} from '../database/database.module';
 import {BusinessModule} from '../business/business.module';
 import {SubscriptionModule} from '../subscription/subscription.module';
+import {BillingModule} from '../billing/billing.module';
 import {PermissionModule} from '../permission/permission.module';
 import {ReportModule} from '../report/report.module';
 import {OrderModule} from '../order/order.module';
@@ -19,6 +20,7 @@ import {MobileService} from './mobile.service';
     DatabaseModule,
     BusinessModule,
     SubscriptionModule,
+    BillingModule,
     PermissionModule,
     ReportModule,
     OrderModule,

@@ -8,12 +8,14 @@ import { branches, type Branch } from '../database/schema';
 import { eq, and, asc, desc, count } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { BillingService } from '../billing/billing.service';
 
 @Injectable()
 export class BranchService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly billingService: BillingService,
   ) {}
 
   /**
@@ -59,6 +61,8 @@ export class BranchService {
   async create(
     businessId: string,
     data: { name: string; address?: string },
+    // Who opened it, for the billing ledger (staff or business id).
+    createdBy: string = businessId,
   ): Promise<Branch> {
     await this.ensureDefault(businessId);
 
@@ -81,18 +85,28 @@ export class BranchService {
       }
     }
 
-    const [created] = await this.dbService.db
-      .insert(branches)
-      .values({
-        id: generateId(),
-        businessId,
-        name: data.name,
-        address: data.address ?? null,
-        isDefault: false,
-        isActive: true,
-      })
-      .returning();
-    return created;
+    // An extra seat on a running paid period is charged pro rata in the same
+    // transaction as the insert (OBUNA-TOLOV.md Q13); a refused charge
+    // (BILLING_INSUFFICIENT_BALANCE) leaves no branch behind.
+    return this.billingService.createBranchWithCharge(
+      businessId,
+      data.name,
+      createdBy,
+      async (tx) => {
+        const [created] = await tx
+          .insert(branches)
+          .values({
+            id: generateId(),
+            businessId,
+            name: data.name,
+            address: data.address ?? null,
+            isDefault: false,
+            isActive: true,
+          })
+          .returning();
+        return created;
+      },
+    );
   }
 
   async update(
@@ -124,6 +138,9 @@ export class BranchService {
       .update(branches)
       .set({ isActive: false, updatedAt: new Date() })
       .where(and(eq(branches.id, id), eq(branches.businessId, businessId)));
+    // The monthly total counts active branches. The paid seat is kept
+    // (paid_extra_branches): reopening one this period is not charged again.
+    await this.subscriptionService.invalidate(businessId);
   }
 
   private async findOneOrThrow(

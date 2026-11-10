@@ -14,14 +14,19 @@ import {
   type BillingProfile,
   type SubscriptionDiscount,
 } from '../database/schema';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, count } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
-import {TIER_RANK, type Tier, gateTier, isFoodPlanTier} from './tier';
-
-// Monthly price of each branch beyond the first (base) one. Mirrors the
-// "+150 000" extra-location line in the plan comparison table.
-const EXTRA_BRANCH_PRICE = 150_000;
+import {type Tier, gateTier, isFoodPlanTier} from './tier';
+import {
+  EXTRA_BRANCH_PRICE,
+  asDate,
+  computeMonthlyTotal,
+  isPastEnd,
+  isRestricted,
+  totalDiscountPercent,
+} from '../billing/billing';
+import { lockBillingProfile } from '../billing/billing-ledger';
 
 // Shape returned by GET /subscriptions/billing — everything the subscription
 // status page needs in one call.
@@ -91,19 +96,21 @@ export class SubscriptionService implements OnModuleInit {
     );
   }
 
-  /** True once a subscription's trial/paid window has ended. */
+  /**
+   * True once a subscription's trial/paid window AND its grace period have
+   * ended (OBUNA-TOLOV.md Q3): the plan keeps working for GRACE_DAYS after
+   * end_date. endDate may arrive as an ISO string when the value came from the
+   * Redis cache (JSON round-trip) — isRestricted normalises it, so this hot
+   * tier-gating path never throws on a string.
+   */
   private isExpired(sub: { endDate: Date | string | null }): boolean {
-    // endDate may arrive as an ISO string when the value came from the Redis
-    // cache (JSON round-trip) rather than a live Drizzle row — normalise before
-    // comparing so this hot tier-gating path never throws on a string.
-    if (sub.endDate == null) return false;
-    return new Date(sub.endDate).getTime() <= Date.now();
+    return isRestricted(sub.endDate);
   }
 
   /**
    * The tier gating should treat this business as: the plan's tier while the
-   * subscription is active and not expired, otherwise the `free` floor. This is
-   * the single source of truth the PlanTierGuard consults.
+   * subscription is active and not past its grace period, otherwise the `free`
+   * floor. This is the single source of truth the PlanTierGuard consults.
    */
   async getEffectiveTier(businessId: string): Promise<Tier> {
     const subscription = await this.getBusinessSubscription(businessId);
@@ -146,6 +153,9 @@ export class SubscriptionService implements OnModuleInit {
         startDate: businessSubscriptions.startDate,
         endDate: businessSubscriptions.endDate,
         isActive: businessSubscriptions.isActive,
+        isTrial: businessSubscriptions.isTrial,
+        pendingPlanId: businessSubscriptions.pendingPlanId,
+        paidExtraBranches: businessSubscriptions.paidExtraBranches,
         createdAt: businessSubscriptions.createdAt,
         updatedAt: businessSubscriptions.updatedAt,
         plan: subscriptionPlans,
@@ -167,13 +177,17 @@ export class SubscriptionService implements OnModuleInit {
     return subscription || null;
   }
 
+  /**
+   * Platform admin: put the business on `planTier` with an explicit window end
+   * (`null` = open-ended, which billing never touches). Self-serve changes go
+   * through BillingService.changePlan instead and never come here — that is
+   * what keeps a shop from granting itself an open-ended plan.
+   */
   async updateBusinessSubscription(
     businessId: string,
     planTier: string,
-    // Platform-admin override: when provided, sets the subscription window's end
-    // (expiry). `null` makes it open-ended (permanent paid). Omitted (undefined)
-    // preserves the self-serve default of an open-ended subscription.
-    endDate?: Date | null,
+    endDate: Date | null,
+    opts: { isTrial?: boolean } = {},
   ): Promise<BusinessSubscription & { plan: SubscriptionPlan }> {
     // Get the plan
     const plan = await this.getPlanByTier(planTier);
@@ -181,38 +195,48 @@ export class SubscriptionService implements OnModuleInit {
       throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_TIER_NOT_FOUND, { tier: planTier });
     }
 
-    // Deactivate current subscription
-    await this.dbService.db
-      .update(businessSubscriptions)
-      .set({ isActive: false })
-      .where(
-        and(
-          eq(businessSubscriptions.businessId, businessId),
-          eq(businessSubscriptions.isActive, true),
-        ),
-      );
-
-    // Create new subscription
     const { generateId } = await import('../utils/uuid');
-    const newSubscription = {
-      id: generateId(),
-      businessId,
-      planId: plan.id,
-      isActive: true,
-      ...(endDate !== undefined && { endDate }),
-    };
+    await this.dbService.db.transaction(async (tx) => {
+      // Same per-business lock as every billing write, so a renewal running
+      // right now can't leave a second active row next to this one.
+      await lockBillingProfile(tx, businessId);
 
-    const [subscription] = await this.dbService.db
-      .insert(businessSubscriptions)
-      .values(newSubscription)
-      .returning();
+      // Deactivate current subscription
+      await tx
+        .update(businessSubscriptions)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(businessSubscriptions.businessId, businessId),
+            eq(businessSubscriptions.isActive, true),
+          ),
+        );
+
+      // Branches already open are part of what the admin granted, so only a
+      // branch opened after this counts as a new paid seat.
+      const [{ value: activeBranches }] = await tx
+        .select({ value: count() })
+        .from(branches)
+        .where(
+          and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+        );
+
+      await tx.insert(businessSubscriptions).values({
+        id: generateId(),
+        businessId,
+        planId: plan.id,
+        isActive: true,
+        endDate,
+        isTrial: opts.isTrial ?? false,
+        paidExtraBranches: Math.max(0, Number(activeBranches) - 1),
+      });
+    });
 
     // Drop the stale caches before re-reading so the fresh subscription is
     // returned (and re-cached) instead of the previous plan. Billing is derived
     // from the plan (monthly price/breakdown), so it must be invalidated too —
     // otherwise the status/admin pages keep showing the old plan's price.
-    await this.cache.del(CacheKeys.subscriptionCurrent(businessId));
-    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
+    await this.invalidate(businessId);
 
     // Get subscription with plan
     const result = await this.getBusinessSubscription(businessId);
@@ -221,6 +245,60 @@ export class SubscriptionService implements OnModuleInit {
     }
 
     return result;
+  }
+
+  /** Drop every cached view derived from the subscription or the balance. */
+  async invalidate(businessId: string): Promise<void> {
+    await Promise.all([
+      this.cache.del(CacheKeys.subscriptionCurrent(businessId)),
+      this.cache.del(CacheKeys.subscriptionBilling(businessId)),
+    ]);
+  }
+
+  /**
+   * GET /subscriptions/current — also the `subscription` the self-serve plan
+   * change returns. The plan reads as active through the grace period
+   * (`inGrace`), and as the free floor once that is over.
+   */
+  async getCurrentView(businessId: string) {
+    const subscription = await this.getBusinessSubscription(businessId);
+
+    // No subscription, or the window and its grace have ended → report the
+    // internal free floor so the client gates the UI down accordingly.
+    if (!subscription || !subscription.isActive || this.isExpired(subscription)) {
+      const freePlan = await this.getPlanByTier('free');
+      return {
+        plan: freePlan,
+        tier: 'free',
+        isActive: true,
+        isExpired: !!subscription,
+        isTrial: false,
+        inGrace: false,
+        pendingPlan: null,
+        endDate: subscription?.endDate ?? null,
+      };
+    }
+
+    const pending = subscription.pendingPlanId
+      ? await this.getPlanById(subscription.pendingPlanId)
+      : null;
+
+    return {
+      plan: subscription.plan,
+      // What the client gates on: a kitchen plan reads as the tier it gates
+      // like ('food' → 'basic'); the plan itself is in `planTier`.
+      tier: gateTier(subscription.plan.tier),
+      planTier: subscription.plan.tier,
+      isActive: subscription.isActive,
+      // From the column now, not "has a future endDate" — a paid month has one too.
+      isTrial: subscription.isTrial ?? false,
+      inGrace: isPastEnd(subscription.endDate),
+      pendingPlan: pending
+        ? { tier: pending.tier, name: pending.name, price: Number(pending.price) }
+        : null,
+      startDate: subscription.startDate,
+      endDate: subscription.endDate,
+    };
   }
 
   async getSubscriptionLimits(businessId: string): Promise<{
@@ -256,7 +334,7 @@ export class SubscriptionService implements OnModuleInit {
         ),
       );
 
-    await this.cache.del(CacheKeys.subscriptionCurrent(businessId));
+    await this.invalidate(businessId);
   }
 
   // Admin methods for managing plans
@@ -422,19 +500,15 @@ export class SubscriptionService implements OnModuleInit {
 
     const now = new Date();
     const activeDiscounts = discountRows.filter(
-      (d) => !d.validUntil || d.validUntil > now,
+      (d) => !d.validUntil || asDate(d.validUntil) > now,
     );
 
-    const planPrice = subscription ? Number(subscription.plan.price) : 0;
     // First branch is included in the plan; each extra one is billed monthly.
-    const extraBranches = Math.max(0, branchRows.length - 1);
-    const extraBranchesTotal = extraBranches * EXTRA_BRANCH_PRICE;
-    const subtotal = planPrice + extraBranchesTotal;
-    const discountPercent = Math.min(
-      100,
-      activeDiscounts.reduce((sum, d) => sum + d.percent, 0),
-    );
-    const discountAmount = Math.round((subtotal * discountPercent) / 100);
+    const monthly = computeMonthlyTotal({
+      planPrice: subscription ? Number(subscription.plan.price) : 0,
+      extraBranches: branchRows.length - 1,
+      discountPercent: totalDiscountPercent(activeDiscounts, now),
+    });
 
     return {
       balance: profile ? Number(profile.balance) : 0,
@@ -445,13 +519,13 @@ export class SubscriptionService implements OnModuleInit {
       monthly: {
         planTier: subscription?.plan.tier ?? null,
         planName: subscription?.plan.name ?? null,
-        planPrice,
-        extraBranches,
+        planPrice: monthly.planPrice,
+        extraBranches: monthly.extraBranches,
         extraBranchPrice: EXTRA_BRANCH_PRICE,
-        extraBranchesTotal,
-        discountPercent,
-        discountAmount,
-        total: subtotal - discountAmount,
+        extraBranchesTotal: monthly.extraBranchesTotal,
+        discountPercent: monthly.discountPercent,
+        discountAmount: monthly.discountAmount,
+        total: monthly.total,
       },
       discounts: activeDiscounts.map((d) => ({
         id: d.id,
@@ -499,28 +573,6 @@ export class SubscriptionService implements OnModuleInit {
       .insert(billingProfiles)
       .values({ businessId, ...set })
       .onConflictDoUpdate({ target: billingProfiles.businessId, set })
-      .returning();
-
-    await this.cache.del(CacheKeys.subscriptionBilling(businessId));
-    return profile;
-  }
-
-  /** Platform admin: credit the prepaid balance (manual top-up until a payment provider is wired). */
-  async topUpBalance(businessId: string, amount: number): Promise<BillingProfile> {
-    const current = await this.getBillingProfile(businessId);
-    const nextBalance = (current ? Number(current.balance) : 0) + amount;
-
-    const [profile] = await this.dbService.db
-      .insert(billingProfiles)
-      .values({
-        businessId,
-        balance: nextBalance.toFixed(2),
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: billingProfiles.businessId,
-        set: { balance: nextBalance.toFixed(2), updatedAt: new Date() },
-      })
       .returning();
 
     await this.cache.del(CacheKeys.subscriptionBilling(businessId));

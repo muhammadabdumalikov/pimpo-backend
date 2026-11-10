@@ -11,7 +11,6 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { gateTier } from './tier';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {
@@ -31,19 +30,10 @@ import { CreatePlanDto } from './dto/create-plan.dto';
 import { UpdatePlanDto } from './dto/update-plan.dto';
 import {
   UpdateBillingProfileDto,
-  TopUpBalanceDto,
   CreateDiscountDto,
 } from './dto/billing.dto';
-import { IsEnum, IsNotEmpty, IsString } from 'class-validator';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
-
-export class UpdateSubscriptionDto {
-  @IsString()
-  @IsNotEmpty()
-  @IsEnum(['basic', 'pro', 'proplus'])
-  tier: 'basic' | 'pro' | 'proplus';
-}
 
 @ApiTags('subscriptions')
 @Controller('subscriptions')
@@ -95,41 +85,7 @@ export class SubscriptionController {
   })
   @ApiResponse({ status: 404, description: 'No active subscription found' })
   async getCurrent(@CurrentBusiness() business: IBusiness) {
-    const subscription = await this.subscriptionService.getBusinessSubscription(
-      business.id,
-    );
-    const effectiveTier = await this.subscriptionService.getEffectiveTier(
-      business.id,
-    );
-
-    // No subscription, or the trial/paid window has ended → report the internal
-    // free floor so the client gates the UI down accordingly.
-    if (!subscription || effectiveTier === 'free') {
-      const freePlan = await this.subscriptionService.getPlanByTier('free');
-      return {
-        plan: freePlan,
-        tier: 'free',
-        isActive: true,
-        isExpired: !!subscription,
-        endDate: subscription?.endDate ?? null,
-      };
-    }
-
-    const now = Date.now();
-    const isTrial =
-      subscription.endDate != null && subscription.endDate.getTime() > now;
-
-    return {
-      plan: subscription.plan,
-      // What the client gates on: a kitchen plan reads as the tier it gates
-      // like ('food' → 'basic'); the plan itself is in `planTier`.
-      tier: gateTier(subscription.plan.tier),
-      planTier: subscription.plan.tier,
-      isActive: subscription.isActive,
-      isTrial,
-      startDate: subscription.startDate,
-      endDate: subscription.endDate,
-    };
+    return this.subscriptionService.getCurrentView(business.id);
   }
 
   @Get('limits')
@@ -156,68 +112,8 @@ export class SubscriptionController {
     return await this.subscriptionService.getBillingInfo(business.id);
   }
 
-  // Business endpoints for managing their own subscription
-  @Post('subscribe')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermission('settings:manage')
-  @ApiBearerAuth('JWT-auth')
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Subscribe to a plan (business)' })
-  @ApiResponse({
-    status: 201,
-    description: 'Subscription created successfully',
-  })
-  @ApiResponse({ status: 404, description: 'Plan not found' })
-  async subscribe(
-    @CurrentBusiness() business: IBusiness,
-    @Body() subscribeDto: UpdateSubscriptionDto,
-  ) {
-    const subscription = await this.subscriptionService.updateBusinessSubscription(
-      business.id,
-      subscribeDto.tier,
-    );
-
-    return {
-      message: 'Subscription created successfully',
-      subscription: {
-        plan: subscription.plan,
-        tier: subscription.plan.tier,
-        isActive: subscription.isActive,
-        startDate: subscription.startDate,
-      },
-    };
-  }
-
-  @Put('current')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermission('settings:manage')
-  @ApiBearerAuth('JWT-auth')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Change subscription plan (business)' })
-  @ApiResponse({
-    status: 200,
-    description: 'Subscription changed successfully',
-  })
-  @ApiResponse({ status: 404, description: 'Plan not found' })
-  async changeSubscription(
-    @CurrentBusiness() business: IBusiness,
-    @Body() updateDto: UpdateSubscriptionDto,
-  ) {
-    const subscription = await this.subscriptionService.updateBusinessSubscription(
-      business.id,
-      updateDto.tier,
-    );
-
-    return {
-      message: 'Subscription changed successfully',
-      subscription: {
-        plan: subscription.plan,
-        tier: subscription.plan.tier,
-        isActive: subscription.isActive,
-        startDate: subscription.startDate,
-      },
-    };
-  }
+  // POST /subscriptions/subscribe and PUT /subscriptions/current (self-serve
+  // plan change) live in BillingController: they charge the balance.
 
   @Delete('current')
   @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -319,25 +215,8 @@ export class SubscriptionController {
     return { message: 'Billing profile updated successfully', profile };
   }
 
-  @Post('billing/:businessId/topup')
-  @UseGuards(PlatformAdminGuard)
-  @ApiHeader({ name: 'X-Admin-Token', required: true, description: 'Platform admin token' })
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary:
-      "Credit a business's prepaid balance (platform admin only; manual until a payment provider is wired)",
-  })
-  @ApiParam({ name: 'businessId', description: 'Business ID' })
-  async topUpBalance(
-    @Param('businessId') businessId: string,
-    @Body() dto: TopUpBalanceDto,
-  ) {
-    const profile = await this.subscriptionService.topUpBalance(
-      businessId,
-      dto.amount,
-    );
-    return { message: 'Balance topped up successfully', profile };
-  }
+  // POST billing/:businessId/topup lives in BillingController: it goes
+  // through the balance ledger.
 
   @Post('billing/:businessId/discounts')
   @UseGuards(PlatformAdminGuard)

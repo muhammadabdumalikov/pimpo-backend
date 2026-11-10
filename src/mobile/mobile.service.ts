@@ -48,6 +48,7 @@ import {OrderService} from '../order/order.service';
 import {ShiftService} from '../shift/shift.service';
 import {TargetService} from '../target/target.service';
 import {SubscriptionService} from '../subscription/subscription.service';
+import {BillingService} from '../billing/billing.service';
 import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {FinanceService} from '../finance/finance.service';
@@ -134,6 +135,7 @@ export class MobileService {
     private readonly finance: FinanceService,
     private readonly productService: ProductService,
     private readonly debts: DebtService,
+    private readonly billing: BillingService,
   ) {}
 
   private get db() {
@@ -151,13 +153,15 @@ export class MobileService {
     );
     // The cached payload is the owner's view; each viewer gets it redacted to
     // what their role may see.
-    const [profit, debts, sales, sellers] = await Promise.all([
+    // The billing card is read outside the 30s home cache: a payment or a
+    // renewal must clear it at once, and it has its own short-lived caches.
+    const [profit, debts, sales, sellers, subscription] = await Promise.all([
       this.permissions.can(account, 'report:profit:view'),
       this.permissions.can(account, 'debt:read'),
       this.permissions.can(account, 'sale:read'),
       this.permissions.can(account, 'staff:sales:view'),
+      this.billing.getAttention(businessId),
     ]);
-    const isOwner = account.type === 'business';
     return {
       ...data,
       totals: {...data.totals, profit: profit ? data.totals.profit : null},
@@ -165,7 +169,9 @@ export class MobileService {
         ...data.attention,
         overdueDebts: debts ? data.attention.overdueDebts : null,
         pendingOnline: sales ? data.attention.pendingOnline : null,
-        subscription: isOwner ? data.attention.subscription : null,
+        // Every staff member sees it (OBUNA-TOLOV.md Q5); only the amounts
+        // are the payer's, and those are not in this card.
+        subscription,
       },
       topSellers: sellers ? data.topSellers : null,
     };
@@ -190,7 +196,6 @@ export class MobileService {
       branchRows,
       performance,
       sellerRows,
-      subscription,
     ] = await Promise.all([
       this.reports.getSales(businessId, range, 'day'),
       this.revenueBetween(businessId, win.prevStart, win.prevEnd),
@@ -205,7 +210,6 @@ export class MobileService {
       this.branchRevenue(businessId, win.start, now),
       this.ordersService.getProductPerformance(businessId, range),
       this.reports.getSellers(businessId, range),
-      this.subscriptions.getBusinessSubscription(businessId),
     ]);
 
     const target = tierAtLeast(tier, 'pro')
@@ -218,19 +222,6 @@ export class MobileService {
     const dayRevenue = new Map(
       week.buckets.map((b: {period: string; revenue: number}) => [b.period, b.revenue]),
     );
-
-    let subscriptionDue: {endDate: string; daysLeft: number} | null = null;
-    if (subscription?.endDate) {
-      const daysLeft = Math.ceil(
-        (subscription.endDate.getTime() - now.getTime()) / DAY_MS,
-      );
-      if (daysLeft <= 7) {
-        subscriptionDue = {
-          endDate: subscription.endDate.toISOString(),
-          daysLeft: Math.max(0, daysLeft),
-        };
-      }
-    }
 
     return {
       period,
@@ -275,7 +266,6 @@ export class MobileService {
             cashierName: s.cashierName,
             openedAt: s.openedAt,
           })),
-        subscription: subscriptionDue,
       },
       // The home contract has no `unposted` (that is the Pul screen's).
       shifts: shiftRows.map((s) => ({

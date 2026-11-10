@@ -186,6 +186,28 @@ export class TelegramNotifyService {
   ): Promise<void> {
     const settings = await this.getSettings(businessId);
     if (!settings[event]) return;
+    await this.deliver(businessId, event, message, notice);
+  }
+
+  /**
+   * The same delivery with NO toggle and no tier check: subscription billing
+   * notices (OBUNA-TOLOV.md Q8) must reach the shop whatever it switched off,
+   * and whatever plan it fell to.
+   */
+  async dispatchBilling(
+    businessId: string,
+    message: string,
+    notice: Notice,
+  ): Promise<void> {
+    await this.deliver(businessId, 'billing', message, notice);
+  }
+
+  private async deliver(
+    businessId: string,
+    event: string,
+    message: string,
+    notice?: Notice,
+  ): Promise<void> {
     if (notice) this.notifications.fire(businessId, notice);
     if (!this.sender.isConfigured()) return;
 
@@ -194,6 +216,30 @@ export class TelegramNotifyService {
     } else {
       await this.broadcast(businessId, message);
     }
+  }
+
+  /**
+   * Ping the platform admins (PLATFORM_ADMIN_CHAT_ID, comma-separated chat
+   * ids) from the platform bot. Silently does nothing when either the chat ids
+   * or the bot token is missing. Fire-and-forget; never throws.
+   */
+  notifyPlatformAdmins(message: string): void {
+    const chatIds = (process.env.PLATFORM_ADMIN_CHAT_ID ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (!chatIds.length || !this.sender.isConfigured()) return;
+    void (async () => {
+      for (const chatId of chatIds) {
+        try {
+          await this.sender.sendMessage(chatId, message);
+        } catch (e) {
+          this.logger.warn(
+            `platform admin ping → ${chatId} failed: ${(e as Error).message}`,
+          );
+        }
+      }
+    })();
   }
 
   /** Best-effort direct send to every active chat (queue fallback). */

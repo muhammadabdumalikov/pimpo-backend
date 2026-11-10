@@ -5,6 +5,7 @@ import {AppService} from './app.service';
 import {DatabaseModule} from './database/database.module';
 import {BusinessModule} from './business/business.module';
 import {SubscriptionModule} from './subscription/subscription.module';
+import {BillingModule} from './billing/billing.module';
 import {ProductModule} from './product/product.module';
 import {RecipeModule} from './recipe/recipe.module';
 import {CategoryModule} from './category/category.module';
@@ -94,6 +95,7 @@ class JwtGlobalModule {}
     DatabaseModule,
     BusinessModule,
     SubscriptionModule,
+    BillingModule,
     ProductModule,
     RecipeModule,
     CategoryModule,

@@ -15,6 +15,7 @@ export type NotifyEvent =
   | 'saleReturn'
   | 'lowStock'
   | 'priceChanged'
+  | 'billing'
   | 'test';
 
 /** One inbox/push event. `data.url` is the page a tap opens. */
@@ -37,6 +38,77 @@ const money = (v: unknown) =>
 const str = (v: unknown) => (v == null ? '' : String(v));
 const join = (...parts: unknown[]) => parts.map(str).filter(Boolean).join(' · ');
 const receipt = (d: D) => (d.receiptNo != null ? `#${d.receiptNo}` : '');
+
+// Subscription billing (OBUNA-TOLOV.md Q8, Q15, Q16). `kind` is d7 | d3 |
+// expired | restricted | renewed; a trial reads "continue", not "you owe".
+const whenUz = (days: number) =>
+  days <= 0 ? 'bugun' : days === 1 ? 'ertaga' : `${days} kundan keyin`;
+const whenRu = (days: number) =>
+  days <= 0 ? 'сегодня' : days === 1 ? 'завтра' : `через ${days} дн.`;
+
+function billingUz(d: D): PushText {
+  const trial = d.isTrial === true;
+  switch (d.kind) {
+    case 'renewed':
+      return {
+        title: `✅ Obuna yangilandi — ${str(d.periodEnd)} gacha`,
+        body: join(
+          `${money(d.charged)} so'm yechildi`,
+          n(d.shortfall) > 0 ? `keyingi oyga yana ${money(d.shortfall)} so'm kerak` : '',
+        ),
+      };
+    case 'expired':
+      return trial
+        ? {title: '🔴 Bepul sinov davri tugadi', body: "3 kun ichida obunani davom ettiring, keyin bo'limlar cheklanadi"}
+        : {title: '🔴 Obuna muddati tugadi', body: `3 kundan keyin bo'limlar cheklanadi · ${money(d.amountDue)} so'm to'lang`};
+    case 'restricted':
+      return trial
+        ? {title: "⛔ Sinov tugadi — bo'limlar cheklandi", body: 'Kassa ishlayapti. Davom ettirish uchun obunani faollashtiring'}
+        : {title: "⛔ Obuna to'lanmadi — bo'limlar cheklandi", body: "Kassa ishlayapti. To'lovdan so'ng hammasi darhol tiklanadi"};
+    default:
+      return trial
+        ? {
+            title: `⏳ Bepul sinov davri ${whenUz(n(d.daysLeft))} tugaydi`,
+            body: "Davom ettirish uchun tarifni tanlang va balansni to'ldiring",
+          }
+        : {
+            title: `${d.kind === 'd3' ? '⚠️' : '⏳'} Obuna ${whenUz(n(d.daysLeft))} tugaydi`,
+            body: `Keyingi oy uchun ${money(d.amountDue)} so'm yetishmayapti`,
+          };
+  }
+}
+
+function billingRu(d: D): PushText {
+  const trial = d.isTrial === true;
+  switch (d.kind) {
+    case 'renewed':
+      return {
+        title: `✅ Подписка продлена — до ${str(d.periodEnd)}`,
+        body: join(
+          `списано ${money(d.charged)} сум`,
+          n(d.shortfall) > 0 ? `на следующий месяц не хватает ${money(d.shortfall)} сум` : '',
+        ),
+      };
+    case 'expired':
+      return trial
+        ? {title: '🔴 Пробный период закончился', body: 'Продлите подписку в течение 3 дней, затем разделы будут ограничены'}
+        : {title: '🔴 Срок подписки истёк', body: `Через 3 дня разделы будут ограничены · оплатите ${money(d.amountDue)} сум`};
+    case 'restricted':
+      return trial
+        ? {title: '⛔ Пробный период закончился — разделы ограничены', body: 'Касса работает. Чтобы продолжить, активируйте подписку'}
+        : {title: '⛔ Подписка не оплачена — разделы ограничены', body: 'Касса работает. После оплаты всё восстановится сразу'};
+    default:
+      return trial
+        ? {
+            title: `⏳ Пробный период закончится ${whenRu(n(d.daysLeft))}`,
+            body: 'Чтобы продолжить, выберите тариф и пополните баланс',
+          }
+        : {
+            title: `${d.kind === 'd3' ? '⚠️' : '⏳'} Подписка закончится ${whenRu(n(d.daysLeft))}`,
+            body: `На следующий месяц не хватает ${money(d.amountDue)} сум`,
+          };
+  }
+}
 
 const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
   uz: {
@@ -112,6 +184,7 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
           ? Array.isArray(d.names) ? d.names.join(', ') : ''
           : "Eski qoldiq tugadi — etiketkani almashtiring",
     }),
+    billing: billingUz,
     test: () => ({
       title: 'KPOS',
       body: 'Bildirishnomalar ishlayapti ✅',
@@ -190,6 +263,7 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
           ? Array.isArray(d.names) ? d.names.join(', ') : ''
           : 'Старый остаток распродан — замените ценник',
     }),
+    billing: billingRu,
     test: () => ({
       title: 'KPOS',
       body: 'Уведомления работают ✅',

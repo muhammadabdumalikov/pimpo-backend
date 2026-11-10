@@ -41,9 +41,16 @@ export class UpdateBillingProfileDto {
 /** Platform admin: credit a business's prepaid balance. */
 export class TopUpBalanceDto {
   @ApiProperty({ description: 'Amount to add to the balance (UZS)', example: 500000 })
-  @IsNumber()
+  @IsNumber({maxDecimalPlaces: 2})
   @IsPositive()
+  @Max(10_000_000_000)
   amount: number;
+
+  @ApiPropertyOptional({ description: 'Internal note for the ledger (never shown to the shop)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  note?: string;
 }
 
 /** Platform admin: grant a promo discount on the monthly bill. */

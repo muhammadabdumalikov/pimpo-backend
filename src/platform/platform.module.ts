@@ -6,9 +6,10 @@ import { PlatformJwtGuard } from './platform-jwt.guard';
 import { DatabaseModule } from '../database/database.module';
 import { BusinessModule } from '../business/business.module';
 import { SubscriptionModule } from '../subscription/subscription.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
-  imports: [DatabaseModule, BusinessModule, SubscriptionModule],
+  imports: [DatabaseModule, BusinessModule, SubscriptionModule, BillingModule],
   controllers: [PlatformController],
   providers: [PlatformService, PlatformAuthService, PlatformJwtGuard],
 })

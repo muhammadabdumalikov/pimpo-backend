@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsDateString } from 'class-validator';
+import { IsBoolean, IsEnum, IsOptional, IsDateString } from 'class-validator';
 
 /**
  * Platform admin: set a specific business's subscription plan (and, optionally,
@@ -22,4 +22,12 @@ export class SetSubscriptionDto {
   @IsOptional()
   @IsDateString()
   endDate?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Mark the period as a trial: plan changes are free and reminders read "continue". Defaults to false.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  isTrial?: boolean;
 }

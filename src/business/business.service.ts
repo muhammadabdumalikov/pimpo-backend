@@ -110,6 +110,9 @@ export class BusinessService {
       planId: plan.id,
       endDate,
       isActive: true,
+      // Plan changes are free during the trial and its reminders read
+      // "continue" (OBUNA-TOLOV.md Q15).
+      isTrial: true,
     });
   }
 

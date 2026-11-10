@@ -287,6 +287,16 @@ export enum ErrorCode {
   SUBSCRIPTION_PLAN_TIER_NOT_FOUND = 'SUBSCRIPTION_PLAN_TIER_NOT_FOUND',
   SUBSCRIPTION_CREATE_FAILED = 'SUBSCRIPTION_CREATE_FAILED',
   SUBSCRIPTION_PLAN_TIER_EXISTS = 'SUBSCRIPTION_PLAN_TIER_EXISTS',
+  // An open-ended paid subscription was granted by the platform admin; only
+  // the admin may change it (OBUNA-TOLOV.md §5).
+  SUBSCRIPTION_MANAGED_BY_ADMIN = 'SUBSCRIPTION_MANAGED_BY_ADMIN',
+
+  // ── Billing (OBUNA-TOLOV.md §6) ─────────────────────────────────────────────
+  // params {required, balance, shortfall}
+  BILLING_INSUFFICIENT_BALANCE = 'BILLING_INSUFFICIENT_BALANCE',
+  PAYMENT_REQUEST_ALREADY_PENDING = 'PAYMENT_REQUEST_ALREADY_PENDING',
+  PAYMENT_REQUEST_NOT_FOUND = 'PAYMENT_REQUEST_NOT_FOUND',
+  PAYMENT_REQUEST_ALREADY_RESOLVED = 'PAYMENT_REQUEST_ALREADY_RESOLVED',
 
   // ── Supplier ───────────────────────────────────────────────────────────────
   SUPPLIER_NOT_FOUND = 'SUPPLIER_NOT_FOUND',
@@ -1327,6 +1337,28 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SUBSCRIPTION_PLAN_TIER_EXISTS]: {
     status: HttpStatus.CONFLICT,
     message: 'Plan with tier {tier} already exists',
+  },
+  [ErrorCode.SUBSCRIPTION_MANAGED_BY_ADMIN]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'This subscription is managed by the platform administrator',
+  },
+
+  // Billing
+  [ErrorCode.BILLING_INSUFFICIENT_BALANCE]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Insufficient balance: {required} required, {balance} available',
+  },
+  [ErrorCode.PAYMENT_REQUEST_ALREADY_PENDING]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A payment request is already awaiting review',
+  },
+  [ErrorCode.PAYMENT_REQUEST_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Payment request not found',
+  },
+  [ErrorCode.PAYMENT_REQUEST_ALREADY_RESOLVED]: {
+    status: HttpStatus.CONFLICT,
+    message: 'Payment request has already been resolved',
   },
 
   // Supplier

@@ -5,6 +5,11 @@ import { DatabaseService } from '../database/database.service';
 import { BusinessService } from '../business/business.service';
 import { SubscriptionService } from '../subscription/subscription.service';
 import {
+  BillingService,
+  type PlatformBillingSummary,
+} from '../billing/billing.service';
+import { isPastEnd, isRestricted } from '../billing/billing';
+import {
   businesses,
   products,
   branches,
@@ -34,6 +39,8 @@ export interface PlatformBusinessRow {
   subscriptionEndDate: Date | null;
   subscriptionExpired: boolean;
   balance: number;
+  /** Billing stage for the console's status column/filter (OBUNA-TOLOV.md §6.2). */
+  billing: PlatformBillingSummary;
   productCount: number;
   branchCount: number;
   staffCount: number;
@@ -45,13 +52,16 @@ export class PlatformService {
     private readonly dbService: DatabaseService,
     private readonly businessService: BusinessService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly billingService: BillingService,
   ) {}
 
-  /** Effective tier from a raw plan tier + end date, mirroring SubscriptionService. */
+  /**
+   * Effective tier from a raw plan tier + end date, mirroring SubscriptionService:
+   * the plan holds through the grace period after end_date.
+   */
   private effectiveTier(planTier: string | null, endDate: Date | null): Tier {
     if (!planTier) return 'free';
-    const expired = endDate != null && endDate.getTime() <= Date.now();
-    if (expired) return 'free';
+    if (isRestricted(endDate)) return 'free';
     return gateTier(planTier);
   }
 
@@ -78,7 +88,7 @@ export class PlatformService {
         )
       : undefined;
 
-    const [rows, productCounts, branchCounts, staffCounts, subs, profiles] =
+    const [rows, productCounts, branchCounts, staffCounts, subs, profiles, billing] =
       await Promise.all([
         this.dbService.db
           .select({
@@ -131,6 +141,7 @@ export class PlatformService {
             balance: billingProfiles.balance,
           })
           .from(billingProfiles),
+        this.billingService.platformSummaries(),
       ]);
 
     const productMap = new Map(productCounts.map((r) => [r.businessId, r.c]));
@@ -150,10 +161,15 @@ export class PlatformService {
         businessType: b.businessType as BusinessType,
         planTier,
         subscriptionEndDate: endDate,
-        subscriptionExpired:
-          endDate != null && endDate.getTime() <= Date.now(),
+        subscriptionExpired: isPastEnd(endDate),
         tier: this.effectiveTier(planTier, endDate),
         balance: balanceMap.get(b.id) ?? 0,
+        billing: billing.get(b.id) ?? {
+          stage: 'none',
+          amountDue: 0,
+          isTrial: false,
+          paymentPending: false,
+        },
         productCount: productMap.get(b.id) ?? 0,
         branchCount: branchMap.get(b.id) ?? 0,
         staffCount: staffMap.get(b.id) ?? 0,
@@ -195,7 +211,8 @@ export class PlatformService {
       ]);
 
     const { password: _pw, ...safeBusiness } = business;
-    const endDate = subscription?.endDate ?? null;
+    // May be an ISO string when the subscription came from the Redis cache.
+    const endDate = subscription?.endDate ? new Date(subscription.endDate) : null;
     const planTier = subscription?.plan.tier ?? null;
 
     return {
@@ -212,9 +229,10 @@ export class PlatformService {
             planName: subscription.plan.name,
             startDate: subscription.startDate,
             endDate,
-            isExpired: endDate != null && endDate.getTime() <= Date.now(),
+            isExpired: isPastEnd(endDate),
+            isTrial: subscription.isTrial ?? false,
           }
-        : { tier: 'free' as Tier, planTier: null, planName: null, startDate: null, endDate: null, isExpired: false },
+        : { tier: 'free' as Tier, planTier: null, planName: null, startDate: null, endDate: null, isExpired: false, isTrial: false },
       billing,
     };
   }
@@ -318,6 +336,7 @@ export class PlatformService {
     id: string,
     tier: PlanTier,
     endDate?: string,
+    isTrial?: boolean,
   ) {
     const business = await this.businessService.findById(id);
     if (!business) {
@@ -329,6 +348,7 @@ export class PlatformService {
       id,
       tier,
       parsed,
+      { isTrial: isTrial ?? false },
     );
     return {
       tier: this.effectiveTier(
@@ -339,6 +359,7 @@ export class PlatformService {
       planName: subscription.plan.name,
       startDate: subscription.startDate,
       endDate: subscription.endDate ?? null,
+      isTrial: subscription.isTrial,
     };
   }
 
@@ -348,9 +369,19 @@ export class PlatformService {
     if (!business) throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
   }
 
-  async topUpBalance(id: string, amount: number) {
+  async topUpBalance(id: string, amount: number, note?: string) {
     await this.assertBusiness(id);
-    return this.subscriptionService.topUpBalance(id, amount);
+    return this.billingService.topUp(id, amount, note);
+  }
+
+  async adjustBalance(id: string, amount: number, note: string) {
+    await this.assertBusiness(id);
+    return this.billingService.adjust(id, amount, note);
+  }
+
+  async listTransactions(id: string, page?: number, limit?: number) {
+    await this.assertBusiness(id);
+    return this.billingService.listTransactions(id, { page, limit, internal: true });
   }
 
   async createDiscount(

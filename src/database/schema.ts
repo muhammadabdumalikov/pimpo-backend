@@ -170,8 +170,19 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   startDate: timestamp('start_date', {withTimezone: true})
     .defaultNow()
     .notNull(),
+  // null = open-ended (granted by the platform admin); billing never touches it.
   endDate: timestamp('end_date', {withTimezone: true}),
   isActive: boolean('is_active').default(true).notNull(),
+  // The signup trial (OBUNA-TOLOV.md Q15): plan changes are free, and the
+  // reminders read "continue" rather than "you owe" (0099).
+  isTrial: boolean('is_trial').default(false).notNull(),
+  // A cheaper plan chosen mid-period; it takes over at the next renewal.
+  pendingPlanId: varchar('pending_plan_id', {length: 36}).references(
+    () => subscriptionPlans.id,
+  ),
+  // Extra branch seats already paid for this period (Q13): a branch opened
+  // beyond this count is charged pro rata, one closed and reopened is not.
+  paidExtraBranches: integer('paid_extra_branches').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -2266,8 +2277,9 @@ export type NewStockTransferItem = typeof stockTransferItems.$inferInsert;
 
 // Billing profile — one row per business: prepaid account balance plus the
 // legal details shown on the subscription page (and later on fiscal receipts,
-// see SOZLAMALAR.md S6). Balance is only ever mutated by platform-admin
-// top-ups / charges, never by the business itself.
+// see SOZLAMALAR.md S6). Balance only moves through BillingService (topups,
+// renewals, plan/branch charges, adjustments), each with a billing_transactions
+// row written under this row's FOR UPDATE lock — never directly.
 export const billingProfiles = pgTable('billing_profiles', {
   businessId: varchar('business_id', {length: 36})
     .primaryKey()
@@ -2299,6 +2311,102 @@ export const subscriptionDiscounts = pgTable('subscription_discounts', {
 }, (table) => ({
   businessIdx: index('subscription_discounts_business_idx').on(table.businessId),
 }));
+
+// Every balance change (OBUNA-TOLOV.md §3), append-only. `amount` is signed:
+// + money in (topup), − money out (renewal, plan_change, branch); an
+// adjustment may go either way. Written in the same transaction that moves
+// billing_profiles.balance, under that row's lock, so `balance_after` is exact.
+export const billingTransactions = pgTable(
+  'billing_transactions',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // 'topup' | 'renewal' | 'plan_change' | 'branch' | 'adjustment'
+    type: varchar('type', {length: 20}).notNull(),
+    amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
+    balanceAfter: decimal('balance_after', {precision: 14, scale: 2}).notNull(),
+    // planTier, planName, fromPlanName, periodStart, periodEnd, extraBranches,
+    // discountPercent, days, branchName — whatever explains the line.
+    meta: jsonb('meta'),
+    // Platform-only remark; never sent to the shop.
+    internalNote: text('internal_note'),
+    // 'system' | 'platform' | the staff/business id that caused it
+    createdBy: varchar('created_by', {length: 64}),
+    paymentRequestId: varchar('payment_request_id', {length: 36}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('billing_transactions_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type BillingTransaction = typeof billingTransactions.$inferSelect;
+
+// "To'lov qildim": the shop says it paid by card/transfer; the platform admin
+// approves (→ a topup) or rejects it (Q4, Q14). One pending per shop at a time.
+export const paymentRequests = pgTable(
+  'payment_requests',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
+    comment: varchar('comment', {length: 200}),
+    // 'pending' | 'approved' | 'rejected'
+    status: varchar('status', {length: 10}).default('pending').notNull(),
+    rejectReason: varchar('reject_reason', {length: 500}),
+    requestedByName: varchar('requested_by_name', {length: 255}),
+    // The topup written on approval.
+    transactionId: varchar('transaction_id', {length: 36}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    resolvedAt: timestamp('resolved_at'),
+  },
+  (table) => ({
+    onePendingIdx: uniqueIndex('payment_requests_one_pending_idx')
+      .on(table.businessId)
+      .where(sql`${table.status} = 'pending'`),
+    businessCreatedIdx: index('payment_requests_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+    statusCreatedIdx: index('payment_requests_status_created_idx').on(
+      table.status,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type PaymentRequest = typeof paymentRequests.$inferSelect;
+
+// Platform-wide settings, one JSON value per key (e.g. `payment_requisites`).
+export const platformSettings = pgTable('platform_settings', {
+  key: varchar('key', {length: 64}).primaryKey().notNull(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Billing reminders already sent — each kind ('d7' | 'd3' | 'expired' |
+// 'restricted') once per subscription period, even with two app instances.
+export const billingNotices = pgTable(
+  'billing_notices',
+  {
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    periodEnd: timestamp('period_end', {withTimezone: true}).notNull(),
+    kind: varchar('kind', {length: 16}).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({columns: [table.businessId, table.periodEnd, table.kind]}),
+  }),
+);
 
 export const billingProfilesRelations = relations(billingProfiles, ({one}) => ({
   business: one(businesses, {

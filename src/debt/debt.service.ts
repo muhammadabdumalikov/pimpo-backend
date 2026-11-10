@@ -7,7 +7,7 @@ import { userDebts, debtPayments, users, orders, type UserDebt, type NewDebtPaym
 import { eq, and, asc, desc, ilike, or, count, lt, gte, lte, ne, sql, inArray } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
-import { gateTier, tierAtLeast } from '../subscription/tier';
+import { tierAtLeast } from '../subscription/tier';
 import { UserService } from '../user/user.service';
 
 @Injectable()
@@ -506,9 +506,10 @@ export class DebtService {
    * shops away from a feature their plan includes.)
    */
   async partialPaymentsAllowed(businessId: string): Promise<boolean> {
-    const subscription =
-      await this.subscriptionService.getBusinessSubscription(businessId);
-    return tierAtLeast(gateTier(subscription?.plan.tier), 'pro');
+    // The effective tier, so a plan past its grace period (OBUNA-TOLOV.md Q3)
+    // stops granting it like every other @MinTier feature.
+    const tier = await this.subscriptionService.getEffectiveTier(businessId);
+    return tierAtLeast(tier, 'pro');
   }
 
   /** Total paid per debt id → Map(debtId, paidAmount). */
