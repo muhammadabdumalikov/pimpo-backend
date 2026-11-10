@@ -83,6 +83,10 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   // completing and cancelling them, and trimming lines while assembling
   // (YETKAZISH.md Q21). Apart from sale:update, which also rewrites till sales.
   {key: 'sale:online:manage', group: 'sales'},
+  // AI yordamchi (AI-YORDAMCHI.md Q6): receiving the customer questions the
+  // bot hands over in Telegram, answering them, and adding answers to the FAQ.
+  // Enforced on both ends — who gets the handoff and whose reply is relayed.
+  {key: 'customer:chat:reply', group: 'sales', feature: 'ai_assistant'},
   {key: 'shift:open', group: 'sales'},
   {key: 'shift:close', group: 'sales'},
   // Cash in / cash out on an open shift — money leaving the drawer.

@@ -42,6 +42,7 @@ import {
 } from '../database/schema';
 import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramNotifyService} from './telegram-notify.service';
+import {TelegramUpdateHooks} from './telegram-update-hooks';
 import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
 import {NOTIFY_TOGGLES, NotifyToggle} from './notification-settings';
 
@@ -77,6 +78,7 @@ export class TelegramController {
     private readonly dbService: DatabaseService,
     private readonly sender: TelegramSenderService,
     private readonly notify: TelegramNotifyService,
+    private readonly hooks: TelegramUpdateHooks,
   ) {}
 
   private get db() {
@@ -129,12 +131,18 @@ export class TelegramController {
     @Body() dto: UpdateStoreBotDto,
   ) {
     const token = dto.botToken?.trim();
+    const [previous] = await this.db
+      .select({botToken: storeBots.botToken})
+      .from(storeBots)
+      .where(eq(storeBots.businessId, business.id))
+      .limit(1);
 
     // Empty or null disconnects: the storefront falls back to the platform bot.
     if (!token) {
       await this.db
         .delete(storeBots)
         .where(eq(storeBots.businessId, business.id));
+      await this.hooks.storeBotChanged(business.id, null, previous?.botToken ?? null);
       return this.toStoreBotApi(business, null);
     }
 
@@ -162,6 +170,8 @@ export class TelegramController {
         },
       })
       .returning();
+    // The AI assistant re-points its webhook at the new bot (AI-YORDAMCHI.md).
+    await this.hooks.storeBotChanged(business.id, token, previous?.botToken ?? null);
     return this.toStoreBotApi(business, row);
   }
 

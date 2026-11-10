@@ -333,6 +333,12 @@ export enum ErrorCode {
   AI_IMAGE_PHOTO_UNREADABLE = 'AI_IMAGE_PHOTO_UNREADABLE',
   AI_IMAGE_EXPIRED = 'AI_IMAGE_EXPIRED',
 
+  // ── AI yordamchi (AI-YORDAMCHI.md) — customer bot on the shop's store bot ──
+  ASSISTANT_STORE_BOT_REQUIRED = 'ASSISTANT_STORE_BOT_REQUIRED',
+  ASSISTANT_WEBHOOK_FAILED = 'ASSISTANT_WEBHOOK_FAILED',
+  ASSISTANT_FAQ_NOT_FOUND = 'ASSISTANT_FAQ_NOT_FOUND',
+  ASSISTANT_NOT_CONFIGURED = 'ASSISTANT_NOT_CONFIGURED',
+
   // ── Shared barcode catalogue (global_barcodes) ─────────────────────────────
   // The platform console asked for a barcode no shop has ever saved.
   GLOBAL_BARCODE_NOT_FOUND = 'GLOBAL_BARCODE_NOT_FOUND',
@@ -1437,6 +1443,22 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   },
 
   // AI product images
+  [ErrorCode.ASSISTANT_STORE_BOT_REQUIRED]: {
+    status: HttpStatus.CONFLICT,
+    message: "Connect the shop's own Telegram bot first",
+  },
+  [ErrorCode.ASSISTANT_WEBHOOK_FAILED]: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'Telegram did not accept the bot webhook',
+  },
+  [ErrorCode.ASSISTANT_FAQ_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'FAQ entry not found',
+  },
+  [ErrorCode.ASSISTANT_NOT_CONFIGURED]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'The AI assistant is not set up on this server',
+  },
   [ErrorCode.AI_IMAGE_NOT_CONFIGURED]: {
     status: HttpStatus.SERVICE_UNAVAILABLE,
     message: 'AI image generation is not set up on this server',

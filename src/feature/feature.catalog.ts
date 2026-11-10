@@ -68,6 +68,17 @@ export const FEATURE_CATALOG = [
       "tarifidan; xodimga «product:image:generate» ruxsati kerak. O'chiq do'konda " +
       'tugma ham, endpointlar ham yo\'q.',
   },
+  {
+    key: 'ai_assistant',
+    name: 'AI yordamchi (Telegram)',
+    description:
+      "Do'konning o'z Telegram botiga yozgan mijozlarga AI faqat do'kon " +
+      "ma'lumotidan javob beradi: mahsulot, sotuv narxi, filial bo'yicha " +
+      "bor/yo'q, manzil, ish vaqti, yetkazish. Bilmasa yoki rasm kelsa savol " +
+      "ega va «customer:chat:reply» ruxsatli xodimlarga Telegram'da o'tadi. " +
+      "Pimpo kalitida, oylik limit bilan; Biznes tarifi va ulangan do'kon boti " +
+      "kerak. O'chiq do'konda bot jim, sozlamalar sahifasi ham yo'q.",
+  },
 ] as const satisfies readonly FeatureDefinition[];
 
 /** Every key the code may check. `never` while the catalogue is empty. */

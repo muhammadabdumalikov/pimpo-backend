@@ -2,7 +2,8 @@ import {Injectable, Logger} from '@nestjs/common';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 
-const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const TELEGRAM_API_BASE =
+  process.env.TELEGRAM_API_BASE || 'https://api.telegram.org';
 
 // Minimal shapes of the Bot API responses we consume.
 interface TelegramApiResponse<T = unknown> {

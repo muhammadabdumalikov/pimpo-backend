@@ -4,29 +4,15 @@ import {DatabaseService} from '../database/database.service';
 import {AuthService} from '../business/auth.service';
 import {TelegramSenderService} from './telegram-sender.service';
 import {telegramLinks} from '../database/schema';
+import {
+  TelegramUpdateHooks,
+  type TgFrom,
+  type TgMessage,
+  type TgUpdate,
+} from './telegram-update-hooks';
 import {generateId} from '../utils/uuid';
 
-// ── Bot API update shapes (only the fields we read) ──────────────────────────
-interface TgFrom {
-  id: number;
-  is_bot?: boolean;
-  first_name?: string;
-  username?: string;
-}
-interface TgChat {
-  id: number;
-  type: string;
-}
-interface TgMessage {
-  message_id: number;
-  from?: TgFrom;
-  chat: TgChat;
-  text?: string;
-}
-interface TgUpdate {
-  update_id: number;
-  message?: TgMessage;
-}
+// Update shapes are shared with the hooks (AI assistant) — see telegram-update-hooks.ts.
 interface GetUpdatesResponse {
   ok: boolean;
   result?: TgUpdate[];
@@ -71,6 +57,7 @@ export class TelegramBotService implements OnModuleInit {
     private readonly dbService: DatabaseService,
     private readonly authService: AuthService,
     private readonly sender: TelegramSenderService,
+    private readonly hooks: TelegramUpdateHooks,
   ) {}
 
   private get db() {
@@ -128,7 +115,7 @@ export class TelegramBotService implements OnModuleInit {
 
   private async getUpdates(token: string): Promise<TgUpdate[]> {
     const url =
-      `https://api.telegram.org/bot${token}/getUpdates` +
+      `${process.env.TELEGRAM_API_BASE || 'https://api.telegram.org'}/bot${token}/getUpdates` +
       `?timeout=${POLL_TIMEOUT_S}&offset=${this.offset}`;
     const res = await fetch(url);
     const data = (await res.json()) as GetUpdatesResponse;
@@ -139,6 +126,10 @@ export class TelegramBotService implements OnModuleInit {
   }
 
   private async handleUpdate(update: TgUpdate): Promise<void> {
+    // Staff replies to AI-assistant handoffs and their buttons come first.
+    if (await this.hooks.dispatch(update)) {
+      return;
+    }
     const message = update.message;
     if (!message?.chat) {
       return;

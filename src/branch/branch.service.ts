@@ -8,7 +8,28 @@ import { branches, type Branch } from '../database/schema';
 import { eq, and, asc, desc, count } from 'drizzle-orm';
 import { generateId } from '../utils/uuid';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { normalizeWorkingHours } from './working-hours';
 import { BillingService } from '../billing/billing.service';
+
+/** Contact fields shared by create and update (AI-YORDAMCHI.md Q7). */
+interface BranchContactInput {
+  phone?: string | null;
+  workingHours?: unknown;
+  mapUrl?: string | null;
+}
+
+/** Empty strings clear a field; `undefined` leaves it untouched. */
+function contactPatch(data: BranchContactInput): Partial<
+  Pick<Branch, 'phone' | 'workingHours' | 'mapUrl'>
+> {
+  const patch: Partial<Pick<Branch, 'phone' | 'workingHours' | 'mapUrl'>> = {};
+  if (data.phone !== undefined) patch.phone = data.phone?.trim() || null;
+  if (data.mapUrl !== undefined) patch.mapUrl = data.mapUrl?.trim() || null;
+  if (data.workingHours !== undefined) {
+    patch.workingHours = normalizeWorkingHours(data.workingHours);
+  }
+  return patch;
+}
 
 @Injectable()
 export class BranchService {
@@ -60,11 +81,13 @@ export class BranchService {
 
   async create(
     businessId: string,
-    data: { name: string; address?: string },
+    data: { name: string; address?: string } & BranchContactInput,
     // Who opened it, for the billing ledger (staff or business id).
     createdBy: string = businessId,
   ): Promise<Branch> {
     await this.ensureDefault(businessId);
+    // Validate before any charge is taken.
+    const contact = contactPatch(data);
 
     // Enforce the plan's branch cap (branchesLimit; null = unlimited). The
     // default "Asosiy do'kon" counts toward the total, matching how the landing
@@ -100,6 +123,7 @@ export class BranchService {
             businessId,
             name: data.name,
             address: data.address ?? null,
+            ...contact,
             isDefault: false,
             isActive: true,
           })
@@ -112,15 +136,17 @@ export class BranchService {
   async update(
     businessId: string,
     id: string,
-    data: { name?: string; address?: string },
+    data: { name?: string; address?: string } & BranchContactInput,
   ): Promise<Branch> {
     const existing = await this.findOneOrThrow(businessId, id);
+    const contact = contactPatch(data);
 
     const [updated] = await this.dbService.db
       .update(branches)
       .set({
         name: data.name ?? existing.name,
         address: data.address !== undefined ? data.address : existing.address,
+        ...contact,
         updatedAt: new Date(),
       })
       .where(and(eq(branches.id, id), eq(branches.businessId, businessId)))

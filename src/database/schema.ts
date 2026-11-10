@@ -709,6 +709,13 @@ export const suppliers = pgTable('suppliers', {
 // receipts) are tagged with the branch they belong to. Every business has one
 // default branch. `store` is taken by the public storefront, so this is `branch`
 // (matches subscriptionPlans.branchesLimit).
+export const WEEK_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
+export type WeekDay = (typeof WEEK_DAYS)[number];
+/** Local shop time "HH:MM". `close` < `open` means it closes after midnight. */
+export type BranchWorkingHours = Partial<
+  Record<WeekDay, {open: string; close: string} | null>
+>;
+
 export const branches = pgTable('branches', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
@@ -716,6 +723,13 @@ export const branches = pgTable('branches', {
     .references(() => businesses.id, {onDelete: 'cascade'}),
   name: varchar('name', {length: 255}).notNull(),
   address: varchar('address', {length: 500}),
+  // Contact details customers ask for (AI-YORDAMCHI.md Q7): the AI assistant
+  // answers "soat nechagacha?" from these, the storefront can show them too.
+  phone: varchar('phone', {length: 32}),
+  // Weekly opening hours; a missing/null day = closed that day, a null column =
+  // hours not set (the assistant then says it does not know).
+  workingHours: jsonb('working_hours').$type<BranchWorkingHours>(),
+  mapUrl: varchar('map_url', {length: 500}),
   // Exactly one per business; the fallback for documents without an explicit branch.
   isDefault: boolean('is_default').default(false).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
@@ -3870,3 +3884,179 @@ export const storeSettings = pgTable('store_settings', {
 });
 
 export type StoreSettings = typeof storeSettings.$inferSelect;
+
+// ─── AI yordamchi (AI-YORDAMCHI.md) ──────────────────────────────────────────
+// The customer-facing assistant that answers DMs to the shop's own Telegram
+// bot (store_bots) from the shop's data only. Not on `businesses`: that row is
+// spread wholesale into login/profile payloads. A missing row = off.
+export const aiAssistantSettings = pgTable('ai_assistant_settings', {
+  businessId: varchar('business_id', {length: 36})
+    .primaryKey()
+    .references(() => businesses.id, {onDelete: 'cascade'}),
+  enabled: boolean('enabled').default(false).notNull(),
+  // 'formal' ("siz") | 'friendly'.
+  tone: varchar('tone', {length: 12}).default('formal').notNull(),
+  // The /start message; null = a built-in greeting with the shop name.
+  greeting: text('greeting'),
+  // Free text the owner writes: returns, warranty, credit, … (Q8).
+  policies: text('policies'),
+  // Q12: the KPOS team may read this shop's conversations to improve quality.
+  shareWithPlatform: boolean('share_with_platform').default(false).notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export type AiAssistantSettings = typeof aiAssistantSettings.$inferSelect;
+
+export const aiAssistantFaqs = pgTable(
+  'ai_assistant_faqs',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    question: text('question').notNull(),
+    answer: text('answer').notNull(),
+    // 'manual' (typed in settings) | 'handoff' (the "FAQ'ga qo'shish" button).
+    source: varchar('source', {length: 12}).default('manual').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessIdx: index('ai_assistant_faqs_business_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type AiAssistantFaq = typeof aiAssistantFaqs.$inferSelect;
+
+// One row per customer private chat with a shop's bot.
+export const customerChats = pgTable(
+  'customer_chats',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    telegramChatId: varchar('telegram_chat_id', {length: 32}).notNull(),
+    telegramUserId: varchar('telegram_user_id', {length: 32}),
+    firstName: varchar('first_name', {length: 255}),
+    username: varchar('username', {length: 255}),
+    // Q18: a staff member replied — the bot stays silent until this moment and
+    // the customer's messages go to that staff member instead.
+    humanUntil: timestamp('human_until'),
+    // Who replied last while humanUntil runs (staff/owner account id).
+    humanAccountId: varchar('human_account_id', {length: 36}),
+    lastMessageAt: timestamp('last_message_at').defaultNow().notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    chatUq: uniqueIndex('customer_chats_business_chat_uq').on(
+      table.businessId,
+      table.telegramChatId,
+    ),
+  }),
+);
+
+export type CustomerChat = typeof customerChats.$inferSelect;
+
+// Every message in a customer chat (Q12: kept 90 days).
+export const customerChatMessages = pgTable(
+  'customer_chat_messages',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    chatId: varchar('chat_id', {length: 36})
+      .notNull()
+      .references(() => customerChats.id, {onDelete: 'cascade'}),
+    // 'customer' | 'bot' | 'staff' | 'system'.
+    role: varchar('role', {length: 12}).notNull(),
+    text: text('text'),
+    // Telegram media the customer sent: {kind, fileId}.
+    media: jsonb('media').$type<{kind: string; fileId: string}>(),
+    staffAccountId: varchar('staff_account_id', {length: 36}),
+    // The bot's tool calls for this answer (name, args, ok, ms) — debugging.
+    toolCalls: jsonb('tool_calls'),
+    // Set on AI answers only: what the monthly allowance counts.
+    model: varchar('model', {length: 64}),
+    tokensIn: integer('tokens_in'),
+    tokensOut: integer('tokens_out'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    chatIdx: index('customer_chat_messages_chat_idx').on(
+      table.chatId,
+      table.createdAt,
+    ),
+    businessIdx: index('customer_chat_messages_business_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type CustomerChatMessage = typeof customerChatMessages.$inferSelect;
+
+// A question the bot passed to a human (Q5, Q6).
+export const customerChatHandoffs = pgTable(
+  'customer_chat_handoffs',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    chatId: varchar('chat_id', {length: 36})
+      .notNull()
+      .references(() => customerChats.id, {onDelete: 'cascade'}),
+    // 'unknown' | 'photo' | 'rate_limit' | 'quota' | 'haggle' |
+    // 'customer_asked' | 'complaint'.
+    reason: varchar('reason', {length: 20}).notNull(),
+    summary: text('summary'),
+    // 'open' | 'claimed' | 'auto_replied' | 'closed'.
+    status: varchar('status', {length: 16}).default('open').notNull(),
+    claimedByAccountId: varchar('claimed_by_account_id', {length: 36}),
+    claimedByName: varchar('claimed_by_name', {length: 255}),
+    claimedAt: timestamp('claimed_at'),
+    autoRepliedAt: timestamp('auto_replied_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    chatIdx: index('customer_chat_handoffs_chat_idx').on(
+      table.chatId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type CustomerChatHandoff = typeof customerChatHandoffs.$inferSelect;
+
+// The platform-bot messages a handoff was sent as — one per staff chat. A
+// staff reply is matched to its handoff by (staff_chat_id, message_id), and
+// the other copies are edited to "✅ … javob berdi" once someone claims it.
+export const customerChatHandoffMessages = pgTable(
+  'customer_chat_handoff_messages',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    handoffId: varchar('handoff_id', {length: 36})
+      .notNull()
+      .references(() => customerChatHandoffs.id, {onDelete: 'cascade'}),
+    staffChatId: varchar('staff_chat_id', {length: 32}).notNull(),
+    messageId: integer('message_id').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    messageUq: uniqueIndex('customer_chat_handoff_messages_msg_uq').on(
+      table.staffChatId,
+      table.messageId,
+    ),
+    handoffIdx: index('customer_chat_handoff_messages_handoff_idx').on(
+      table.handoffId,
+    ),
+  }),
+);
+
+export type CustomerChatHandoffMessage =
+  typeof customerChatHandoffMessages.$inferSelect;

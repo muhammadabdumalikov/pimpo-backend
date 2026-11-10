@@ -4,6 +4,7 @@ import {TelegramController} from './telegram.controller';
 import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramBotService} from './telegram-bot.service';
 import {TelegramNotifyService} from './telegram-notify.service';
+import {TelegramUpdateHooks} from './telegram-update-hooks';
 import {TelegramNotificationsProcessor} from './telegram-notifications.processor';
 import {TELEGRAM_QUEUE} from './telegram.constants';
 import {DatabaseModule} from '../database/database.module';
@@ -50,10 +51,11 @@ const bullProviders = redisConnection ? [TelegramNotificationsProcessor] : [];
     TelegramSenderService,
     TelegramBotService,
     TelegramNotifyService,
+    TelegramUpdateHooks,
     ...bullProviders,
   ],
   // TelegramNotifyService is consumed by order/shift/digest to push per-event
   // notifications; TelegramSenderService stays exported for existing callers.
-  exports: [TelegramSenderService, TelegramNotifyService],
+  exports: [TelegramSenderService, TelegramNotifyService, TelegramUpdateHooks],
 })
 export class TelegramModule {}
