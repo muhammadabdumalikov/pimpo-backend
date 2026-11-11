@@ -434,7 +434,12 @@ export class ReportService {
             and(
               eq(orders.source, 'store'),
               inArray(orders.status, [...IN_PROGRESS_STATUSES, 'Completed']),
-              gt(sql`coalesce(${orders.placedAt}, ${orders.createdAt})`, cutoff),
+              // The left side is raw SQL, so drizzle has no column to encode the
+              // Date with and the driver rejects it: hand it over as text.
+              gt(
+                sql`coalesce(${orders.placedAt}, ${orders.createdAt})`,
+                sql`${cutoff.toISOString().slice(0, 23).replace('T', ' ')}::timestamp`,
+              ),
             ),
           ),
         ),
