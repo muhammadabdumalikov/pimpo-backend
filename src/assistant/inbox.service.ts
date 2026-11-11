@@ -54,12 +54,19 @@ export class InboxService {
     return this.dbService.db;
   }
 
-  /** Derived, never stored — see the I1 plan. */
+  /**
+   * Derived, never stored — see the I1 plan.
+   *
+   * The chat id inside the subquery is spelled with its table on purpose:
+   * as a bare select field of a single-table query drizzle prints a column
+   * unqualified, and a bare "id" there is the handoff's own id — the chat
+   * then never reads as waiting (the detail endpoint did exactly that).
+   */
   private statusSql(): SQL<ChatStatus> {
     return sql<ChatStatus>`CASE
       WHEN ${customerChats.closedAt} IS NOT NULL THEN 'closed'
       WHEN EXISTS (SELECT 1 FROM ${customerChatHandoffs} h
-                    WHERE h.chat_id = ${customerChats.id}
+                    WHERE h.chat_id = ${customerChats}."id"
                       AND h.status IN ('open', 'auto_replied')) THEN 'waiting'
       WHEN ${customerChats.botPaused} OR ${customerChats.humanUntil} > now() THEN 'human'
       ELSE 'bot' END`;
