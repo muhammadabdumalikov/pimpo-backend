@@ -17,13 +17,17 @@ export class CreateRoleDto {
   name: string;
 
   @ApiProperty({
-    description: 'Allowed sidebar menu keys',
-    example: ['ecommerce.products', 'checkout'],
+    description:
+      'DEPRECATED and ignored — menu keys are derived from `permissions` on ' +
+      'the server (see menu-derivation.ts). Still accepted so older clients ' +
+      'that send it are not rejected.',
     type: [String],
+    required: false,
   })
   @IsArray()
   @IsString({ each: true })
-  menuKeys: string[];
+  @IsOptional()
+  menuKeys?: string[];
 
   @ApiProperty({
     description:
