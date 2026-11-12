@@ -93,6 +93,15 @@ export class PlatformController {
     return this.platformService.getBusinessDetail(id);
   }
 
+  @Get('businesses/:id/stats')
+  @UseGuards(PlatformJwtGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({summary: 'Shop activity (sale counts) and size vs plan'})
+  @ApiParam({name: 'id', description: 'Business ID'})
+  getBusinessStats(@Param('id') id: string) {
+    return this.platformService.getBusinessStats(id);
+  }
+
   @Post('businesses')
   @UseGuards(PlatformJwtGuard)
   @ApiBearerAuth('JWT-auth')
