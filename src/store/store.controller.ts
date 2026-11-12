@@ -10,7 +10,11 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery, ApiHeader } from '@nestjs/swagger';
-import { StoreService } from './store.service';
+import {
+  StoreService,
+  STORE_PRODUCT_SORTS,
+  parseStoreProductSort,
+} from './store.service';
 import { CategoryService } from '../category/category.service';
 import { OrderService } from '../order/order.service';
 import { OnlineOrderService } from '../order/online-order.service';
@@ -53,6 +57,13 @@ export class StoreController {
   @ApiQuery({ name: 'search', required: false, type: String, description: 'Search by product name' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: 'Page number' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Items per page' })
+  @ApiQuery({
+    name: 'sort',
+    required: false,
+    enum: STORE_PRODUCT_SORTS,
+    description:
+      'Order within the in-stock and sold-out groups (in-stock always first): new (default, newest first), price_asc, price_desc. Unknown values fall back to new.',
+  })
   @ApiResponse({ status: 200, description: 'List of products' })
   async getProducts(
     @Query('store') store?: string,
@@ -60,9 +71,11 @@ export class StoreController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('sort') sort?: string,
   ) {
     const businessId = await this.storeService.resolveBusinessId(store);
     return this.storeService.findAll(businessId, {
+      sort: parseStoreProductSort(sort),
       category: category || undefined,
       search: search || undefined,
       page: page ? parseInt(page, 10) : undefined,

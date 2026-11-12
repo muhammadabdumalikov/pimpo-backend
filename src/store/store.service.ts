@@ -9,7 +9,7 @@ import {
   storeBots,
   branchStock,
 } from '../database/schema';
-import { eq, and, desc, count, inArray, ilike, sql } from 'drizzle-orm';
+import { eq, and, asc, desc, count, inArray, ilike, sql } from 'drizzle-orm';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { tierAtLeast } from '../subscription/tier';
 import {
@@ -48,6 +48,17 @@ const onHand = (branchId: string | null) =>
   branchId
     ? sql<number>`coalesce(${branchStock.quantity}, 0)::float8`
     : sql<number>`${products.quantity}`;
+
+// Catalogue orders the storefront can ask for. Anything else reads as `new`,
+// so an old client (no param) and a typo both get today's order.
+export const STORE_PRODUCT_SORTS = ['new', 'price_asc', 'price_desc'] as const;
+export type StoreProductSort = (typeof STORE_PRODUCT_SORTS)[number];
+
+export function parseStoreProductSort(raw?: string | null): StoreProductSort {
+  return (STORE_PRODUCT_SORTS as readonly string[]).includes(raw ?? '')
+    ? (raw as StoreProductSort)
+    : 'new';
+}
 
 export type StorePublicProduct = {
   id: string;
@@ -211,6 +222,7 @@ export class StoreService {
       search?: string;
       page?: number;
       limit?: number;
+      sort?: StoreProductSort;
     },
   ): Promise<{
     products: StorePublicProduct[];
@@ -218,11 +230,14 @@ export class StoreService {
     page: number;
     limit: number;
   }> {
-    const page = options?.page || 1;
-    const limit = Math.min(options?.limit || 100, 100);
+    // Public endpoint: a negative or zero page/limit must not reach OFFSET/LIMIT
+    // (Postgres rejects a negative OFFSET, which surfaced as a 500).
+    const page = Math.max(1, Math.floor(options?.page || 1));
+    const limit = Math.min(Math.max(1, Math.floor(options?.limit || 100)), 100);
     const offset = (page - 1) * limit;
     const category = options?.category;
     const search = options?.search?.trim();
+    const sort = parseStoreProductSort(options?.sort);
 
     const conditions = this.scopeConditions(businessId);
     if (category) {
@@ -245,9 +260,21 @@ export class StoreService {
       .from(products)
       .leftJoin(branchStock, this.stockJoin(branchId))
       .where(and(...conditions))
-      // In-stock products first (search and category listings alike), newest
-      // within each group.
-      .orderBy(sql`(${quantity} > 0) DESC`, desc(products.createdAt))
+      // In-stock products first (search and category listings alike), then
+      // the requested order within each group. The id is the final tie-breaker
+      // so equal prices / timestamps page deterministically (no repeats, no
+      // gaps between page N and N+1). `quantity` carries no bound parameters,
+      // so reusing it in SELECT and ORDER BY is safe; price_out is numeric, so
+      // it sorts by value.
+      .orderBy(
+        sql`(${quantity} > 0) DESC`,
+        ...(sort === 'price_asc'
+          ? [asc(products.priceOut)]
+          : sort === 'price_desc'
+            ? [desc(products.priceOut)]
+            : [desc(products.createdAt)]),
+        asc(products.id),
+      )
       .limit(limit)
       .offset(offset);
 
