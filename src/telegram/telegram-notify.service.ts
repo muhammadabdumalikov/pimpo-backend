@@ -16,7 +16,11 @@ import {
 import {CacheKeys} from '../cache/cache.util';
 import {TelegramSenderService} from './telegram-sender.service';
 import {TELEGRAM_QUEUE, TelegramJobData} from './telegram.constants';
-import {NotifyToggle, readNotificationSettings} from './notification-settings';
+import {
+  DigestScheduleKey,
+  NotifyToggle,
+  readNotificationSettings,
+} from './notification-settings';
 import {NotificationService} from '../notification/notification.service';
 import {Notice} from '../notification/push-text';
 import {
@@ -140,7 +144,7 @@ export class TelegramNotifyService {
   /** Upsert the toggles (only provided keys change) and drop the cache. */
   async updateSettings(
     businessId: string,
-    patch: Partial<Pick<TelegramNotificationSettings, NotifyToggle>>,
+    patch: Partial<Pick<TelegramNotificationSettings, NotifyToggle | DigestScheduleKey>>,
   ): Promise<TelegramNotificationSettings> {
     const now = new Date();
     const [row] = await this.db

@@ -2606,6 +2606,22 @@ export const telegramNotificationSettings = pgTable(
     // A queued lower price took effect by itself (old stock sold out) — the
     // shelf label needs reprinting.
     priceChanges: boolean('price_changes').notNull().default(true),
+    // Daily sales digest schedule, business-zone wall-clock 'HH:MM'. Sent at
+    // `daily_sales_send_at`; covers the latest [from, to) window that closed by
+    // then — from ≥ to crosses midnight, from = to is a full 24 h. The defaults
+    // reproduce the old fixed 21:00 digest of the day so far.
+    dailySalesSendAt: varchar('daily_sales_send_at', {length: 5})
+      .notNull()
+      .default('21:00'),
+    dailySalesFrom: varchar('daily_sales_from', {length: 5})
+      .notNull()
+      .default('00:00'),
+    dailySalesTo: varchar('daily_sales_to', {length: 5})
+      .notNull()
+      .default('21:00'),
+    // The send slot last handled (sent, or skipped for no sales), so a missed
+    // minute is caught up and a slot is never sent twice.
+    dailySalesLastSentAt: timestamp('daily_sales_last_sent_at'),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
 );

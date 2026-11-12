@@ -7,6 +7,7 @@ import {
 } from '../database/schema';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {DatabaseService} from '../database/database.service';
+import {DIGEST_DEFAULTS} from '../digest/digest-schedule';
 
 /**
  * The notification toggles — one list for both channels (Telegram chats and
@@ -54,9 +55,22 @@ export function defaultNotificationSettings(
     lowStock: true,
     announcements: true,
     priceChanges: true,
+    dailySalesSendAt: DIGEST_DEFAULTS.sendAt,
+    dailySalesFrom: DIGEST_DEFAULTS.from,
+    dailySalesTo: DIGEST_DEFAULTS.to,
+    dailySalesLastSentAt: null,
     updatedAt: new Date(),
   };
 }
+
+/** The daily digest schedule the owner edits, business-zone 'HH:MM'. */
+export type DigestScheduleKey = 'dailySalesSendAt' | 'dailySalesFrom' | 'dailySalesTo';
+
+export const DIGEST_SCHEDULE_KEYS: DigestScheduleKey[] = [
+  'dailySalesSendAt',
+  'dailySalesFrom',
+  'dailySalesTo',
+];
 
 const logger = new Logger('NotificationSettings');
 

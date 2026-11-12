@@ -8,14 +8,26 @@ import {
   cashShifts,
   saleReturns,
   products,
+  telegramNotificationSettings,
 } from '../database/schema';
-import {eq, and, gte, lte, sql, desc} from 'drizzle-orm';
+import {eq, and, gte, lt, lte, sql, desc, isNull, or} from 'drizzle-orm';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {ProductService} from '../product/product.service';
+import {
+  DIGEST_DEFAULTS,
+  digestWindow,
+  dueSlot,
+  localParts,
+} from './digest-schedule';
 
 export interface DailyDigest {
-  date: string; // YYYY-MM-DD (business zone)
+  date: string; // YYYY-MM-DD (business zone) the window starts on
+  /** Business-zone 'HH:MM' bounds of the window; to is exclusive. */
+  from: string;
+  to: string;
+  /** Window crosses midnight / spans days — the message then names both dates. */
+  endDate: string;
   revenue: number;
   orderCount: number;
   avgCheck: number;
@@ -27,9 +39,10 @@ export interface DailyDigest {
 }
 
 /**
- * Daily owner digest (R30). The digest is COMPUTED here and, for now, logged —
- * the Telegram delivery is a later phase (see sendToTelegram stub). The cron
- * fires at 21:00 Asia/Tashkent and builds a digest for every active business.
+ * Daily owner digest (R30). Each shop picks when it is sent and which hours it
+ * covers (telegram_notification_settings.daily_sales_*; default 21:00, the day
+ * so far). A once-a-minute tick sends every slot that came due — see
+ * digest-schedule.ts for the window rules.
  */
 @Injectable()
 export class DigestService {
@@ -50,18 +63,32 @@ export class DigestService {
     return new Date(Date.now() + 5 * 3_600_000).toISOString().slice(0, 10);
   }
 
+  /** A whole business-zone calendar day (the preview endpoint). */
   async buildDigest(businessId: string, date?: string): Promise<DailyDigest> {
     const ymd = /^\d{4}-\d{2}-\d{2}/.test(date ?? '')
       ? (date as string).slice(0, 10)
       : this.todayYmd();
-    const start = businessDayStart(ymd);
-    const end = businessDayEnd(ymd);
+    return this.buildDigestRange(
+      businessId,
+      businessDayStart(ymd),
+      new Date(businessDayEnd(ymd).getTime() + 1),
+    );
+  }
+
+  /** Sales in [start, end) — end exclusive. */
+  async buildDigestRange(
+    businessId: string,
+    start: Date,
+    end: Date,
+  ): Promise<DailyDigest> {
+    const from = localParts(start);
+    const to = localParts(end);
 
     const dayWhere = and(
       eq(orders.businessId, businessId),
       eq(orders.status, 'Completed'),
       gte(orders.createdAt, start),
-      lte(orders.createdAt, end),
+      lt(orders.createdAt, end),
     );
 
     const [sales] = await this.db
@@ -83,7 +110,7 @@ export class DigestService {
         and(
           eq(saleReturns.businessId, businessId),
           gte(saleReturns.createdAt, start),
-          lte(saleReturns.createdAt, end),
+          lt(saleReturns.createdAt, end),
         ),
       );
     const returns = Number(ret?.value ?? 0);
@@ -101,7 +128,7 @@ export class DigestService {
           eq(cashShifts.businessId, businessId),
           eq(cashShifts.status, 'closed'),
           gte(cashShifts.closedAt, start),
-          lte(cashShifts.closedAt, end),
+          lt(cashShifts.closedAt, end),
         ),
       );
 
@@ -119,7 +146,10 @@ export class DigestService {
       .limit(5);
 
     return {
-      date: ymd,
+      date: from.ymd,
+      from: from.hm,
+      to: to.hm,
+      endDate: to.ymd,
       revenue,
       orderCount,
       avgCheck: orderCount > 0 ? revenue / orderCount : 0,
@@ -141,6 +171,16 @@ export class DigestService {
     const lines: string[] = [];
     lines.push(`📊 Kunlik hisobot — ${digest.date}`);
     if (businessName) lines.push(`🏪 ${businessName}`);
+    // A window ending at midnight reads "00:00–24:00", not "…–00:00 (next day)".
+    const dm = (ymd: string) => `${ymd.slice(8, 10)}.${ymd.slice(5, 7)}`;
+    const endsAtMidnight =
+      digest.to === '00:00' && digest.endDate !== digest.date;
+    const sameDay = digest.endDate === digest.date || endsAtMidnight;
+    lines.push(
+      sameDay
+        ? `🕘 ${digest.from} – ${endsAtMidnight ? '24:00' : digest.to}`
+        : `🕘 ${dm(digest.date)} ${digest.from} – ${dm(digest.endDate)} ${digest.to}`,
+    );
     lines.push('');
     lines.push(`💰 Tushum: ${uz(digest.revenue)} so'm`);
     lines.push(`🧾 Cheklar: ${uz(digest.orderCount)} ta`);
@@ -167,45 +207,103 @@ export class DigestService {
     return lines.join('\n');
   }
 
-  /** 21:00 Asia/Tashkent daily: build + (for now) log a digest per business. */
-  @Cron('0 21 * * *', {name: 'daily-digest', timeZone: 'Asia/Tashkent'})
-  async runDailyDigests(): Promise<void> {
-    if (process.env.DAILY_DIGEST === 'off') return;
-    const bizList = await this.db
-      .select({id: businesses.id, name: businesses.name})
-      .from(businesses)
-      .where(eq(businesses.isActive, true));
+  private digestTickRunning = false;
 
-    let sent = 0;
-    for (const b of bizList) {
-      try {
-        const digest = await this.buildDigest(b.id);
-        if (digest.orderCount === 0) continue; // no sales → no digest
-        const message = this.formatMessage(digest, b.name);
-        this.logger.log(`Daily digest for ${b.name} (${b.id}):\n${message}`);
-        // Enqueue (or direct-send with no Redis); gated on the daily-sales toggle.
-        // Routing through the queue rate-limits the 21:00 multi-business burst.
-        await this.telegramNotify.dispatch(b.id, 'dailySales', message, {
-          event: 'dailySales',
-          data: {
-            date: digest.date,
-            revenue: digest.revenue,
-            orderCount: digest.orderCount,
-            avgCheck: digest.avgCheck,
-            profit: null,
-            url: '/dashboard',
-          },
-        });
-        sent += 1;
-      } catch (e) {
-        this.logger.error(
-          `Digest failed for business ${b.id}: ${(e as Error).message}`,
+  /**
+   * Every minute: send each shop's digest whose slot came due (or was missed by
+   * a restart within the catch-up window). The slot is claimed in the database
+   * before sending, so it goes out once even with two containers rolling over.
+   */
+  @Cron('* * * * *', {name: 'daily-digest', timeZone: 'Asia/Tashkent'})
+  async runDailyDigests(now: Date = new Date()): Promise<void> {
+    if (process.env.DAILY_DIGEST === 'off') return;
+    if (this.digestTickRunning) return;
+    this.digestTickRunning = true;
+    try {
+      const s = telegramNotificationSettings;
+      const rows = await this.db
+        .select({
+          id: businesses.id,
+          name: businesses.name,
+          sendAt: s.dailySalesSendAt,
+          from: s.dailySalesFrom,
+          to: s.dailySalesTo,
+          lastSentAt: s.dailySalesLastSentAt,
+        })
+        .from(businesses)
+        .leftJoin(s, eq(s.businessId, businesses.id))
+        .where(
+          and(
+            eq(businesses.isActive, true),
+            // No row = defaults, digest on.
+            or(isNull(s.businessId), eq(s.dailySales, true)),
+          ),
         );
+
+      for (const b of rows) {
+        const slot = dueSlot(
+          now,
+          b.sendAt ?? DIGEST_DEFAULTS.sendAt,
+          b.lastSentAt,
+        );
+        if (!slot) continue;
+        try {
+          if (!(await this.claimSlot(b.id, slot))) continue;
+          const {start, end} = digestWindow(
+            slot,
+            b.from ?? DIGEST_DEFAULTS.from,
+            b.to ?? DIGEST_DEFAULTS.to,
+          );
+          const digest = await this.buildDigestRange(b.id, start, end);
+          if (digest.orderCount === 0) continue; // no sales → no digest
+          const message = this.formatMessage(digest, b.name);
+          // Enqueue (or direct-send with no Redis); gated on the daily-sales
+          // toggle. The queue rate-limits shops that share a send time.
+          await this.telegramNotify.dispatch(b.id, 'dailySales', message, {
+            event: 'dailySales',
+            data: {
+              date: digest.date,
+              from: digest.from,
+              to: digest.to,
+              revenue: digest.revenue,
+              orderCount: digest.orderCount,
+              avgCheck: digest.avgCheck,
+              profit: null,
+              url: '/dashboard',
+            },
+          });
+          this.logger.log(`Daily digest sent for ${b.name} (${b.id})`);
+        } catch (e) {
+          this.logger.error(
+            `Digest failed for business ${b.id}: ${(e as Error).message}`,
+          );
+        }
       }
+    } finally {
+      this.digestTickRunning = false;
     }
-    this.logger.log(
-      `Daily digest run complete: ${sent}/${bizList.length} businesses.`,
-    );
+  }
+
+  /**
+   * Mark `slot` handled for the shop; false when it already was (another
+   * container, or an earlier tick). A shop with no settings row gets one with
+   * the defaults.
+   */
+  private async claimSlot(businessId: string, slot: Date): Promise<boolean> {
+    const s = telegramNotificationSettings;
+    const claimed = await this.db
+      .insert(s)
+      .values({businessId, dailySalesLastSentAt: slot})
+      .onConflictDoUpdate({
+        target: s.businessId,
+        set: {dailySalesLastSentAt: slot},
+        setWhere: or(
+          isNull(s.dailySalesLastSentAt),
+          lt(s.dailySalesLastSentAt, slot),
+        ),
+      })
+      .returning({businessId: s.businessId});
+    return claimed.length > 0;
   }
 
   /**

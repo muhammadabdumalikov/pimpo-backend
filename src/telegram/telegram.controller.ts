@@ -44,14 +44,23 @@ import {TelegramSenderService} from './telegram-sender.service';
 import {TelegramNotifyService} from './telegram-notify.service';
 import {TelegramUpdateHooks} from './telegram-update-hooks';
 import {UpdateTelegramNotificationSettingsDto} from './dto/update-telegram-notification-settings.dto';
-import {NOTIFY_TOGGLES, NotifyToggle} from './notification-settings';
+import {
+  DIGEST_SCHEDULE_KEYS,
+  DigestScheduleKey,
+  NOTIFY_TOGGLES,
+  NotifyToggle,
+} from './notification-settings';
 
-/** The toggles alone — the shared Telegram + phone push list (MOBILE.md Q9). */
-function pickToggles(s: Record<NotifyToggle, boolean>): Record<NotifyToggle, boolean> {
-  return Object.fromEntries(NOTIFY_TOGGLES.map((k) => [k, s[k]])) as Record<
-    NotifyToggle,
-    boolean
-  >;
+/**
+ * The toggles (the shared Telegram + phone push list, MOBILE.md Q9) plus the
+ * daily digest schedule — never the bookkeeping columns.
+ */
+function pickToggles(
+  s: Record<NotifyToggle, boolean> & Record<DigestScheduleKey, string>,
+): Record<NotifyToggle, boolean> & Record<DigestScheduleKey, string> {
+  return Object.fromEntries(
+    [...NOTIFY_TOGGLES, ...DIGEST_SCHEDULE_KEYS].map((k) => [k, s[k]]),
+  ) as Record<NotifyToggle, boolean> & Record<DigestScheduleKey, string>;
 }
 import {UpdateStoreBotDto} from './dto/update-store-bot.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';

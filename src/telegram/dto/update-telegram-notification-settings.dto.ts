@@ -1,5 +1,6 @@
 import {ApiPropertyOptional} from '@nestjs/swagger';
-import {IsBoolean, IsOptional} from 'class-validator';
+import {IsBoolean, IsOptional, Matches} from 'class-validator';
+import {HM_PATTERN} from '../../digest/digest-schedule';
 
 /**
  * Body for PUT /telegram/notification-settings. Every flag is optional — only
@@ -21,7 +22,7 @@ export class UpdateTelegramNotificationSettingsDto {
   @IsBoolean()
   cashOperations?: boolean;
 
-  @ApiPropertyOptional({description: 'Send the daily sales digest (21:00)'})
+  @ApiPropertyOptional({description: 'Send the daily sales digest (at dailySalesSendAt)'})
   @IsOptional()
   @IsBoolean()
   dailySales?: boolean;
@@ -55,4 +56,26 @@ export class UpdateTelegramNotificationSettingsDto {
   @IsOptional()
   @IsBoolean()
   priceChanges?: boolean;
+
+  @ApiPropertyOptional({
+    description: "When the daily digest is sent, business-zone 'HH:MM'",
+    example: '21:00',
+  })
+  @IsOptional()
+  @Matches(HM_PATTERN, {message: 'dailySalesSendAt must be HH:MM'})
+  dailySalesSendAt?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Start of the hours the digest covers, 'HH:MM'. From ≥ to crosses midnight; from = to is 24 h.",
+    example: '09:00',
+  })
+  @IsOptional()
+  @Matches(HM_PATTERN, {message: 'dailySalesFrom must be HH:MM'})
+  dailySalesFrom?: string;
+
+  @ApiPropertyOptional({description: "End of the hours the digest covers, 'HH:MM' (exclusive)", example: '21:00'})
+  @IsOptional()
+  @Matches(HM_PATTERN, {message: 'dailySalesTo must be HH:MM'})
+  dailySalesTo?: string;
 }
