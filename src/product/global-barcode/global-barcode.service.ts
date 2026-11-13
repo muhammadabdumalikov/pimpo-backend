@@ -2,6 +2,7 @@ import {Injectable, Logger} from '@nestjs/common';
 import {and, eq, inArray, isNull, or, sql} from 'drizzle-orm';
 import {sharp, toPackshotWebp} from '../../ai/image/packshot-image';
 import {AppException} from '../../common/errors/app.exception';
+import {isSharedBarcode} from '../../common/shared-barcode';
 import {ErrorCode} from '../../common/errors/error-codes';
 import {DatabaseService} from '../../database/database.service';
 import {globalBarcodes, products} from '../../database/schema';
@@ -108,7 +109,10 @@ export class GlobalBarcodeService {
   ): Promise<GlobalImageChange> {
     // Shops whose imageless cards may take the picture — decided before the
     // transaction, since the plan lookup runs on its own connection.
-    const fillShops = next ? await this.shopsToFill(barcode) : [];
+    // Never for an in-store code: those repeat from shop to shop, so "the same
+    // barcode" there is not the same product (common/shared-barcode.ts).
+    const fillShops =
+      next && isSharedBarcode(barcode) ? await this.shopsToFill(barcode) : [];
 
     const {entry, updatedProducts} = await this.db.transaction(async (tx) => {
       const [current] = await tx

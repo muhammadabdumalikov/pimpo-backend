@@ -14,6 +14,7 @@ import {
   products,
   units,
 } from '../../database/schema';
+import {isSharedBarcode, sharedBarcodeSql} from '../../common/shared-barcode';
 import {generateId} from '../../utils/uuid';
 import {AiImageService} from './ai-image.service';
 
@@ -67,6 +68,10 @@ export interface AiImageCandidate {
  * the platform's budget (AiImageService.makeForPlatform) — and leaves each one
  * 'ready' in S3. Nothing reaches a card until the console approves it; a
  * rejected or never-decided picture is swept with the other unclaimed ones.
+ *
+ * A barcode's shared picture always wins over a new one: the worker uses it if
+ * one appeared after queueing, and an approved picture becomes the shared one
+ * when the barcode had none (manufacturer barcodes only, common/shared-barcode).
  */
 @Injectable()
 export class AiImageJobsService {
@@ -111,6 +116,7 @@ export class AiImageJobsService {
        AND p.is_active AND coalesce(p.image, '') = ''
       LEFT JOIN global_barcodes g
         ON g.barcode = p.barcode AND coalesce(g.image, '') <> ''
+       AND ${sharedBarcodeSql(sql`p.barcode`)}
       LEFT JOIN LATERAL (
         SELECT * FROM ai_image_jobs j
         WHERE j.business_id = ${businessId} AND j.product_id = p.id
@@ -195,6 +201,7 @@ export class AiImageJobsService {
         and(
           eq(globalBarcodes.barcode, products.barcode),
           sql`coalesce(${globalBarcodes.image}, '') <> ''`,
+          sharedBarcodeSql(products.barcode),
         ),
       )
       .where(
@@ -250,6 +257,7 @@ export class AiImageJobsService {
         )})
         AND coalesce(p.image, '') = ''
         AND g.barcode = p.barcode
+        AND ${sharedBarcodeSql(sql`p.barcode`)}
         AND coalesce(g.image, '') <> ''
       RETURNING p.id
     `);
@@ -280,8 +288,34 @@ export class AiImageJobsService {
               or(isNull(products.image), eq(products.image, '')),
             ),
           )
-          .returning({id: products.id});
+          .returning({
+            id: products.id,
+            name: products.name,
+            barcode: products.barcode,
+          });
         const ok = moved.length > 0;
+        const card = moved[0];
+        if (card && job.imageUrl && isSharedBarcode(card.barcode)) {
+          // An approved picture also becomes the barcode's shared one when it
+          // has none yet — a person looked at it, so it is not a blind guess
+          // (the exception to Q8 for console-approved pictures). An existing
+          // shared picture is never replaced from here.
+          await tx
+            .insert(globalBarcodes)
+            .values({
+              barcode: card.barcode,
+              name: card.name,
+              image: job.imageUrl,
+              source: 'community',
+            })
+            .onConflictDoUpdate({
+              target: globalBarcodes.barcode,
+              set: {
+                image: sql`coalesce(nullif(${globalBarcodes.image}, ''), excluded.image)`,
+                updatedAt: new Date(),
+              },
+            });
+        }
         await tx
           .update(aiImageJobs)
           .set({
@@ -390,6 +424,7 @@ export class AiImageJobsService {
     const [product] = await this.db
       .select({
         name: products.name,
+        barcode: products.barcode,
         image: products.image,
         isActive: products.isActive,
         brand: brands.name,
@@ -420,6 +455,30 @@ export class AiImageJobsService {
     }
     if (product.image) {
       await this.finish(job.id, {status: 'cancelled', failReason: 'HAS_IMAGE'});
+      return false;
+    }
+
+    // The barcode may have got a shared picture since this was queued (another
+    // shop's approved picture, the console): use it, never pay for a new one.
+    const shared = await this.sharedImage(product.barcode);
+    if (shared) {
+      const moved = await this.db
+        .update(products)
+        .set({image: shared, updatedAt: new Date()})
+        .where(
+          and(
+            eq(products.id, job.productId),
+            eq(products.businessId, job.businessId),
+            or(isNull(products.image), eq(products.image, '')),
+          ),
+        )
+        .returning({id: products.id});
+      await this.finish(job.id, {
+        status: moved.length > 0 ? 'applied' : 'cancelled',
+        imageUrl: shared,
+        failReason: moved.length > 0 ? 'GLOBAL' : 'HAS_IMAGE',
+        decidedAt: new Date(),
+      });
       return false;
     }
 
@@ -462,6 +521,17 @@ export class AiImageJobsService {
       );
       return false;
     }
+  }
+
+  /** The shared catalogue's picture for a manufacturer barcode, if any. */
+  private async sharedImage(barcode: string | null): Promise<string | null> {
+    if (!isSharedBarcode(barcode)) return null;
+    const [row] = await this.db
+      .select({image: globalBarcodes.image})
+      .from(globalBarcodes)
+      .where(eq(globalBarcodes.barcode, barcode))
+      .limit(1);
+    return row?.image || null;
   }
 
   private async claimNext() {

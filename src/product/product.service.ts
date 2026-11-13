@@ -1,5 +1,6 @@
 import {Injectable, Inject, Logger} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
+import {isSharedBarcode} from '../common/shared-barcode';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {DatabaseService} from '../database/database.service';
@@ -322,8 +323,9 @@ export class ProductService {
 
       // Contribute this barcode to the shared catalog so other businesses that
       // scan it later can auto-fill the name/image. First contributor's name
-      // sticks; repeat scans just bump the usage counter.
-      if (created.barcode) {
+      // sticks; repeat scans just bump the usage counter. Only manufacturer
+      // codes: a shop's own in-store code means nothing in another shop.
+      if (isSharedBarcode(created.barcode)) {
         await tx
           .insert(globalBarcodes)
           .values({
@@ -565,7 +567,7 @@ export class ProductService {
       // Contribute barcodes to the shared community catalog (barcodes are unique
       // within this batch, so the multi-row upsert can't hit the same row twice).
       const barcodeRows = toInsert
-        .filter((p) => p.barcode)
+        .filter((p) => isSharedBarcode(p.barcode))
         .map((p) => ({
           barcode: p.barcode as string,
           name: p.name,
@@ -1322,7 +1324,7 @@ export class ProductService {
         );
         const barcode =
           rest.barcode !== undefined ? rest.barcode : existing.barcode;
-        if (aiOrigin !== 'text' && barcode) {
+        if (aiOrigin !== 'text' && isSharedBarcode(barcode)) {
           await tx
             .update(globalBarcodes)
             .set({image: rest.image, updatedAt: new Date()})
@@ -1612,12 +1614,15 @@ export class ProductService {
       };
     }
 
-    // Fall back to the shared community catalog.
-    const [global] = await this.dbService.db
-      .select()
-      .from(globalBarcodes)
-      .where(eq(globalBarcodes.barcode, barcode))
-      .limit(1);
+    // Fall back to the shared community catalog — for manufacturer codes
+    // only; an in-store code there belongs to some other shop's product.
+    const [global] = isSharedBarcode(barcode)
+      ? await this.dbService.db
+          .select()
+          .from(globalBarcodes)
+          .where(eq(globalBarcodes.barcode, barcode))
+          .limit(1)
+      : [];
 
     if (global) {
       // Community names are whatever the first contributor typed, and a shop
