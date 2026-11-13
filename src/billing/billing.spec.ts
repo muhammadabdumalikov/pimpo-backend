@@ -6,12 +6,13 @@ import {
   graceEndsAt,
   isRestricted,
   nextPeriod,
+  normalizeDiscountInput,
   periodDays,
   prorate,
   round1000,
   tashkentDaysBetween,
   tashkentHour,
-  totalDiscountPercent,
+  type DiscountTerm,
 } from './billing';
 
 // Tashkent is UTC+5: 19:00Z is already the next local day.
@@ -119,12 +120,41 @@ describe('grace helpers', () => {
 });
 
 describe('computeMonthlyTotal', () => {
-  it('adds 150 000 per extra branch and takes the discount off the plan only', () => {
+  const now = at('2026-11-10T00:00:00Z');
+  const d = (id: string, term: Partial<DiscountTerm>): DiscountTerm => ({
+    id,
+    label: id,
+    percent: 0,
+    validUntil: null,
+    ...term,
+  });
+  const lines = (m: {discountLines: {id: string | null; amount: number}[]}) =>
+    m.discountLines.map((l) => [l.id, l.amount]);
+
+  it('adds 150 000 per extra branch and charges the list price without discounts', () => {
+    expect(
+      computeMonthlyTotal({planPrice: 299_000, planTier: 'pro', extraBranches: 2}),
+    ).toEqual({
+      planPrice: 299_000,
+      extraBranches: 2,
+      extraBranchesTotal: 300_000,
+      subtotal: 599_000,
+      discountPercent: 0,
+      discountAmount: 0,
+      discountLines: [],
+      total: 599_000,
+    });
+  });
+
+  it('reads a row from before kinds existed as a percent off the plan only', () => {
     expect(
       computeMonthlyTotal({
         planPrice: 299_000,
+        planTier: 'pro',
         extraBranches: 2,
-        discountPercent: 10,
+        // No kind, no scope: what every pre-0104 row (and cache entry) is.
+        discounts: [{id: 'a', label: '10%', percent: 10, validUntil: null}],
+        now,
       }),
     ).toEqual({
       planPrice: 299_000,
@@ -133,33 +163,217 @@ describe('computeMonthlyTotal', () => {
       subtotal: 599_000,
       discountPercent: 10,
       discountAmount: 29_900,
+      discountLines: [{id: 'a', label: '10%', kind: 'percent', amount: 29_900}],
       total: 569_100,
     });
   });
+
+  it('ignores expired discounts and adds the percents up', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 200_000,
+      planTier: 'pro',
+      extraBranches: 0,
+      discounts: [
+        d('open', {percent: 10}),
+        d('expired', {percent: 20, validUntil: '2026-11-09T00:00:00Z'}),
+        d('future', {percent: 15, validUntil: at('2026-12-01T00:00:00Z')}),
+      ],
+      now,
+    });
+    expect(m.discountPercent).toBe(25);
+    expect(m.total).toBe(150_000);
+    expect(lines(m)).toEqual([
+      ['open', 20_000],
+      ['future', 30_000],
+    ]);
+  });
+
+  it('caps the percents at 100 and still charges the branches', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 119_000,
+      planTier: 'basic',
+      extraBranches: 1,
+      discounts: [d('a', {percent: 70}), d('b', {percent: 60})],
+      now,
+    });
+    expect(m.discountPercent).toBe(100);
+    expect(m.total).toBe(150_000);
+    // 119 000 split 70:60, the last line takes the rounding.
+    expect(lines(m)).toEqual([
+      ['a', 64_077],
+      ['b', 54_923],
+    ]);
+  });
+
+  it('takes a percent off the branches, or off both, by its scope', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 299_000,
+      planTier: 'pro',
+      extraBranches: 2,
+      discounts: [
+        d('all', {percent: 10, scope: 'all'}),
+        d('branches', {percent: 20, scope: 'branches'}),
+      ],
+      now,
+    });
+    // Plan: 10% of 299 000. Branches: 30% of 300 000, split 10:20.
+    expect(m.discountPercent).toBe(10);
+    expect(lines(m)).toEqual([
+      ['all', 29_900 + 30_000],
+      ['branches', 60_000],
+    ]);
+    expect(m.total).toBe(599_000 - 119_900);
+  });
+
+  it('replaces the plan price with a special price, only on the plan it was agreed for', () => {
+    const lock = d('old-price', {
+      kind: 'price',
+      scope: 'plan',
+      amount: 399_000,
+      planTier: 'proplus',
+    });
+    const onPlus = computeMonthlyTotal({
+      planPrice: 499_000,
+      planTier: 'proplus',
+      extraBranches: 0,
+      discounts: [lock],
+      now,
+    });
+    expect(onPlus.total).toBe(399_000);
+    expect(onPlus.discountPercent).toBe(0);
+    expect(lines(onPlus)).toEqual([['old-price', 100_000]]);
+
+    // The shop moves down to Business: the Business+ price does not follow.
+    const onBusiness = computeMonthlyTotal({
+      planPrice: 299_000,
+      planTier: 'pro',
+      extraBranches: 0,
+      discounts: [lock],
+      now,
+    });
+    expect(onBusiness.total).toBe(299_000);
+    expect(onBusiness.discountLines).toEqual([]);
+  });
+
+  it('never raises a price, and the lowest special price wins', () => {
+    const above = computeMonthlyTotal({
+      planPrice: 299_000,
+      planTier: 'pro',
+      extraBranches: 0,
+      discounts: [d('above', {kind: 'price', amount: 399_000})],
+      now,
+    });
+    expect(above.total).toBe(299_000);
+    expect(above.discountLines).toEqual([]);
+
+    const two = computeMonthlyTotal({
+      planPrice: 499_000,
+      planTier: 'proplus',
+      extraBranches: 0,
+      discounts: [
+        d('a', {kind: 'price', amount: 399_000}),
+        d('b', {kind: 'price', amount: 349_000}),
+      ],
+      now,
+    });
+    expect(two.total).toBe(349_000);
+    expect(lines(two)).toEqual([['b', 150_000]]);
+  });
+
+  it('combines in one order: price, then percents, then fixed sums', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 499_000,
+      planTier: 'proplus',
+      extraBranches: 2,
+      // Given in a different order on purpose.
+      discounts: [
+        d('sum', {kind: 'amount', scope: 'all', amount: 50_000}),
+        d('pct', {percent: 10}),
+        d('branch-price', {kind: 'price', scope: 'branches', amount: 100_000}),
+        d('plan-price', {kind: 'price', scope: 'plan', amount: 399_000}),
+      ],
+      now,
+    });
+    // Plan 499 → 399, −10% = 359 100. Branches 2 × 100 000. Then −50 000.
+    expect(m.subtotal).toBe(799_000);
+    expect(m.total).toBe(509_100);
+    expect(m.discountAmount).toBe(289_900);
+    // Listed as applied, not as given.
+    expect(lines(m)).toEqual([
+      ['branch-price', 100_000],
+      ['plan-price', 100_000],
+      ['pct', 39_900],
+      ['sum', 50_000],
+    ]);
+  });
+
+  it('never goes below zero on a fixed sum', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 119_000,
+      planTier: 'basic',
+      extraBranches: 0,
+      discounts: [d('big', {kind: 'amount', amount: 200_000})],
+      now,
+    });
+    expect(m.total).toBe(0);
+    expect(lines(m)).toEqual([['big', 119_000]]);
+  });
 });
 
-describe('totalDiscountPercent', () => {
-  it('ignores expired discounts and caps at 100', () => {
-    const now = at('2026-11-10T00:00:00Z');
+describe('normalizeDiscountInput', () => {
+  it('defaults to a percent off the plan', () => {
+    expect(normalizeDiscountInput({percent: 10}, 'pro')).toEqual({
+      kind: 'percent',
+      scope: 'plan',
+      percent: 10,
+      amount: null,
+      planTier: null,
+      validUntil: null,
+    });
+    expect(normalizeDiscountInput({percent: 0}, 'pro')).toEqual({error: 'percent'});
+    expect(normalizeDiscountInput({percent: 101}, 'pro')).toEqual({error: 'percent'});
+    expect(normalizeDiscountInput({kind: 'gift', percent: 5}, 'pro')).toEqual({
+      error: 'kind',
+    });
+  });
+
+  it('takes a fixed sum off the whole month whatever scope was sent', () => {
     expect(
-      totalDiscountPercent(
-        [
-          {percent: 10, validUntil: null},
-          {percent: 20, validUntil: '2026-11-09T00:00:00Z'},
-          {percent: 15, validUntil: at('2026-12-01T00:00:00Z')},
-        ],
-        now,
-      ),
-    ).toBe(25);
+      normalizeDiscountInput({kind: 'amount', scope: 'plan', amount: 50_000}, 'pro'),
+    ).toMatchObject({kind: 'amount', scope: 'all', percent: 0, amount: 50_000});
+    expect(normalizeDiscountInput({kind: 'amount'}, 'pro')).toEqual({
+      error: 'amount',
+    });
+  });
+
+  it('ties a special plan price to a plan tier', () => {
     expect(
-      totalDiscountPercent(
-        [
-          {percent: 70, validUntil: null},
-          {percent: 60, validUntil: null},
-        ],
-        now,
-      ),
-    ).toBe(100);
+      normalizeDiscountInput({kind: 'price', amount: 399_000}, 'proplus'),
+    ).toMatchObject({kind: 'price', scope: 'plan', amount: 399_000, planTier: 'proplus'});
+    // The request may name another plan than the current one.
+    expect(
+      normalizeDiscountInput({kind: 'price', amount: 249_000, planTier: 'pro'}, 'proplus'),
+    ).toMatchObject({planTier: 'pro'});
+    // No subscription and no tier named: nothing to tie it to.
+    expect(normalizeDiscountInput({kind: 'price', amount: 399_000}, null)).toEqual({
+      error: 'planTier',
+    });
+    // A per-branch price needs no plan; "all" is not a price.
+    expect(
+      normalizeDiscountInput({kind: 'price', scope: 'branches', amount: 100_000}, null),
+    ).toMatchObject({scope: 'branches', planTier: null});
+    expect(
+      normalizeDiscountInput({kind: 'price', scope: 'all', amount: 1}, 'pro'),
+    ).toEqual({error: 'scope'});
+  });
+
+  it('parses the expiry and rejects a bad date', () => {
+    expect(
+      normalizeDiscountInput({percent: 10, validUntil: '2027-02-01T00:00:00.000Z'}, 'pro'),
+    ).toMatchObject({validUntil: at('2027-02-01T00:00:00.000Z')});
+    expect(normalizeDiscountInput({percent: 10, validUntil: 'soon'}, 'pro')).toEqual({
+      error: 'validUntil',
+    });
   });
 });
 

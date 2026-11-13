@@ -37,7 +37,6 @@ import {SubscriptionService} from '../subscription/subscription.service';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {generateId} from '../utils/uuid';
 import {
-  EXTRA_BRANCH_PRICE,
   GRACE_DAYS,
   asDate,
   classifyPlanChange,
@@ -49,8 +48,9 @@ import {
   periodDays,
   prorate,
   tashkentDaysBetween,
-  totalDiscountPercent,
   type BillingStage,
+  type DiscountTerm,
+  type MonthlyTotal,
   type PlanChangeCase,
 } from './billing';
 import {
@@ -210,7 +210,40 @@ interface BillingContext {
   sub: ActiveSubscription | null;
   activeBranches: number;
   extraBranches: number;
-  discountPercent: number;
+  /**
+   * The shop's active discount rows. Which of them hold depends on the plan
+   * being priced (a special price is tied to one plan), so they are resolved
+   * per plan in monthlyFor(), not once here.
+   */
+  discounts: DiscountTerm[];
+  now: Date;
+}
+
+/** The discount columns the rules read (billing.ts DiscountTerm). */
+const DISCOUNT_TERM_COLUMNS = {
+  id: subscriptionDiscounts.id,
+  label: subscriptionDiscounts.label,
+  kind: subscriptionDiscounts.kind,
+  scope: subscriptionDiscounts.scope,
+  percent: subscriptionDiscounts.percent,
+  amount: subscriptionDiscounts.amount,
+  planTier: subscriptionDiscounts.planTier,
+  validUntil: subscriptionDiscounts.validUntil,
+};
+
+/** What a month on `plan` costs this shop, with its discounts. */
+function monthlyFor(
+  ctx: Pick<BillingContext, 'discounts' | 'now'>,
+  plan: {tier: string; price: string | number} | null,
+  extraBranches: number,
+): MonthlyTotal {
+  return computeMonthlyTotal({
+    planPrice: plan ? Number(plan.price) : 0,
+    planTier: plan?.tier ?? null,
+    extraBranches,
+    discounts: ctx.discounts,
+    now: ctx.now,
+  });
 }
 
 /** What the next renewal will charge and what the shop is short of it. */
@@ -294,18 +327,17 @@ export class BillingService {
       .where(
         and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
       );
+    // Oldest first: the order the breakdown lists them in.
     const discounts = await tx
-      .select({
-        percent: subscriptionDiscounts.percent,
-        validUntil: subscriptionDiscounts.validUntil,
-      })
+      .select(DISCOUNT_TERM_COLUMNS)
       .from(subscriptionDiscounts)
       .where(
         and(
           eq(subscriptionDiscounts.businessId, businessId),
           eq(subscriptionDiscounts.isActive, true),
         ),
-      );
+      )
+      .orderBy(asc(subscriptionDiscounts.createdAt));
 
     const active = Number(activeBranches);
     return {
@@ -313,7 +345,8 @@ export class BillingService {
       sub: subRow ? {...subRow.sub, plan: subRow.plan} : null,
       activeBranches: active,
       extraBranches: Math.max(0, active - 1),
-      discountPercent: totalDiscountPercent(discounts, now),
+      discounts,
+      now,
     };
   }
 
@@ -338,10 +371,13 @@ export class BillingService {
     if (sub?.pendingPlanId) {
       const pending = await this.subscriptions.getPlanById(sub.pendingPlanId);
       if (pending) {
+        // Re-priced from the rows, not from the current plan's percent: a
+        // discount tied to the current plan does not follow the shop down.
         renewalTotal = computeMonthlyTotal({
           planPrice: Number(pending.price),
+          planTier: pending.tier,
           extraBranches: billing.monthly.extraBranches,
-          discountPercent: billing.monthly.discountPercent,
+          discounts: billing.discounts,
         }).total;
       }
     }
@@ -648,11 +684,7 @@ export class BillingService {
         if (pending) plan = pending;
       }
 
-      const monthly = computeMonthlyTotal({
-        planPrice: Number(plan.price),
-        extraBranches: ctx.extraBranches,
-        discountPercent: ctx.discountPercent,
-      });
+      const monthly = monthlyFor(ctx, plan, ctx.extraBranches);
       // No partial charges (Q1): short of the full month, nothing changes.
       if (ctx.balance < monthly.total) return null;
 
@@ -668,6 +700,9 @@ export class BillingService {
           periodEnd: period.end.toISOString(),
           extraBranches: monthly.extraBranches,
           discountPercent: monthly.discountPercent,
+          ...(monthly.discountAmount > 0 && {
+            discountAmount: monthly.discountAmount,
+          }),
         },
         createdBy: 'system',
       });
@@ -803,11 +838,14 @@ export class BillingService {
       sub?.endDate != null && !isPastEnd(sub.endDate, now)
         ? periodDays(sub.startDate, sub.endDate, now)
         : {daysRemaining: 0, periodDays: 1};
+    // What the shop pays a month on each plan, discounts included — a plan
+    // with its own special price is charged by that price, not by the list.
+    const currentMonthly = monthlyFor(ctx, sub?.plan ?? null, ctx.extraBranches);
+    const targetMonthly = monthlyFor(ctx, target, ctx.extraBranches);
     const charge =
       kind === 'upgrade'
         ? prorate({
-            monthlyAmount: targetPrice - currentPrice,
-            discountPercent: ctx.discountPercent,
+            monthlyAmount: targetMonthly.total - currentMonthly.total,
             ...days,
           })
         : 0;
@@ -824,11 +862,7 @@ export class BillingService {
         kind === 'downgrade' && sub?.endDate
           ? asDate(sub.endDate).toISOString()
           : null,
-      newMonthlyTotal: computeMonthlyTotal({
-        planPrice: targetPrice,
-        extraBranches: ctx.extraBranches,
-        discountPercent: ctx.discountPercent,
-      }).total,
+      newMonthlyTotal: targetMonthly.total,
     };
   }
 
@@ -878,7 +912,8 @@ export class BillingService {
                 planName: target.name,
                 fromPlanName: sub!.plan.name,
                 days: q.daysRemaining,
-                discountPercent: ctx.discountPercent,
+                discountPercent: monthlyFor(ctx, target, ctx.extraBranches)
+                  .discountPercent,
                 periodEnd: asDate(sub!.endDate!).toISOString(),
               },
               createdBy: account.id,
@@ -967,18 +1002,9 @@ export class BillingService {
     // is at least the first extra.
     const extraAfter = Math.max(1, ctx.activeBranches);
     const newSeats = Math.max(0, extraAfter - (sub?.paidExtraBranches ?? 0));
-    const planPrice = sub ? Number(sub.plan.price) : 0;
-    const monthlyPrice =
-      computeMonthlyTotal({
-        planPrice,
-        extraBranches: extraAfter,
-        discountPercent: ctx.discountPercent,
-      }).total -
-      computeMonthlyTotal({
-        planPrice,
-        extraBranches: extraAfter - 1,
-        discountPercent: ctx.discountPercent,
-      }).total;
+    const plan = sub?.plan ?? null;
+    const totalWith = (extra: number) => monthlyFor(ctx, plan, extra).total;
+    const monthlyPrice = totalWith(extraAfter) - totalWith(extraAfter - 1);
 
     const running =
       sub?.endDate != null && !sub.isTrial && !isPastEnd(sub.endDate, now);
@@ -989,9 +1015,9 @@ export class BillingService {
         : {daysRemaining: 0, periodDays: 1};
     const charge = chargeable
       ? prorate({
-          monthlyAmount: EXTRA_BRANCH_PRICE * newSeats,
-          // Discounts cover the plan only; a branch seat is full price.
-          discountPercent: 0,
+          // What the unpaid seats add to the month, net of any discount that
+          // covers branches — 150 000 each when there is none.
+          monthlyAmount: totalWith(extraAfter) - totalWith(extraAfter - newSeats),
           ...days,
         })
       : 0;
@@ -1046,7 +1072,6 @@ export class BillingService {
               branchName,
               days: q.daysRemaining,
               extraBranches: q.extraAfter,
-              discountPercent: ctx.discountPercent,
               periodEnd: asDate(ctx.sub.endDate!).toISOString(),
             },
             createdBy,
@@ -1332,6 +1357,7 @@ export class BillingService {
             endDate: businessSubscriptions.endDate,
             isTrial: businessSubscriptions.isTrial,
             planPrice: subscriptionPlans.price,
+            planTier: subscriptionPlans.tier,
             pendingPlanId: businessSubscriptions.pendingPlanId,
             createdAt: businessSubscriptions.createdAt,
           })
@@ -1356,11 +1382,11 @@ export class BillingService {
         this.db
           .select({
             businessId: subscriptionDiscounts.businessId,
-            percent: subscriptionDiscounts.percent,
-            validUntil: subscriptionDiscounts.validUntil,
+            ...DISCOUNT_TERM_COLUMNS,
           })
           .from(subscriptionDiscounts)
-          .where(eq(subscriptionDiscounts.isActive, true)),
+          .where(eq(subscriptionDiscounts.isActive, true))
+          .orderBy(asc(subscriptionDiscounts.createdAt)),
         this.db
           .select({businessId: paymentRequests.businessId})
           .from(paymentRequests)
@@ -1374,23 +1400,22 @@ export class BillingService {
     ];
     const pendingPlans = pendingIds.length
       ? await this.db
-          .select({id: subscriptionPlans.id, price: subscriptionPlans.price})
+          .select({
+            id: subscriptionPlans.id,
+            price: subscriptionPlans.price,
+            tier: subscriptionPlans.tier,
+          })
           .from(subscriptionPlans)
           .where(inArray(subscriptionPlans.id, pendingIds))
       : [];
-    const pendingPrice = new Map(
-      pendingPlans.map((p) => [p.id, Number(p.price)]),
-    );
+    const pendingPlan = new Map(pendingPlans.map((p) => [p.id, p]));
     const balance = new Map(
       profiles.map((p) => [p.businessId, Number(p.balance)]),
     );
     const branchCount = new Map(
       branchCounts.map((b) => [b.businessId, Number(b.c)]),
     );
-    const discountsBy = new Map<
-      string,
-      {percent: number; validUntil: Date | null}[]
-    >();
+    const discountsBy = new Map<string, DiscountTerm[]>();
     for (const d of discounts) {
       const list = discountsBy.get(d.businessId) ?? [];
       list.push(d);
@@ -1402,16 +1427,15 @@ export class BillingService {
     const out = new Map<string, PlatformBillingSummary>();
     for (const s of subs) {
       const bal = balance.get(s.businessId) ?? 0;
-      const total = computeMonthlyTotal({
-        planPrice:
-          (s.pendingPlanId ? pendingPrice.get(s.pendingPlanId) : undefined) ??
-          Number(s.planPrice),
-        extraBranches: (branchCount.get(s.businessId) ?? 1) - 1,
-        discountPercent: totalDiscountPercent(
-          discountsBy.get(s.businessId) ?? [],
-          now,
-        ),
-      }).total;
+      // The renewal charges the scheduled plan when there is one.
+      const next = (s.pendingPlanId
+        ? pendingPlan.get(s.pendingPlanId)
+        : undefined) ?? {price: s.planPrice, tier: s.planTier};
+      const total = monthlyFor(
+        {discounts: discountsBy.get(s.businessId) ?? [], now},
+        next,
+        (branchCount.get(s.businessId) ?? 1) - 1,
+      ).total;
       out.set(s.businessId, {
         stage:
           s.endDate == null

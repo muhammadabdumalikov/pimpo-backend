@@ -2387,8 +2387,9 @@ export const billingProfiles = pgTable('billing_profiles', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
-// Promo discounts applied to a business's monthly subscription bill. Active
-// percents are summed (capped at 100) when computing the monthly total.
+// Discounts on a business's monthly subscription bill, granted from the
+// platform console. How the kinds combine is one fixed order in
+// billing.ts computeMonthlyTotal: price → percents → amounts.
 export const subscriptionDiscounts = pgTable('subscription_discounts', {
   id: varchar('id', {length: 36}).primaryKey().notNull(),
   businessId: varchar('business_id', {length: 36})
@@ -2396,7 +2397,21 @@ export const subscriptionDiscounts = pgTable('subscription_discounts', {
     .references(() => businesses.id, {onDelete: 'cascade'}),
   // Human label shown on the page, e.g. "6 oyga 10% chegirma".
   label: varchar('label', {length: 255}).notNull(),
+  // 'percent' — `percent` % off `scope`; 'amount' — `amount` so'm off the
+  // month; 'price' — `amount` so'm replaces the list price of the plan
+  // (scope 'plan') or of each extra branch (scope 'branches').
+  kind: varchar('kind', {length: 16}).default('percent').notNull(),
+  // 'plan' | 'branches' | 'all' — what a percent comes off, or which list
+  // price a 'price' replaces. An 'amount' always comes off the whole month.
+  scope: varchar('scope', {length: 16}).default('plan').notNull(),
+  // 0 for the kinds that carry `amount` instead.
   percent: integer('percent').notNull(),
+  // So'm; null for 'percent'.
+  amount: integer('amount'),
+  // When set, the discount holds only while the shop is on this plan tier —
+  // a 'price' on the plan always carries it, so a price agreed for one plan
+  // is not carried over to another.
+  planTier: varchar('plan_tier', {length: 20}),
   // null = open-ended; otherwise the discount stops applying after this date.
   validUntil: timestamp('valid_until', {withTimezone: true}),
   isActive: boolean('is_active').default(true).notNull(),

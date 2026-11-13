@@ -25,6 +25,8 @@ export interface BillingTransactionMeta {
   periodEnd?: string;
   extraBranches?: number;
   discountPercent?: number;
+  /** So'm the discounts took off this charge (all kinds together). */
+  discountAmount?: number;
   days?: number;
   branchName?: string;
 }

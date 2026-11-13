@@ -9,7 +9,11 @@ import {
   BillingService,
   type PlatformBillingSummary,
 } from '../billing/billing.service';
-import { isPastEnd, isRestricted } from '../billing/billing';
+import {
+  isPastEnd,
+  isRestricted,
+  type DiscountInput,
+} from '../billing/billing';
 import {
   businesses,
   products,
@@ -762,12 +766,15 @@ export class PlatformService {
     return this.billingService.listTransactions(id, { page, limit, internal: true });
   }
 
-  async createDiscount(
-    id: string,
-    data: { label: string; percent: number; validUntil?: string },
-  ) {
+  async createDiscount(id: string, data: DiscountInput & { label: string }) {
     await this.assertBusiness(id);
     return this.subscriptionService.createDiscount(id, data);
+  }
+
+  /** What the month would cost with this discount added; writes nothing. */
+  async previewDiscount(id: string, data: DiscountInput) {
+    await this.assertBusiness(id);
+    return this.subscriptionService.previewDiscount(id, data);
   }
 
   async deleteDiscount(discountId: string) {

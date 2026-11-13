@@ -88,54 +88,307 @@ export function computeBillingStage(input: {
   return daysLeft <= URGENT_DAYS ? 'urgent' : 'reminder';
 }
 
-/** Sum of the discounts in force at `now`, capped at 100. */
-export function totalDiscountPercent(
-  discounts: {percent: number; validUntil: Date | string | null}[],
-  now: Date = new Date(),
-): number {
-  const sum = discounts
-    .filter(
-      (d) =>
-        d.validUntil == null || asDate(d.validUntil).getTime() > now.getTime(),
-    )
-    .reduce((s, d) => s + d.percent, 0);
-  return Math.min(100, Math.max(0, sum));
+/**
+ * What a discount is (subscription_discounts.kind):
+ * - percent: `percent` % off whatever `scope` names;
+ * - amount:  `amount` so'm off the month's total;
+ * - price:   `amount` so'm replaces the list price — of the plan (scope
+ *            'plan'), or of each extra branch (scope 'branches'). It can only
+ *            lower a price, never raise it.
+ */
+export type DiscountKind = 'percent' | 'amount' | 'price';
+/** What a percent comes off, or which list price a `price` replaces. */
+export type DiscountScope = 'plan' | 'branches' | 'all';
+
+export const DISCOUNT_KINDS: readonly DiscountKind[] = [
+  'percent',
+  'amount',
+  'price',
+];
+export const DISCOUNT_SCOPES: readonly DiscountScope[] = [
+  'plan',
+  'branches',
+  'all',
+];
+
+/**
+ * One discount as the rules read it. `kind` and `scope` are optional because
+ * rows cached before they existed carry neither: such a row is a percent off
+ * the plan, which is all a discount could be then.
+ */
+export interface DiscountTerm {
+  id?: string | null;
+  label?: string | null;
+  /** DiscountKind; a plain string because that is what the column gives. */
+  kind?: string | null;
+  /** DiscountScope, likewise. */
+  scope?: string | null;
+  percent: number;
+  amount?: number | null;
+  /** When set, the discount holds only while the shop is on this plan. */
+  planTier?: string | null;
+  validUntil: Date | string | null;
+}
+
+/** What one discount took off the month, for the breakdown. */
+export interface DiscountLine {
+  id: string | null;
+  label: string | null;
+  kind: DiscountKind;
+  amount: number;
 }
 
 export interface MonthlyTotal {
+  /** List price of the plan. */
   planPrice: number;
   extraBranches: number;
+  /** List price of the extra branches. */
   extraBranchesTotal: number;
+  /** List price of the month, before any discount. */
   subtotal: number;
+  /** The percent off the plan alone (0–100) — what older readers show. */
   discountPercent: number;
+  /** Everything the discounts took off: subtotal − total. */
   discountAmount: number;
+  /** discountAmount split by discount, in the order they were applied. */
+  discountLines: DiscountLine[];
   total: number;
 }
 
+/** The step of computeMonthlyTotal each kind is applied in. */
+const APPLY_ORDER: Record<DiscountKind, number> = {
+  price: 0,
+  percent: 1,
+  amount: 2,
+};
+
+const kindOf = (d: DiscountTerm): DiscountKind =>
+  d.kind === 'amount' || d.kind === 'price' ? d.kind : 'percent';
+const scopeOf = (d: DiscountTerm): DiscountScope =>
+  d.scope === 'branches' || d.scope === 'all' ? d.scope : 'plan';
+
+/** The discounts that hold at `now` for a shop on `planTier`. */
+export function discountsInForce<T extends DiscountTerm>(
+  discounts: readonly T[],
+  planTier: string | null,
+  now: Date = new Date(),
+): T[] {
+  return discounts.filter(
+    (d) =>
+      (d.validUntil == null ||
+        asDate(d.validUntil).getTime() > now.getTime()) &&
+      (d.planTier == null || d.planTier === planTier),
+  );
+}
+
+/** Split `total` between percent discounts by their share; the last takes the rounding. */
+function sharePercentOff(
+  total: number,
+  terms: DiscountTerm[],
+  add: (d: DiscountTerm, amount: number) => void,
+) {
+  const sum = terms.reduce((s, d) => s + Math.max(0, d.percent), 0);
+  if (total <= 0 || sum <= 0) return;
+  let left = total;
+  terms.forEach((d, i) => {
+    const part =
+      i === terms.length - 1
+        ? left
+        : Math.min(left, Math.round((total * Math.max(0, d.percent)) / sum));
+    left -= part;
+    add(d, part);
+  });
+}
+
 /**
- * Plan + extra branches × 150 000 − discount % (§2 "Oylik summa"). The
- * discount covers the plan (the main store) only; extra branches are always
- * charged in full.
+ * What a month costs (§2 "Oylik summa"): plan + extra branches × 150 000,
+ * less the discounts in force. One fixed order, whatever order they were
+ * granted in:
+ *   1. a `price` replaces the list price of the plan / of each extra branch
+ *      (the lowest one wins when there are several);
+ *   2. the percents of a scope add up (capped at 100) and come off that price;
+ *   3. the `amount`s come off what is left, never below zero.
  */
 export function computeMonthlyTotal(input: {
   planPrice: number;
+  /** The plan being priced — discounts tied to another plan do not apply. */
+  planTier: string | null;
   extraBranches: number;
-  discountPercent: number;
+  discounts?: readonly DiscountTerm[];
+  now?: Date;
 }): MonthlyTotal {
+  const planPrice = Math.max(0, input.planPrice);
   const extraBranches = Math.max(0, input.extraBranches);
   const extraBranchesTotal = extraBranches * EXTRA_BRANCH_PRICE;
-  const subtotal = input.planPrice + extraBranchesTotal;
-  const discountAmount = Math.round(
-    (input.planPrice * input.discountPercent) / 100,
+  const subtotal = planPrice + extraBranchesTotal;
+  const live = discountsInForce(
+    input.discounts ?? [],
+    input.planTier,
+    input.now,
   );
+
+  const taken = new Map<DiscountTerm, number>();
+  const add = (d: DiscountTerm, amount: number) => {
+    if (amount > 0) taken.set(d, (taken.get(d) ?? 0) + amount);
+  };
+  const lowestPrice = (scope: DiscountScope) =>
+    live
+      .filter(
+        (d) => kindOf(d) === 'price' && scopeOf(d) === scope && d.amount != null,
+      )
+      .sort((a, b) => Number(a.amount) - Number(b.amount))[0];
+
+  // 1. Price overrides.
+  let planBase = planPrice;
+  const planLock = lowestPrice('plan');
+  if (planLock && Number(planLock.amount) < planPrice) {
+    planBase = Math.max(0, Number(planLock.amount));
+    add(planLock, planPrice - planBase);
+  }
+  let branchUnit = EXTRA_BRANCH_PRICE;
+  const branchLock = lowestPrice('branches');
+  if (branchLock && Number(branchLock.amount) < EXTRA_BRANCH_PRICE) {
+    branchUnit = Math.max(0, Number(branchLock.amount));
+    add(branchLock, extraBranches * (EXTRA_BRANCH_PRICE - branchUnit));
+  }
+  const branchBase = extraBranches * branchUnit;
+
+  // 2. Percents, per scope.
+  const percents = live.filter((d) => kindOf(d) === 'percent');
+  const onPlan = percents.filter((d) => scopeOf(d) !== 'branches');
+  const onBranches = percents.filter((d) => scopeOf(d) !== 'plan');
+  const capped = (terms: DiscountTerm[]) =>
+    Math.min(
+      100,
+      terms.reduce((s, d) => s + Math.max(0, d.percent), 0),
+    );
+  const planPercent = capped(onPlan);
+  const planOff = Math.round((planBase * planPercent) / 100);
+  const branchOff = Math.round((branchBase * capped(onBranches)) / 100);
+  sharePercentOff(planOff, onPlan, add);
+  sharePercentOff(branchOff, onBranches, add);
+
+  // 3. Fixed sums off what is left.
+  let total = planBase - planOff + branchBase - branchOff;
+  for (const d of live) {
+    if (kindOf(d) !== 'amount') continue;
+    const part = Math.min(total, Math.max(0, Number(d.amount ?? 0)));
+    total -= part;
+    add(d, part);
+  }
+
   return {
-    planPrice: input.planPrice,
+    planPrice,
     extraBranches,
     extraBranchesTotal,
     subtotal,
-    discountPercent: input.discountPercent,
-    discountAmount,
-    total: subtotal - discountAmount,
+    discountPercent: planPercent,
+    discountAmount: subtotal - total,
+    // In the order they were applied (price, percent, amount), so the lines
+    // read top to bottom as the sum was worked out — a percent's amount only
+    // makes sense after the special price it was taken from.
+    discountLines: live
+      .filter((d) => taken.has(d))
+      .sort((a, b) => APPLY_ORDER[kindOf(a)] - APPLY_ORDER[kindOf(b)])
+      .map((d) => ({
+        id: d.id ?? null,
+        label: d.label ?? null,
+        kind: kindOf(d),
+        amount: taken.get(d)!,
+      })),
+    total,
+  };
+}
+
+/** A discount as the platform console asks for it. */
+export interface DiscountInput {
+  kind?: string;
+  scope?: string;
+  percent?: number;
+  amount?: number;
+  planTier?: string;
+  validUntil?: string;
+}
+
+/** The columns a valid request fills (label and ids aside). */
+export interface NormalizedDiscount {
+  kind: DiscountKind;
+  scope: DiscountScope;
+  percent: number;
+  amount: number | null;
+  planTier: string | null;
+  validUntil: Date | null;
+}
+
+const isInt = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n);
+
+/**
+ * Turn a request into a row, or name the field that is wrong.
+ * - percent: 1–100 off the plan (default), the branches, or both;
+ * - amount:  so'm off the whole month — the scope is not asked;
+ * - price:   so'm instead of the plan's list price or of each branch's; on
+ *            the plan it is tied to a plan tier (`currentPlanTier` unless the
+ *            request names one), so it does not follow the shop to another.
+ */
+export function normalizeDiscountInput(
+  input: DiscountInput,
+  currentPlanTier: string | null,
+): NormalizedDiscount | {error: string} {
+  const kind = input.kind ?? 'percent';
+  if (!DISCOUNT_KINDS.includes(kind as DiscountKind)) return {error: 'kind'};
+  if (
+    input.scope != null &&
+    !DISCOUNT_SCOPES.includes(input.scope as DiscountScope)
+  ) {
+    return {error: 'scope'};
+  }
+  let validUntil: Date | null = null;
+  if (input.validUntil) {
+    validUntil = new Date(input.validUntil);
+    if (Number.isNaN(validUntil.getTime())) return {error: 'validUntil'};
+  }
+  const planTier = input.planTier || null;
+
+  if (kind === 'percent') {
+    if (!isInt(input.percent) || input.percent < 1 || input.percent > 100) {
+      return {error: 'percent'};
+    }
+    return {
+      kind,
+      scope: (input.scope as DiscountScope) ?? 'plan',
+      percent: input.percent,
+      amount: null,
+      planTier,
+      validUntil,
+    };
+  }
+
+  if (kind === 'amount') {
+    if (!isInt(input.amount) || input.amount < 1) return {error: 'amount'};
+    return {
+      kind,
+      scope: 'all',
+      percent: 0,
+      amount: input.amount,
+      planTier,
+      validUntil,
+    };
+  }
+
+  // price
+  if (!isInt(input.amount) || input.amount < 0) return {error: 'amount'};
+  const scope = (input.scope as DiscountScope) ?? 'plan';
+  if (scope === 'all') return {error: 'scope'};
+  const tier = scope === 'plan' ? (planTier ?? currentPlanTier) : planTier;
+  if (scope === 'plan' && !tier) return {error: 'planTier'};
+  return {
+    kind: 'price',
+    scope,
+    percent: 0,
+    amount: input.amount,
+    planTier: tier,
+    validUntil,
   };
 }
 
@@ -145,19 +398,22 @@ export function round1000(amount: number): number {
 }
 
 /**
- * What the rest of the period costs: `monthlyAmount` (before discount) ×
- * remaining / period days, discounted, to the nearest 1 000 (§5). Never
- * negative; the remaining days are capped at the period length.
+ * What the rest of the period costs: `monthlyAmount` × remaining / period
+ * days, to the nearest 1 000 (§5). Never negative; the remaining days are
+ * capped at the period length. Callers pass the amount already net of
+ * discounts (the difference of two computeMonthlyTotal totals); the percent
+ * here is only for an amount that is not.
  */
 export function prorate(input: {
   monthlyAmount: number;
-  discountPercent: number;
+  discountPercent?: number;
   daysRemaining: number;
   periodDays: number;
 }): number {
   const periodDays = Math.max(1, input.periodDays);
   const days = Math.min(periodDays, Math.max(0, input.daysRemaining));
-  const discounted = input.monthlyAmount * (1 - input.discountPercent / 100);
+  const discounted =
+    input.monthlyAmount * (1 - (input.discountPercent ?? 0) / 100);
   return Math.max(0, round1000((discounted * days) / periodDays));
 }
 

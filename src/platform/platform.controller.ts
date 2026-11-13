@@ -28,7 +28,11 @@ import {
   CreatePlatformBusinessDto,
   UpdatePlatformBusinessDto,
 } from './dto/create-platform-business.dto';
-import { TopUpBalanceDto, CreateDiscountDto } from '../subscription/dto/billing.dto';
+import {
+  TopUpBalanceDto,
+  CreateDiscountDto,
+  DiscountTermsDto,
+} from '../subscription/dto/billing.dto';
 import { ymdOrUndefined } from '../common/business-time';
 import { BillingService } from '../billing/billing.service';
 import {
@@ -249,10 +253,22 @@ export class PlatformController {
   @UseGuards(PlatformJwtGuard)
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Grant a promo discount to a business' })
+  @ApiOperation({ summary: 'Grant a discount to a business' })
   @ApiParam({ name: 'id', description: 'Business ID' })
   addDiscount(@Param('id') id: string, @Body() dto: CreateDiscountDto) {
     return this.platformService.createDiscount(id, dto);
+  }
+
+  @Post('businesses/:id/discounts/preview')
+  @UseGuards(PlatformJwtGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'The monthly total now and with one more discount (writes nothing)',
+  })
+  @ApiParam({ name: 'id', description: 'Business ID' })
+  previewDiscount(@Param('id') id: string, @Body() dto: DiscountTermsDto) {
+    return this.platformService.previewDiscount(id, dto);
   }
 
   @Delete('discounts/:id')

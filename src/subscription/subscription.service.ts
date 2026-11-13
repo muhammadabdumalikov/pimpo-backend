@@ -14,7 +14,7 @@ import {
   type BillingProfile,
   type SubscriptionDiscount,
 } from '../database/schema';
-import { eq, and, desc, count } from 'drizzle-orm';
+import { eq, and, asc, desc, count } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
 import {type Tier, gateTier, isFoodPlanTier} from './tier';
@@ -24,7 +24,10 @@ import {
   computeMonthlyTotal,
   isPastEnd,
   isRestricted,
-  totalDiscountPercent,
+  normalizeDiscountInput,
+  type DiscountInput,
+  type DiscountLine,
+  type MonthlyTotal,
 } from '../billing/billing';
 import { lockBillingProfile } from '../billing/billing-ledger';
 
@@ -45,9 +48,33 @@ export type BillingInfo = {
     extraBranchesTotal: number;
     discountPercent: number;
     discountAmount: number;
+    /** discountAmount split by discount (billing.ts computeMonthlyTotal). */
+    discountLines: DiscountLine[];
     total: number;
   };
-  discounts: Pick<SubscriptionDiscount, 'id' | 'label' | 'percent' | 'validUntil'>[];
+  discounts: DiscountView[];
+};
+
+/** One discount as the shop page and the platform console list it. */
+export type DiscountView = Pick<
+  SubscriptionDiscount,
+  | 'id'
+  | 'label'
+  | 'kind'
+  | 'scope'
+  | 'percent'
+  | 'amount'
+  | 'planTier'
+  | 'validUntil'
+> & {
+  /** So'm it takes off the month right now; 0 when it has no effect. */
+  saves: number;
+};
+
+/** POST /platform/businesses/:id/discounts/preview */
+export type DiscountPreview = {
+  current: MonthlyTotal;
+  next: MonthlyTotal;
 };
 
 // Limits applied to a business with no active plan (never subscribed, or trial
@@ -476,9 +503,9 @@ export class SubscriptionService implements OnModuleInit {
     );
   }
 
-  private async fetchBillingInfo(businessId: string): Promise<BillingInfo> {
-    const [profile, subscription, branchRows, discountRows] = await Promise.all([
-      this.getBillingProfile(businessId),
+  /** What the monthly total is computed from: plan, branches, live discounts. */
+  private async billingInputs(businessId: string) {
+    const [subscription, branchRows, discountRows] = await Promise.all([
       this.getBusinessSubscription(businessId),
       this.dbService.db
         .select({ id: branches.id })
@@ -486,6 +513,7 @@ export class SubscriptionService implements OnModuleInit {
         .where(
           and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
         ),
+      // Oldest first: the order the breakdown lists them in.
       this.dbService.db
         .select()
         .from(subscriptionDiscounts)
@@ -495,20 +523,40 @@ export class SubscriptionService implements OnModuleInit {
             eq(subscriptionDiscounts.isActive, true),
           ),
         )
-        .orderBy(desc(subscriptionDiscounts.createdAt)),
+        .orderBy(asc(subscriptionDiscounts.createdAt)),
     ]);
 
     const now = new Date();
-    const activeDiscounts = discountRows.filter(
-      (d) => !d.validUntil || asDate(d.validUntil) > now,
-    );
-
-    // First branch is included in the plan; each extra one is billed monthly.
-    const monthly = computeMonthlyTotal({
+    return {
+      now,
+      subscription,
       planPrice: subscription ? Number(subscription.plan.price) : 0,
+      planTier: subscription?.plan.tier ?? null,
+      // First branch is included in the plan; each extra one is billed monthly.
       extraBranches: branchRows.length - 1,
-      discountPercent: totalDiscountPercent(activeDiscounts, now),
+      // Not yet expired. A discount tied to another plan stays listed (it
+      // comes back if the shop returns to that plan) but takes nothing off.
+      activeDiscounts: discountRows.filter(
+        (d) => !d.validUntil || asDate(d.validUntil) > now,
+      ),
+    };
+  }
+
+  private async fetchBillingInfo(businessId: string): Promise<BillingInfo> {
+    const [profile, inputs] = await Promise.all([
+      this.getBillingProfile(businessId),
+      this.billingInputs(businessId),
+    ]);
+    const { subscription, activeDiscounts, now } = inputs;
+
+    const monthly = computeMonthlyTotal({
+      planPrice: inputs.planPrice,
+      planTier: inputs.planTier,
+      extraBranches: inputs.extraBranches,
+      discounts: activeDiscounts,
+      now,
     });
+    const saves = new Map(monthly.discountLines.map((l) => [l.id, l.amount]));
 
     return {
       balance: profile ? Number(profile.balance) : 0,
@@ -525,13 +573,19 @@ export class SubscriptionService implements OnModuleInit {
         extraBranchesTotal: monthly.extraBranchesTotal,
         discountPercent: monthly.discountPercent,
         discountAmount: monthly.discountAmount,
+        discountLines: monthly.discountLines,
         total: monthly.total,
       },
       discounts: activeDiscounts.map((d) => ({
         id: d.id,
         label: d.label,
+        kind: d.kind,
+        scope: d.scope,
         percent: d.percent,
+        amount: d.amount,
+        planTier: d.planTier,
         validUntil: d.validUntil,
+        saves: saves.get(d.id) ?? 0,
       })),
     };
   }
@@ -579,25 +633,86 @@ export class SubscriptionService implements OnModuleInit {
     return profile;
   }
 
-  /** Platform admin: grant a promo discount on the monthly bill. */
+  /**
+   * The row a discount request becomes, or VALIDATION_ERROR naming the field.
+   * A special price for the plan is tied to a plan tier — the one asked for,
+   * else the shop's current plan.
+   */
+  private async resolveDiscount(
+    data: DiscountInput,
+    currentPlanTier: string | null,
+  ) {
+    const result = normalizeDiscountInput(data, currentPlanTier);
+    if ('error' in result) {
+      throw new AppException(ErrorCode.VALIDATION_ERROR, {
+        field: result.error,
+      });
+    }
+    if (result.planTier) {
+      const [plan] = await this.dbService.db
+        .select({ id: subscriptionPlans.id })
+        .from(subscriptionPlans)
+        .where(eq(subscriptionPlans.tier, result.planTier))
+        .limit(1);
+      if (!plan) {
+        throw new AppException(ErrorCode.SUBSCRIPTION_PLAN_TIER_NOT_FOUND, {
+          tier: result.planTier,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** Platform admin: grant a discount on the monthly bill. */
   async createDiscount(
     businessId: string,
-    data: { label: string; percent: number; validUntil?: string },
+    data: DiscountInput & { label: string },
   ): Promise<SubscriptionDiscount> {
     const { generateId } = await import('../utils/uuid');
+    const subscription = await this.getBusinessSubscription(businessId);
+    const term = await this.resolveDiscount(
+      data,
+      subscription?.plan.tier ?? null,
+    );
     const [discount] = await this.dbService.db
       .insert(subscriptionDiscounts)
       .values({
         id: generateId(),
         businessId,
         label: data.label,
-        percent: data.percent,
-        validUntil: data.validUntil ? new Date(data.validUntil) : null,
+        ...term,
       })
       .returning();
 
     await this.cache.del(CacheKeys.subscriptionBilling(businessId));
     return discount;
+  }
+
+  /**
+   * Platform admin: what the month would cost with one more discount, next to
+   * what it costs now. Nothing is written.
+   */
+  async previewDiscount(
+    businessId: string,
+    data: DiscountInput,
+  ): Promise<DiscountPreview> {
+    const inputs = await this.billingInputs(businessId);
+    const term = await this.resolveDiscount(data, inputs.planTier);
+    const price = (discounts: Parameters<typeof computeMonthlyTotal>[0]['discounts']) =>
+      computeMonthlyTotal({
+        planPrice: inputs.planPrice,
+        planTier: inputs.planTier,
+        extraBranches: inputs.extraBranches,
+        discounts,
+        now: inputs.now,
+      });
+    return {
+      current: price(inputs.activeDiscounts),
+      next: price([
+        ...inputs.activeDiscounts,
+        { id: null, label: null, ...term },
+      ]),
+    };
   }
 
   /** Platform admin: deactivate a discount. */

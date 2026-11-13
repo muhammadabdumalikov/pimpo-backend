@@ -1,6 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { DISCOUNT_KINDS, DISCOUNT_SCOPES } from '../../billing/billing';
 import {
   IsDateString,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -53,22 +55,70 @@ export class TopUpBalanceDto {
   note?: string;
 }
 
-/** Platform admin: grant a promo discount on the monthly bill. */
-export class CreateDiscountDto {
-  @ApiProperty({ description: 'Human label, e.g. "6 oyga 10% chegirma"' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
-  label: string;
+/**
+ * A discount on the monthly bill, without its label — what the preview takes.
+ * Which fields a kind needs (and the cross-field rules) are checked in
+ * billing.ts normalizeDiscountInput; the decorators here only type the shape.
+ */
+export class DiscountTermsDto {
+  @ApiPropertyOptional({
+    description:
+      "'percent' (default) — % off `scope`; 'amount' — so'm off the month; " +
+      "'price' — so'm instead of the list price of the plan or of each extra branch",
+    enum: DISCOUNT_KINDS,
+  })
+  @IsOptional()
+  @IsIn(DISCOUNT_KINDS)
+  kind?: string;
 
-  @ApiProperty({ description: 'Discount percent (1–100)', example: 10 })
+  @ApiPropertyOptional({
+    description:
+      "What a percent comes off ('plan' default, 'branches', 'all'), or which " +
+      "price a 'price' replaces ('plan' | 'branches')",
+    enum: DISCOUNT_SCOPES,
+  })
+  @IsOptional()
+  @IsIn(DISCOUNT_SCOPES)
+  scope?: string;
+
+  @ApiPropertyOptional({ description: "Percent (1–100), for kind 'percent'", example: 10 })
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100)
-  percent: number;
+  percent?: number;
+
+  @ApiPropertyOptional({
+    description: "So'm, for kinds 'amount' and 'price'",
+    example: 399000,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000_000)
+  amount?: number;
+
+  @ApiPropertyOptional({
+    description:
+      "Hold only while the shop is on this plan tier. A 'price' on the plan " +
+      "defaults to the shop's current plan",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  planTier?: string;
 
   @ApiPropertyOptional({ description: 'Discount expiry (ISO 8601); omit for open-ended' })
   @IsOptional()
   @IsDateString()
   validUntil?: string;
+}
+
+/** Platform admin: grant a discount on the monthly bill. */
+export class CreateDiscountDto extends DiscountTermsDto {
+  @ApiProperty({ description: 'Human label, e.g. "6 oyga 10% chegirma"' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  label: string;
 }
