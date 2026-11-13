@@ -1,5 +1,7 @@
 import {ApiPropertyOptional, ApiProperty} from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -84,4 +86,22 @@ export class SetAiImageQuotaDto {
   @Min(0)
   @Max(1000)
   bonusUsd?: number;
+}
+
+/** Products the console picked on a shop's AI tab. */
+export class AiImageProductIdsDto {
+  @ApiProperty({type: [String]})
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({each: true})
+  productIds!: string[];
+}
+
+/** Console jobs to approve / reject / retry. */
+export class AiImageJobIdsDto {
+  @ApiProperty({type: [String]})
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({each: true})
+  jobIds!: string[];
 }

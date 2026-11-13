@@ -6,6 +6,7 @@ import {SubscriptionModule} from '../../subscription/subscription.module';
 import {TelegramModule} from '../../telegram/telegram.module';
 import {AiImagePlatformController} from './ai-image-platform.controller';
 import {AiImageController} from './ai-image.controller';
+import {AiImageJobsService} from './ai-image-jobs.service';
 import {AiImageService} from './ai-image.service';
 
 /**
@@ -25,6 +26,6 @@ import {AiImageService} from './ai-image.service';
     TelegramModule,
   ],
   controllers: [AiImageController, AiImagePlatformController],
-  providers: [AiImageService],
+  providers: [AiImageService, AiImageJobsService],
 })
 export class AiImageModule {}

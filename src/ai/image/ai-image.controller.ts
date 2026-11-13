@@ -48,7 +48,7 @@ const ALLOWED_MIMES = [
   'image/heif',
 ];
 
-/** A 1024px WebP packshot is ~100–300 KB; this is a ceiling, not a target. */
+/** An 800px WebP packshot is ~25–45 KB; this is a ceiling, not a target. */
 const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
 
 /** In memory only: the photo is read in flight and never stored (AI-RASM.md). */

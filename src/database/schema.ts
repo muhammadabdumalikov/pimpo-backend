@@ -3317,6 +3317,9 @@ export const aiImageGenerations = pgTable(
     failReason: varchar('fail_reason', {length: 40}),
     imageKey: varchar('image_key', {length: 500}),
     imageUrl: varchar('image_url', {length: 500}),
+    // 'shop' | 'platform' — who ordered it. The shop allowance sums only
+    // 'shop' rows; the platform budget sums every row (0106).
+    initiator: varchar('initiator', {length: 10}).default('shop').notNull(),
     acceptedAt: timestamp('accepted_at'),
     purgedAt: timestamp('purged_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -3354,6 +3357,44 @@ export const aiImageQuotas = pgTable('ai_image_quotas', {
 });
 
 export type AiImageQuota = typeof aiImageQuotas.$inferSelect;
+
+// Pictures the platform console ordered for a shop's imageless products, made
+// in the background and paid from the platform budget (0106). One row per
+// picture: queued → running → ready → applied | rejected, or failed/cancelled.
+// A 'ready' picture sits in S3 until the console approves it onto the card;
+// rejected ones are left to the ai-image-sweep like any unclaimed packshot.
+export const aiImageJobs = pgTable(
+  'ai_image_jobs',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    // No FK: a deleted card just makes the job fail/skip.
+    productId: varchar('product_id', {length: 36}).notNull(),
+    status: varchar('status', {length: 12}).notNull(),
+    description: text('description'),
+    // The ai_image_generations row of the picture (kind 'image').
+    generationId: varchar('generation_id', {length: 36}),
+    imageUrl: varchar('image_url', {length: 500}),
+    failReason: varchar('fail_reason', {length: 40}),
+    attempts: integer('attempts').default(0).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    decidedAt: timestamp('decided_at'),
+  },
+  (table) => ({
+    businessProductIdx: index('ai_image_jobs_business_product_idx').on(
+      table.businessId,
+      table.productId,
+    ),
+    queuedIdx: index('ai_image_jobs_queued_idx')
+      .on(table.createdAt)
+      .where(sql`${table.status} IN ('queued', 'running')`),
+  }),
+);
+
+export type AiImageJob = typeof aiImageJobs.$inferSelect;
 
 // Per-business configuration for label-printing scales. The scale prints its
 // own barcode and the layout of that barcode is redrawn in the scale's own

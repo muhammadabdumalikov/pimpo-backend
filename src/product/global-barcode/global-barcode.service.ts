@@ -233,7 +233,7 @@ export function keySegment(barcode: string): string {
 
 /**
  * The console's upload in the catalogue's house format: upright (EXIF), white
- * where transparent, a 1024px square — the same as an AI packshot, so a till
+ * where transparent, an 800px square — the same as an AI packshot, so a till
  * grid of shared pictures lines up.
  */
 async function toCatalogWebp(file: {

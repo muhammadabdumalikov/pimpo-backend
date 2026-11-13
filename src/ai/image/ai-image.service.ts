@@ -10,6 +10,7 @@ import {ErrorCode} from '../../common/errors/error-codes';
 import {DatabaseService} from '../../database/database.service';
 import {
   aiImageGenerations,
+  aiImageJobs,
   aiImageQuotas,
   businesses,
   products,
@@ -31,6 +32,7 @@ import {
   periodEnd,
   periodOf,
   periodStart,
+  typicalImageCostUsd,
   usageView,
 } from './ai-image.pricing';
 import {GeminiImageClient, parseThinkingLevel} from './gemini-image.client';
@@ -74,6 +76,19 @@ const REFUSAL_REASONS = new Set([
 ]);
 
 export type {SourcePhoto} from './packshot-image';
+
+type Initiator = 'shop' | 'platform';
+type PreparedPhoto = Awaited<ReturnType<typeof prepareInputPhoto>>;
+
+/** Who a paid call is booked to. */
+interface CallContext {
+  businessId: string;
+  accountId: string;
+  initiator: Initiator;
+}
+
+/** ai_image_generations.account_id of a call the platform console ordered. */
+export const PLATFORM_ACCOUNT_ID = 'platform';
 
 export interface DescribeInput {
   name: string;
@@ -181,11 +196,23 @@ export class AiImageService {
     source: SourcePhoto | null,
   ): Promise<{description: string}> {
     const businessId = account.businessId;
-    const client = this.getClient();
+    this.getClient();
     await this.assertCanSpend(businessId);
     await this.countHourly(businessId, 'describe', DESCRIBES_PER_HOUR);
-
     const photo = source ? await prepareInputPhoto(source) : undefined;
+    return this.describeCore(
+      {businessId, accountId: account.id, initiator: 'shop'},
+      input,
+      photo,
+    );
+  }
+
+  private async describeCore(
+    ctx: CallContext,
+    input: DescribeInput,
+    photo: PreparedPhoto | undefined,
+  ): Promise<{description: string}> {
+    const client = this.getClient();
     const mode = photo ? 'photo' : 'text';
     const model = this.describeModel;
 
@@ -206,8 +233,9 @@ export class AiImageService {
 
     const description = cleanDescription(result.text) || input.name.trim();
     await this.record({
-      businessId,
-      accountId: account.id,
+      businessId: ctx.businessId,
+      accountId: ctx.accountId,
+      initiator: ctx.initiator,
       productId: null,
       kind: 'describe',
       mode,
@@ -236,90 +264,170 @@ export class AiImageService {
     const description = cleanDescription(input.description);
     if (!description) throw new AppException(ErrorCode.VALIDATION_ERROR);
 
-    const client = this.getClient();
+    this.getClient();
     const platformBefore = await this.assertCanSpend(businessId);
     const productId = await this.ownProductId(businessId, input.productId);
     await this.lock(businessId);
     try {
       await this.countHourly(businessId, 'image', IMAGES_PER_HOUR);
       const photo = source ? await prepareInputPhoto(source) : undefined;
-      const mode: 'photo' | 'text' = photo ? 'photo' : 'text';
-      const model = this.imageModel;
-      const prompt = photo
-        ? photoPackshotPrompt(description)
-        : textPackshotPrompt(description);
-
-      let result: Awaited<ReturnType<GeminiImageClient['generate']>>;
-      try {
-        result = await withBudget(IMAGE_BUDGET_MS, (signal) =>
-          client.generate({
-            model,
-            prompt,
-            photo,
-            thinkingLevel: parseThinkingLevel(
-              process.env.GEMINI_IMAGE_THINKING,
-            ),
-            signal,
-          }),
-        );
-      } catch (err) {
-        throw this.toAppException(err);
-      }
-
-      const costUsd = imageCallCostUsd(model, result.usage);
-      const base = {
-        businessId,
-        accountId: account.id,
-        productId,
-        kind: 'image' as const,
-        mode,
-        model,
-        description,
-        inputTokens: result.usage.inputTokens,
-        outputTokens: result.usage.imageTokens + result.usage.textTokens,
-        costUsd,
-      };
-      // Whatever happens next, Google has billed this call.
-      void this.maybeAlertBudget(platformBefore, platformBefore + costUsd);
-
-      if (!result.image) {
-        const reason = result.blockReason ?? result.finishReason ?? 'NO_IMAGE';
-        await this.record({...base, status: 'failed', failReason: reason});
-        this.logger.warn(
-          `AI image for ${businessId} came back without a picture: ${reason}`,
-        );
-        throw new AppException(
-          REFUSAL_REASONS.has(reason)
-            ? ErrorCode.AI_IMAGE_REFUSED
-            : ErrorCode.AI_IMAGE_FAILED,
-        );
-      }
-
       // Not stored anywhere: the shop first looks at it, and only a picture
       // that ends up on a saved product goes to S3 — the browser holds the
       // bytes meanwhile and hands them to attach() when the product is saved.
-      const id = generateId();
-      let webp: Buffer;
-      try {
-        webp = await toPackshotWebp(result.image);
-      } catch (err) {
-        await this.record({...base, status: 'failed', failReason: 'ENCODE'});
-        this.logger.error(
-          `AI image for ${businessId} could not be encoded: ${(err as Error)?.message}`,
-        );
-        throw new AppException(ErrorCode.AI_IMAGE_FAILED);
-      }
-
-      await this.record({...base, id, status: 'ok'});
-      return {
-        id,
-        image: webp,
-        mode,
-        usage: await this.usage(businessId),
-      };
+      const made = await this.generateCore(
+        {businessId, accountId: account.id, initiator: 'shop'},
+        {description, productId, photo, platformBefore},
+      );
+      return {...made, usage: await this.usage(businessId)};
     } finally {
       await this.unlock(businessId);
     }
+  }
+
+  /** One paid image call, written to the ledger whatever comes back. */
+  private async generateCore(
+    ctx: CallContext,
+    input: {
+      description: string;
+      productId: string | null;
+      photo: PreparedPhoto | undefined;
+      platformBefore: number;
+    },
+  ): Promise<{id: string; image: Buffer; mode: 'photo' | 'text'}> {
+    const {businessId} = ctx;
+    const {description, productId, photo, platformBefore} = input;
+    const client = this.getClient();
+    const mode: 'photo' | 'text' = photo ? 'photo' : 'text';
+    const model = this.imageModel;
+    const prompt = photo
+      ? photoPackshotPrompt(description)
+      : textPackshotPrompt(description);
+
+    let result: Awaited<ReturnType<GeminiImageClient['generate']>>;
+    try {
+      result = await withBudget(IMAGE_BUDGET_MS, (signal) =>
+        client.generate({
+          model,
+          prompt,
+          photo,
+          thinkingLevel: parseThinkingLevel(process.env.GEMINI_IMAGE_THINKING),
+          signal,
+        }),
+      );
+    } catch (err) {
+      throw this.toAppException(err);
+    }
+
+    const costUsd = imageCallCostUsd(model, result.usage);
+    const base = {
+      businessId,
+      accountId: ctx.accountId,
+      initiator: ctx.initiator,
+      productId,
+      kind: 'image' as const,
+      mode,
+      model,
+      description,
+      inputTokens: result.usage.inputTokens,
+      outputTokens: result.usage.imageTokens + result.usage.textTokens,
+      costUsd,
+    };
+    // Whatever happens next, Google has billed this call.
+    void this.maybeAlertBudget(platformBefore, platformBefore + costUsd);
+
+    if (!result.image) {
+      const reason = result.blockReason ?? result.finishReason ?? 'NO_IMAGE';
+      await this.record({...base, status: 'failed', failReason: reason});
+      this.logger.warn(
+        `AI image for ${businessId} came back without a picture: ${reason}`,
+      );
+      throw new AppException(
+        REFUSAL_REASONS.has(reason)
+          ? ErrorCode.AI_IMAGE_REFUSED
+          : ErrorCode.AI_IMAGE_FAILED,
+      );
+    }
+
+    const id = generateId();
+    let webp: Buffer;
+    try {
+      webp = await toPackshotWebp(result.image);
+    } catch (err) {
+      await this.record({...base, status: 'failed', failReason: 'ENCODE'});
+      this.logger.error(
+        `AI image for ${businessId} could not be encoded: ${(err as Error)?.message}`,
+      );
+      throw new AppException(ErrorCode.AI_IMAGE_FAILED);
+    }
+
+    await this.record({...base, id, status: 'ok'});
+    return {id, image: webp, mode};
+  }
+
+  /**
+   * A packshot the platform console ordered for one of a shop's products
+   * (ai_image_jobs): describe → image → S3, all paid from the platform budget
+   * and none of it from the shop's allowance. Text mode only — these cards
+   * have no picture — so, as Q8 says, it never reaches the shared catalogue.
+   * Stored straight away: the console reviews it later from another request.
+   */
+  async makeForPlatform(
+    businessId: string,
+    productId: string,
+    input: DescribeInput & {description?: string | null},
+  ): Promise<{generationId: string; imageUrl: string; description: string}> {
+    const ctx: CallContext = {
+      businessId,
+      accountId: PLATFORM_ACCOUNT_ID,
+      initiator: 'platform',
+    };
+    this.getClient();
+    await this.assertCanSpend(businessId, 'platform');
+    const description =
+      cleanDescription(input.description ?? '') ||
+      (await this.describeCore(ctx, input, undefined)).description;
+
+    const platformBefore = await this.assertCanSpend(businessId, 'platform');
+    const made = await this.generateCore(ctx, {
+      description,
+      productId,
+      photo: undefined,
+      platformBefore,
+    });
+
+    let stored: {url: string; key: string};
+    try {
+      stored = await this.storage.upload(made.image, {
+        key: `products/ai/${businessId}/${made.id}.webp`,
+        contentType: 'image/webp',
+      });
+    } catch (err) {
+      this.logger.error(
+        `AI image ${made.id} could not be stored: ${(err as Error)?.message}`,
+      );
+      throw new AppException(ErrorCode.AI_IMAGE_FAILED);
+    }
+    await this.db
+      .update(aiImageGenerations)
+      .set({imageKey: stored.key, imageUrl: stored.url})
+      .where(eq(aiImageGenerations.id, made.id));
+    return {generationId: made.id, imageUrl: stored.url, description};
+  }
+
+  /** Whether the platform key is set; the console hides the action otherwise. */
+  isConfigured(): boolean {
+    return !!process.env.GEMINI_API_KEY?.trim();
+  }
+
+  /** Expected cost of one more picture (describe included), for the console. */
+  typicalCostUsd(): number {
+    return round4(typicalImageCostUsd(this.imageModel));
+  }
+
+  /** This month's platform-wide spend against the budget. */
+  async platformBudget(): Promise<{spentUsd: number; budgetUsd: number}> {
+    const spent = await this.spentUsd(periodOf(new Date()));
+    return {spentUsd: round4(spent), budgetUsd: this.budgetUsd};
   }
 
   /**
@@ -407,7 +515,9 @@ export class AiImageService {
   async platformSummary(from?: string, to?: string) {
     const period = periodOf(new Date());
     const inRange = and(
-      from ? gte(aiImageGenerations.createdAt, businessDayStart(from)) : undefined,
+      from
+        ? gte(aiImageGenerations.createdAt, businessDayStart(from))
+        : undefined,
       to ? lte(aiImageGenerations.createdAt, businessDayEnd(to)) : undefined,
     );
 
@@ -478,17 +588,24 @@ export class AiImageService {
         images: sql<number>`count(*) filter (where ${aiImageGenerations.kind} = 'image' and ${aiImageGenerations.status} = 'ok')`,
         failed: sql<number>`count(*) filter (where ${aiImageGenerations.kind} = 'image' and ${aiImageGenerations.status} = 'failed')`,
         accepted: sql<number>`count(*) filter (where ${aiImageGenerations.acceptedAt} is not null)`,
+        platformUsd: sql<number>`coalesce(sum(${aiImageGenerations.costUsd}) filter (where ${aiImageGenerations.initiator} = 'platform'), 0)`,
       })
       .from(aiImageGenerations)
       .where(
         and(
           eq(aiImageGenerations.businessId, businessId),
-          from ? gte(aiImageGenerations.createdAt, businessDayStart(from)) : undefined,
-          to ? lte(aiImageGenerations.createdAt, businessDayEnd(to)) : undefined,
+          from
+            ? gte(aiImageGenerations.createdAt, businessDayStart(from))
+            : undefined,
+          to
+            ? lte(aiImageGenerations.createdAt, businessDayEnd(to))
+            : undefined,
         ),
       );
     return {
       spentUsd: round4(Number(totals?.spentUsd ?? 0)),
+      /** Of which the platform console ordered (paid from the platform budget). */
+      platformSpentUsd: round4(Number(totals?.platformUsd ?? 0)),
       imageCount: Number(totals?.images ?? 0),
       acceptedCount: Number(totals?.accepted ?? 0),
       failedCount: Number(totals?.failed ?? 0),
@@ -607,6 +724,16 @@ export class AiImageService {
         .update(aiImageGenerations)
         .set({purgedAt: new Date()})
         .where(eq(aiImageGenerations.id, row.id));
+      // A console picture nobody decided on is gone now: say so on its job.
+      await this.db
+        .update(aiImageJobs)
+        .set({status: 'failed', failReason: 'EXPIRED', updatedAt: new Date()})
+        .where(
+          and(
+            eq(aiImageJobs.generationId, row.id),
+            eq(aiImageJobs.status, 'ready'),
+          ),
+        );
       purged++;
     }
     if (purged > 0) this.logger.log(`Swept ${purged} unclaimed AI image(s)`);
@@ -618,14 +745,17 @@ export class AiImageService {
    * Refuses a call the shop's allowance or the platform budget cannot cover.
    * Returns the platform's spend so far, for the budget alert afterwards.
    */
-  private async assertCanSpend(businessId: string): Promise<number> {
+  private async assertCanSpend(
+    businessId: string,
+    initiator: Initiator = 'shop',
+  ): Promise<number> {
     const period = periodOf(new Date());
     const [spent, quota, platform] = await Promise.all([
-      this.spentUsd(period, businessId),
-      this.quotaRow(businessId),
+      initiator === 'shop' ? this.spentUsd(period, businessId) : 0,
+      initiator === 'shop' ? this.quotaRow(businessId) : null,
       this.spentUsd(period),
     ]);
-    if (spent >= allowanceUsd(quota, period)) {
+    if (initiator === 'shop' && spent >= allowanceUsd(quota, period)) {
       throw new AppException(ErrorCode.AI_IMAGE_LIMIT_REACHED, {
         resetsAt: `${periodOf(periodEnd(period))}-01`,
       });
@@ -639,7 +769,10 @@ export class AiImageService {
     return platform;
   }
 
-  /** USD spent in `period` — by one shop, or by everyone when none is given. */
+  /**
+   * USD spent in `period` — by one shop on its own allowance (platform-ordered
+   * pictures excluded), or by everyone when none is given (the budget).
+   */
   private async spentUsd(period: string, businessId?: string): Promise<number> {
     const [row] = await this.db
       .select({
@@ -649,7 +782,10 @@ export class AiImageService {
       .where(
         and(
           businessId
-            ? eq(aiImageGenerations.businessId, businessId)
+            ? and(
+                eq(aiImageGenerations.businessId, businessId),
+                eq(aiImageGenerations.initiator, 'shop'),
+              )
             : undefined,
           gte(aiImageGenerations.createdAt, periodStart(period)),
           lt(aiImageGenerations.createdAt, periodEnd(period)),
@@ -668,6 +804,7 @@ export class AiImageService {
       .where(
         and(
           eq(aiImageGenerations.businessId, businessId),
+          eq(aiImageGenerations.initiator, 'shop'),
           eq(aiImageGenerations.kind, 'image'),
           eq(aiImageGenerations.status, 'ok'),
           gte(aiImageGenerations.createdAt, periodStart(period)),
@@ -715,6 +852,7 @@ export class AiImageService {
     id?: string;
     businessId: string;
     accountId: string;
+    initiator?: Initiator;
     productId: string | null;
     kind: 'describe' | 'image';
     mode: 'photo' | 'text';
