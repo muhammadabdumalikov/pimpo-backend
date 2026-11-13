@@ -2507,6 +2507,7 @@ export class OrderService {
   async getRecentMonthlySales(
     businessId: string,
     months: number,
+    branchId?: string,
   ): Promise<{periods: string[]; monthly: number[]}> {
     const periods = recentBusinessMonths(months);
     return this.cache.wrap(
@@ -2515,8 +2516,9 @@ export class OrderService {
       CacheKeys.ordersMonthly(businessId, {
         months,
         end: periods[periods.length - 1],
+        ...(branchId ? {branchId} : {}),
       }),
-      () => this.computeRecentMonthlySales(businessId, periods),
+      () => this.computeRecentMonthlySales(businessId, periods, branchId),
       TTL.ORDERS_MONTHLY,
     );
   }
@@ -2524,6 +2526,7 @@ export class OrderService {
   private async computeRecentMonthlySales(
     businessId: string,
     periods: string[],
+    branchId?: string,
   ): Promise<{periods: string[]; monthly: number[]}> {
     // Literal '5 hours' (not a bind param) so the SELECT and GROUP BY texts are
     // byte-identical — see the same note in report.service.getSales().
@@ -2540,6 +2543,7 @@ export class OrderService {
           eq(orders.businessId, businessId),
           eq(orders.status, 'Completed'),
           gte(orders.createdAt, businessDayStart(`${periods[0]}-01`)),
+          ...(branchId ? [eq(orders.branchId, branchId)] : []),
         ),
       )
       .groupBy(bucket);
@@ -2555,6 +2559,7 @@ export class OrderService {
         and(
           eq(saleReturns.businessId, businessId),
           gte(saleReturns.createdAt, businessDayStart(`${periods[0]}-01`)),
+          ...(branchId ? [eq(saleReturns.branchId, branchId)] : []),
         ),
       )
       .groupBy(retBucket);

@@ -1386,8 +1386,9 @@ export class ReportService {
   /**
    * Closed cash shifts in a range, plus a per-cashier rollup. The rollup surfaces
    * repeat shortages (a cashier whose reconciliation is short again and again is
-   * the classic theft signal). branchId is not applicable — a shift belongs to a
-   * register, not a branch — so it is ignored here.
+   * the classic theft signal). `branchId` narrows it to the shifts of that
+   * branch's registers (a shift belongs to a register, which sells from one
+   * branch).
    */
   async getShifts(businessId: string, range?: DateRange) {
     return this.cache.wrap(
@@ -1420,6 +1421,20 @@ export class ReportService {
           eq(cashShifts.businessId, businessId),
           eq(cashShifts.status, 'closed'),
           ...this.dateWhere(cashShifts.closedAt, range),
+          // A shift has no branch of its own — its register does. A legacy
+          // register with no branch sells from the default one.
+          ...(range?.branchId
+            ? [
+                sql`${cashShifts.registerId} IN (
+                  SELECT r.id FROM cash_registers r
+                  WHERE r.business_id = ${businessId}
+                    AND (r.branch_id = ${range.branchId}
+                      OR (r.branch_id IS NULL AND EXISTS (
+                        SELECT 1 FROM branches b
+                        WHERE b.id = ${range.branchId} AND b.is_default)))
+                )`,
+              ]
+            : []),
         ),
       )
       .orderBy(desc(cashShifts.closedAt));

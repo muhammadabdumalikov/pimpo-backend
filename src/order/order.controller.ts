@@ -241,16 +241,26 @@ export class OrderController {
     required: false,
     description: 'Defaults to current year; ignored when `months` is given',
   })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    description: 'Narrow the trailing window (`months`) to one branch',
+  })
   async getMonthlySales(
     @CurrentBusiness() business: IBusiness,
     @Query('year') year?: string,
     @Query('months') months?: string,
+    @Query('branchId') branchId?: string,
   ) {
     const window = months ? parseInt(months, 10) : NaN;
     if (Number.isFinite(window) && window >= 1 && window <= 24) {
       // `periods` labels the values ('YYYY-MM'), since a trailing window is not
       // anchored to January and can span two years.
-      return this.orderService.getRecentMonthlySales(business.id, window);
+      return this.orderService.getRecentMonthlySales(
+        business.id,
+        window,
+        branchId || undefined,
+      );
     }
     const parsed = year ? parseInt(year, 10) : NaN;
     const y = Number.isFinite(parsed) ? parsed : new Date().getFullYear();

@@ -275,12 +275,18 @@ export class ReportController {
   @ApiOperation({summary: 'Kassa smenalari yig\'masi (Z-hisobot)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
+  @ApiQuery({name: 'branchId', required: false, description: "Faqat shu do'kon kassalari"})
   async getShifts(
     @CurrentBusiness() business: IBusiness,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('branchId') branchId?: string,
   ) {
-    return this.reportService.getShifts(business.id, {from, to});
+    return this.reportService.getShifts(business.id, {
+      from,
+      to,
+      branchId: branchId || undefined,
+    });
   }
 
   @Get('payment-methods')
