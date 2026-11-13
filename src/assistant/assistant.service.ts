@@ -90,7 +90,7 @@ export class AssistantService {
     this.chains.set(key, next);
   }
 
-  /** Flag on, assistant switched on, Business plan — else the bot stays silent. */
+  /** Flag on, assistant switched on, Business+ plan — else the bot stays silent. */
   async activeSettings(businessId: string): Promise<AiAssistantSettings | null> {
     const [settings] = await this.db
       .select()
@@ -100,7 +100,7 @@ export class AssistantService {
     if (!settings?.enabled) return null;
     if (!(await this.features.isEnabled(businessId, 'ai_assistant'))) return null;
     const tier = await this.subscriptions.getEffectiveTier(businessId);
-    if (!tierAtLeast(tier, 'pro')) return null;
+    if (!tierAtLeast(tier, 'proplus')) return null;
     return settings;
   }
 

@@ -96,7 +96,7 @@ const MODULE_MIN_TIER: Record<ShopModuleKey, Tier> = {
   telegram: 'basic',
   online: 'pro',
   loyalty: 'pro',
-  assistant: 'pro',
+  assistant: 'proplus',
 };
 
 /** One window set of a per-day figure. */

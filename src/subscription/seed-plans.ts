@@ -57,11 +57,13 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       tier: 'proplus',
       name: 'Business+',
       description: 'For large retail networks',
-      // Business+ is a pure scale ceiling (unlimited branches, 50 users) — it
-      // carries no exclusive feature now that multi-branch analytics moved to
-      // `pro`. 499k could not be defended on scale alone; revisit if offline
-      // mode ships and lands here.
-      price: '399000',
+      // Business+ is the scale ceiling (unlimited branches, 50 users) plus the
+      // customer AI bot and its Murojaatlar inbox, which are exclusive to it
+      // (@MinTier('proplus') on /assistant and /inbox). That exclusive is what
+      // carries 499k; on scale alone the plan was 399k. Renewals read this
+      // price live (billing.service tryRenew), so a change here reaches every
+      // existing Business+ shop at its next renewal.
+      price: '499000',
       isActive: true,
       debtsLimit: null,
       productsLimit: null,

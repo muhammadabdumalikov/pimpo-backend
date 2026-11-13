@@ -64,14 +64,15 @@ export class AssistantWebhookController {
 
 /**
  * Settings → AI yordamchi (AI-YORDAMCHI.md Q8). Flag first, then the plan
- * (the store bot it speaks through is a Business feature), then the
- * permission — all enforced here.
+ * (Business+: the bot is that plan's exclusive, although the store bot it
+ * speaks through comes with Business), then the permission — all enforced
+ * here.
  */
 @ApiTags('assistant')
 @Controller('assistant')
 @UseGuards(JwtAuthGuard, FeatureGuard, PlanTierGuard, PermissionsGuard)
 @RequireFeature('ai_assistant')
-@MinTier('pro')
+@MinTier('proplus')
 @RequirePermission('settings:manage')
 @ApiBearerAuth('JWT-auth')
 export class AssistantSettingsController {

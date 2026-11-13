@@ -40,14 +40,14 @@ import {
 
 /**
  * Murojaatlar — the inbox of customer chats (AI-YORDAMCHI.md, I1). Same gates
- * as the assistant (flag, Business plan) and the right to answer customers.
+ * as the assistant (flag, Business+ plan) and the right to answer customers.
  * Customer details additionally need customer:read (checked in the service).
  */
 @ApiTags('inbox')
 @Controller('inbox')
 @UseGuards(JwtAuthGuard, FeatureGuard, PlanTierGuard, PermissionsGuard)
 @RequireFeature('ai_assistant')
-@MinTier('pro')
+@MinTier('proplus')
 @RequirePermission('customer:chat:reply')
 @ApiBearerAuth('JWT-auth')
 export class InboxController {

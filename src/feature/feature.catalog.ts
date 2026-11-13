@@ -76,7 +76,7 @@ export const FEATURE_CATALOG = [
       "ma'lumotidan javob beradi: mahsulot, sotuv narxi, filial bo'yicha " +
       "bor/yo'q, manzil, ish vaqti, yetkazish. Bilmasa yoki rasm kelsa savol " +
       "ega va «customer:chat:reply» ruxsatli xodimlarga Telegram'da o'tadi. " +
-      "Pimpo kalitida, oylik limit bilan; Biznes tarifi va ulangan do'kon boti " +
+      "Pimpo kalitida, oylik limit bilan; Biznes+ tarifi va ulangan do'kon boti " +
       "kerak. O'chiq do'konda bot jim, sozlamalar sahifasi ham yo'q.",
   },
 ] as const satisfies readonly FeatureDefinition[];
