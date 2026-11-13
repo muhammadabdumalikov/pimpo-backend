@@ -97,10 +97,14 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
     if (existing.length === 0) {
       await dbService.db.insert(subscriptionPlans).values(plan);
     } else {
-      // Keep existing rows in sync with the latest pricing/limits/status.
+      // Keep existing rows in sync with the latest names/pricing/limits/status.
+      // The name too: it reaches the platform console, billing ledger and
+      // Telegram billing messages, and old rows still said "Basic"/"Pro".
       await dbService.db
         .update(subscriptionPlans)
         .set({
+          name: plan.name,
+          description: plan.description,
           price: plan.price,
           isActive: plan.isActive,
           debtsLimit: plan.debtsLimit,

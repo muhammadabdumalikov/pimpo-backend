@@ -666,7 +666,7 @@ export class TelegramNotifyService {
     const shown = retail.slice(0, 15);
     const lines = [
       retail.length > 1
-        ? `🏷 Narx tushdi — ${retail.length} ta tovar`
+        ? `🏷 Narx tushdi — ${retail.length} ta mahsulot`
         : '🏷 Narx tushdi',
       ...shown.map(
         (c) =>

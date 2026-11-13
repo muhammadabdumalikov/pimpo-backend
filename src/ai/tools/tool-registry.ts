@@ -333,7 +333,7 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: 'product_movement',
-    label: 'Tovar harakati',
+    label: 'Mahsulot harakati',
     minTier: 'basic',
     description:
       'Per-product flow over a period: received in, sold, remaining (kelim → sotuv → qoldiq).',
@@ -343,7 +343,7 @@ export const TOOLS: ToolDefinition[] = [
   },
   {
     name: 'dead_stock',
-    label: 'O‘lik tovar',
+    label: 'O‘lik mahsulot',
     minTier: 'pro',
     description:
       'Products with no sales in the last N days: quantity, frozen cash (qty × cost), last sale and last receipt date. Use for "what is not selling" and cash-tied-up questions.',

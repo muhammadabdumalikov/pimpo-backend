@@ -30,10 +30,10 @@ export interface FeatureDefinition {
 export const FEATURE_CATALOG = [
   {
     key: 'defective_store',
-    name: 'Yaroqsiz tovarlar ombori',
+    name: 'Yaroqsiz mahsulotlar ombori',
     description:
-      'Yaroqsiz tovarlarni alohida omborda saqlash: mijoz qaytargan yaroqsiz ' +
-      "tovar zarar bo'lib chiqib ketmaydi, omborga tushadi va u yerdan " +
+      'Yaroqsiz mahsulotlarni alohida omborda saqlash: mijoz qaytargan yaroqsiz ' +
+      "mahsulot zarar bo'lib chiqib ketmaydi, omborga tushadi va u yerdan " +
       'hisobdan chiqariladi, sotuvga qaytadi yoki yetkazib beruvchiga ' +
       "qaytariladi. O'chiq do'konda yaroqsiz qaytarish avvalgidek zarar.",
   },

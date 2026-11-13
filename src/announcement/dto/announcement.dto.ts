@@ -25,7 +25,7 @@ import {TIER_RANK, type Tier} from '../../subscription/tier';
 const TIERS = Object.keys(TIER_RANK) as Tier[];
 
 export class AnnouncementTitleDto {
-  @ApiProperty({example: 'Yaroqsiz tovarlar ombori'})
+  @ApiProperty({example: 'Yaroqsiz mahsulotlar ombori'})
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)

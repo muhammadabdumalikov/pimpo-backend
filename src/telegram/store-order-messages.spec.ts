@@ -64,7 +64,7 @@ describe('buildStoreOrderMessage', () => {
         kind: 'Cancelled',
         cancelReason: 'out_of_stock',
       }),
-    ).toContain('Sabab: tovar qolmagan');
+    ).toContain('Sabab: mahsulot qolmagan');
     expect(
       buildStoreOrderMessage({
         ...base,

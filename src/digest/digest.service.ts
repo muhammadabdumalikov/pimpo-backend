@@ -197,7 +197,7 @@ export class DigestService {
     }
     if (digest.topProducts.length > 0) {
       lines.push('');
-      lines.push('🔝 TOP-5 tovar:');
+      lines.push('🔝 TOP-5 mahsulot:');
       digest.topProducts.forEach((p, i) => {
         lines.push(
           `${i + 1}. ${p.name} — ${uz(p.qty)} × / ${uz(p.revenue)} so'm`,

@@ -60,7 +60,7 @@ const DICTS: Record<StoreLocale, Dict> = {
     cancelled: '❌ Buyurtmangiz bekor qilindi',
     changed: "✏️ Buyurtmangiz o'zgartirildi",
     order: 'Buyurtma',
-    goods: (n) => `Tovarlar: ${n} dona`,
+    goods: (n) => `Mahsulotlar: ${n} dona`,
     delivery: 'Yetkazish',
     pay: "To'lov",
     som: "so'm",
@@ -70,7 +70,7 @@ const DICTS: Record<StoreLocale, Dict> = {
     reasons: {
       customer_refused: 'buyurtmadan voz kechildi',
       no_answer: "siz bilan bog'lana olmadik",
-      out_of_stock: 'tovar qolmagan',
+      out_of_stock: 'mahsulot qolmagan',
     },
   },
   uzc: {
@@ -82,7 +82,7 @@ const DICTS: Record<StoreLocale, Dict> = {
     cancelled: '❌ Буюртмангиз бекор қилинди',
     changed: '✏️ Буюртмангиз ўзгартирилди',
     order: 'Буюртма',
-    goods: (n) => `Товарлар: ${n} дона`,
+    goods: (n) => `Маҳсулотлар: ${n} дона`,
     delivery: 'Етказиш',
     pay: 'Тўлов',
     som: 'сўм',
@@ -92,7 +92,7 @@ const DICTS: Record<StoreLocale, Dict> = {
     reasons: {
       customer_refused: 'буюртмадан воз кечилди',
       no_answer: 'сиз билан боғлана олмадик',
-      out_of_stock: 'товар қолмаган',
+      out_of_stock: 'маҳсулот қолмаган',
     },
   },
   ru: {

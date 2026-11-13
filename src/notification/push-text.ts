@@ -146,13 +146,13 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
     }),
     onlineOrder: (d) => ({
       title: `🛒 Yangi onlayn buyurtma — ${money(d.total)} so'm`,
-      body: join(d.customerName, d.itemCount != null ? `${n(d.itemCount)} ta tovar` : ''),
+      body: join(d.customerName, d.itemCount != null ? `${n(d.itemCount)} ta mahsulot` : ''),
     }),
     onlineOrderCancelled: (d) => ({
       title: `↩️ Mijoz onlayn buyurtmani bekor qildi — ${money(d.total)} so'm`,
       body: join(
         d.customerName,
-        d.itemCount != null ? `${n(d.itemCount)} ta tovar` : '',
+        d.itemCount != null ? `${n(d.itemCount)} ta mahsulot` : '',
       ),
     }),
     orderCancelled: (d) => ({
@@ -170,14 +170,14 @@ const TEXT: Record<Locale, Record<NotifyEvent, (d: D) => PushText>> = {
     lowStock: (d) => ({
       title:
         n(d.low) > 0
-          ? `📦 ${n(d.out)} ta tovar tugadi, ${n(d.low)} tasi kam qoldi`
-          : `📦 ${n(d.out)} ta tovar tugadi`,
+          ? `📦 ${n(d.out)} ta mahsulot tugadi, ${n(d.low)} tasi kam qoldi`
+          : `📦 ${n(d.out)} ta mahsulot tugadi`,
       body: Array.isArray(d.names) ? d.names.join(', ') : '',
     }),
     priceChanged: (d) => ({
       title:
         n(d.count) > 1
-          ? `🏷 ${n(d.count)} ta tovar arzonlashdi — etiketkani almashtiring`
+          ? `🏷 ${n(d.count)} ta mahsulot arzonlashdi — etiketkani almashtiring`
           : `🏷 ${str(d.name)}: ${money(d.from)} → ${money(d.to)} so'm`,
       body:
         n(d.count) > 1

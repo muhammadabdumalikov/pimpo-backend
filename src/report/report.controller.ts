@@ -82,7 +82,7 @@ export class ReportController {
 
   @Get('product-movement')
   @RequirePermission('report:view')
-  @ApiOperation({summary: 'Tovarlar samaradorligi (kelim→sotuv→qoldiq)'})
+  @ApiOperation({summary: 'Mahsulotlar samaradorligi (kelim→sotuv→qoldiq)'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'to', required: false, description: 'ISO date (inclusive)'})
   @ApiQuery({name: 'branchId', required: false, description: "Branch (do'kon)"})

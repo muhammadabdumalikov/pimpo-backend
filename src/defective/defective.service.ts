@@ -1492,7 +1492,7 @@ export class DefectiveService {
         amount: total,
         currency: group.currency,
         categoryName: "Yetkazib beruvchidan qaytgan pul",
-        note: `Yaroqsiz tovar uchun qaytgan pul: ${supplier.name}`,
+        note: `Yaroqsiz mahsulot uchun qaytgan pul: ${supplier.name}`,
         cashierId: cashier.id,
         cashierName: cashier.name,
       });
@@ -1845,7 +1845,7 @@ export class DefectiveService {
         VALUES
           (${generateId()}, ${p.businessId}, 'expense', 'stock_take', false,
            ${p.amount.toFixed(4)}, 'UZS', 'Hisobdan chiqarish',
-           ${p.cashier.id}, ${p.cashier.name}, 'Yaroqsiz tovar hisobdan chiqarildi',
+           ${p.cashier.id}, ${p.cashier.name}, 'Yaroqsiz mahsulot hisobdan chiqarildi',
            now(), now())
       `);
     } catch (err) {
