@@ -8,6 +8,7 @@ import {
   doublePrecision,
   decimal,
   jsonb,
+  date,
   uniqueIndex,
   primaryKey,
   index,
@@ -4114,6 +4115,42 @@ export const storeSettings = pgTable('store_settings', {
 });
 
 export type StoreSettings = typeof storeSettings.$inferSelect;
+
+// Storefront banners (0107): the carousel at the top of a shop's online store.
+// A picture, optional text drawn over it (title / subtitle / button label), a
+// tap target, a place in the order, a switch and an optional date window in
+// business-zone days (both inclusive). At most STORE_BANNER_LIMIT per shop.
+export const storeBanners = pgTable(
+  'store_banners',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    image: varchar('image', {length: 500}).notNull(),
+    title: varchar('title', {length: 80}),
+    subtitle: varchar('subtitle', {length: 140}),
+    buttonLabel: varchar('button_label', {length: 30}),
+    // 'none' | 'product' | 'category' | 'url'
+    linkType: varchar('link_type', {length: 12}).default('none').notNull(),
+    // A product id, a category id or an http(s) address; null for 'none'.
+    linkValue: varchar('link_value', {length: 500}),
+    sortOrder: integer('sort_order').default(0).notNull(),
+    isActive: boolean('is_active').default(true).notNull(),
+    startsOn: date('starts_on'),
+    endsOn: date('ends_on'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessOrderIdx: index('store_banners_business_order_idx').on(
+      table.businessId,
+      table.sortOrder,
+    ),
+  }),
+);
+
+export type StoreBanner = typeof storeBanners.$inferSelect;
 
 // ─── AI yordamchi (AI-YORDAMCHI.md) ──────────────────────────────────────────
 // The customer-facing assistant that answers DMs to the shop's own Telegram
