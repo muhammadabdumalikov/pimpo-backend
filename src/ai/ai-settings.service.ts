@@ -193,6 +193,15 @@ export class AiSettingsService {
   }
 
   /**
+   * Whether the shop connected an AI key of its own and left it switched on —
+   * the scanner then runs on it (uncapped) instead of Pimpo's key.
+   */
+  async hasOwnKey(businessId: string): Promise<boolean> {
+    const row = await this.getRow(businessId);
+    return Boolean(row?.apiKeyCipher && row.enabled);
+  }
+
+  /**
    * Builds a ready-to-use provider for this business.
    *
    * Throws a localizable AppException when the assistant is unusable, so the

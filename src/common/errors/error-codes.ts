@@ -334,6 +334,8 @@ export enum ErrorCode {
   AI_SQL_TOO_EXPENSIVE = 'AI_SQL_TOO_EXPENSIVE',
   AI_SQL_UNAVAILABLE = 'AI_SQL_UNAVAILABLE',
   AI_INVOICE_UNREADABLE = 'AI_INVOICE_UNREADABLE',
+  AI_INVOICE_PAGE_LIMIT_REACHED = 'AI_INVOICE_PAGE_LIMIT_REACHED',
+  AI_INVOICE_BUDGET_EXHAUSTED = 'AI_INVOICE_BUDGET_EXHAUSTED',
   INVOICE_SCAN_NOT_FOUND = 'INVOICE_SCAN_NOT_FOUND',
   INVOICE_SCAN_LIMIT = 'INVOICE_SCAN_LIMIT',
 
@@ -1502,6 +1504,16 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.AI_INVOICE_UNREADABLE]: {
     status: HttpStatus.UNPROCESSABLE_ENTITY,
     message: 'No product lines could be read from this document',
+  },
+  [ErrorCode.AI_INVOICE_PAGE_LIMIT_REACHED]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      "This month's scanner allowance is {limit} pages and {left} are left; it renews on {resetsAt}. Connect your own AI key to scan without a limit",
+  },
+  [ErrorCode.AI_INVOICE_BUDGET_EXHAUSTED]: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message:
+      'The scanner is paused for this month. Connect your own AI key to keep scanning',
   },
   [ErrorCode.INVOICE_SCAN_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,

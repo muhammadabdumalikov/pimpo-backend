@@ -1,13 +1,31 @@
 import {Injectable, Logger} from '@nestjs/common';
-import {and, desc, eq, gte, lte, sql} from 'drizzle-orm';
+import {and, desc, eq, gte, lt, lte, sql} from 'drizzle-orm';
 import {businessDayEnd, businessDayStart} from '../../common/business-time';
 import {AppException} from '../../common/errors/app.exception';
 import {ErrorCode} from '../../common/errors/error-codes';
 import {DatabaseService} from '../../database/database.service';
 import {aiInvoiceReads, businesses, products} from '../../database/schema';
+import {SubscriptionService} from '../../subscription/subscription.service';
 import {generateId} from '../../utils/uuid';
 import {AiSettingsService} from '../ai-settings.service';
+import {periodEnd, periodOf, periodStart} from '../image/ai-image.pricing';
+import {
+  AI_PROVIDER_IDS,
+  AiProviderId,
+  LlmProvider,
+  defaultModelFor,
+  estimateCostUsd,
+} from '../providers/llm-provider.interface';
+import {createProvider} from '../providers/provider.factory';
 import {CatalogEntry, CatalogIndex, MatchCandidate} from './invoice-match';
+import {
+  INVOICE_DEFAULT_BUDGET_USD,
+  InvoiceKeySource,
+  InvoiceScanUsage,
+  fitsAllowance,
+  platformInvoiceConfig,
+  platformPageLimit,
+} from './invoice-quota';
 import {
   INVOICE_CONTINUATION_INSTRUCTION,
   INVOICE_INSTRUCTION,
@@ -20,6 +38,15 @@ import {
 
 /** Wall-clock budget for one document. Long enough for a slow PDF, not a hang. */
 const PARSE_BUDGET_MS = 120_000;
+
+/** Sums over only the reads made on Pimpo's key, for the console's figures. */
+const PLATFORM_USD = sql<number>`coalesce(sum(${aiInvoiceReads.costUsd}) filter (where ${aiInvoiceReads.keySource} = 'platform'), 0)`;
+const PLATFORM_PAGES = sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}) filter (where ${aiInvoiceReads.keySource} = 'platform'), 0)`;
+
+/** First day of the month after `period` (YYYY-MM-DD) — when a count restarts. */
+function nextPeriodStart(period: string): string {
+  return `${periodOf(periodEnd(period))}-01`;
+}
 
 /**
  * Rows we will look at. A real delivery note tops out well under this; a
@@ -126,6 +153,7 @@ export class InvoiceService {
   constructor(
     private readonly settings: AiSettingsService,
     private readonly database: DatabaseService,
+    private readonly subscriptions: SubscriptionService,
   ) {}
 
   private get db() {
@@ -145,13 +173,10 @@ export class InvoiceService {
     files: {buffer: Buffer; mimetype: string}[],
     opts: {model?: string; continuation?: boolean} = {},
   ): Promise<ParsedInvoice> {
-    const modelOverride = opts.model;
-    const provider = await this.settings.resolveProvider(
-      businessId,
-      modelOverride,
-    );
-    const model =
-      modelOverride ?? (await this.settings.getView(businessId)).model;
+    // The shop's own key when it has one (uncapped, its own money); otherwise
+    // Pimpo's, inside the plan's monthly page allowance.
+    const {provider, model, keySource, platformProvider} =
+      await this.resolveKey(businessId, files.length, opts.model);
 
     const controller = new AbortController();
     const budget = setTimeout(() => controller.abort(), PARSE_BUDGET_MS);
@@ -194,12 +219,27 @@ export class InvoiceService {
 
     // Billed whatever the outcome — the tokens were spent even if the page
     // turned out to be unreadable.
-    const costUsd = await this.settings.recordUsage(businessId, {
-      input: usage.inputTokens,
-      output: usage.outputTokens,
+    const costUsd =
+      keySource === 'shop'
+        ? await this.settings.recordUsage(businessId, {
+            input: usage.inputTokens,
+            output: usage.outputTokens,
+            model,
+          })
+        : estimateCostUsd(
+            model,
+            platformProvider!,
+            usage.inputTokens,
+            usage.outputTokens,
+          );
+    await this.recordRead(
+      businessId,
       model,
-    });
-    await this.recordRead(businessId, model, files.length, usage, costUsd);
+      files.length,
+      usage,
+      costUsd,
+      keySource,
+    );
 
     const usable = raw.lines
       .slice(0, MAX_LINES)
@@ -216,7 +256,10 @@ export class InvoiceService {
     const sequenceOk = markSequence(lines);
 
     const linesTotal = round2(
-      lines.reduce((sum, l) => sum + (l.lineTotal ?? l.quantity * l.priceIn), 0),
+      lines.reduce(
+        (sum, l) => sum + (l.lineTotal ?? l.quantity * l.priceIn),
+        0,
+      ),
     );
     const totalAmount = raw.totalAmount > 0 ? round2(raw.totalAmount) : null;
     const discountPercent =
@@ -252,7 +295,9 @@ export class InvoiceService {
       discountAmount,
       payableAmount,
       discountMatch:
-        totalAmount === null || discountAmount === null || payableAmount === null
+        totalAmount === null ||
+        discountAmount === null ||
+        payableAmount === null
           ? null
           : Math.abs(totalAmount - discountAmount - payableAmount) <=
             TOTAL_TOLERANCE,
@@ -265,6 +310,144 @@ export class InvoiceService {
   }
 
   /**
+   * What the scanner screen shows before a read: whose key it will run on and,
+   * on Pimpo's key, how much of this month's page allowance is left.
+   */
+  async usage(businessId: string): Promise<InvoiceScanUsage> {
+    const period = periodOf(new Date());
+    const resetsAt = nextPeriodStart(period);
+    if (await this.settings.hasOwnKey(businessId)) {
+      return {
+        keySource: 'shop',
+        limit: null,
+        used: 0,
+        left: null,
+        resetsAt,
+        available: true,
+      };
+    }
+    const [tier, used] = await Promise.all([
+      this.subscriptions.getEffectiveTier(businessId),
+      this.platformPagesUsed(businessId, period),
+    ]);
+    const limit = platformPageLimit(tier);
+    return {
+      keySource: 'platform',
+      limit,
+      used,
+      left: Math.max(0, limit - used),
+      resetsAt,
+      available: Boolean(this.platformConfig().key) && limit > 0,
+    };
+  }
+
+  /**
+   * Picks the key for a read of `pages` pages. On Pimpo's key the read is
+   * refused when it does not fit what is left of the month's allowance (a
+   * read is all-or-nothing), or when the platform's scanner budget is spent.
+   * A client-chosen model is honoured only on the shop's own key — nobody
+   * picks a dearer model on Pimpo's money.
+   */
+  private async resolveKey(
+    businessId: string,
+    pages: number,
+    modelOverride?: string,
+  ): Promise<{
+    provider: LlmProvider;
+    model: string;
+    keySource: InvoiceKeySource;
+    platformProvider?: AiProviderId;
+  }> {
+    if (await this.settings.hasOwnKey(businessId)) {
+      const provider = await this.settings.resolveProvider(
+        businessId,
+        modelOverride,
+      );
+      const model =
+        modelOverride ?? (await this.settings.getView(businessId)).model;
+      return {provider, model, keySource: 'shop'};
+    }
+
+    const config = this.platformConfig();
+    if (!config.key) throw new AppException(ErrorCode.AI_NOT_CONFIGURED);
+
+    const period = periodOf(new Date());
+    const [tier, used, spent] = await Promise.all([
+      this.subscriptions.getEffectiveTier(businessId),
+      this.platformPagesUsed(businessId, period),
+      this.platformSpentUsd(period),
+    ]);
+    const limit = platformPageLimit(tier);
+    if (!fitsAllowance(limit, used, pages)) {
+      throw new AppException(ErrorCode.AI_INVOICE_PAGE_LIMIT_REACHED, {
+        limit,
+        left: Math.max(0, limit - used),
+        resetsAt: nextPeriodStart(period),
+      });
+    }
+    const budget = this.platformBudgetUsd;
+    if (spent >= budget) {
+      this.logger.error(
+        'Scanner budget exhausted: $' + spent.toFixed(2) + ' of $' + budget,
+      );
+      throw new AppException(ErrorCode.AI_INVOICE_BUDGET_EXHAUSTED);
+    }
+    return {
+      provider: createProvider(config.provider, config.key, config.model),
+      model: config.model,
+      keySource: 'platform',
+      platformProvider: config.provider,
+    };
+  }
+
+  private platformConfig() {
+    return platformInvoiceConfig(process.env, AI_PROVIDER_IDS, defaultModelFor);
+  }
+
+  private get platformBudgetUsd(): number {
+    const raw = Number(process.env.AI_INVOICE_MONTHLY_BUDGET_USD);
+    return Number.isFinite(raw) && raw > 0 ? raw : INVOICE_DEFAULT_BUDGET_USD;
+  }
+
+  /** Pages this shop read on Pimpo's key in `period`. */
+  private async platformPagesUsed(
+    businessId: string,
+    period: string,
+  ): Promise<number> {
+    const [row] = await this.db
+      .select({
+        pages: sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}), 0)`,
+      })
+      .from(aiInvoiceReads)
+      .where(
+        and(
+          eq(aiInvoiceReads.businessId, businessId),
+          eq(aiInvoiceReads.keySource, 'platform'),
+          gte(aiInvoiceReads.createdAt, periodStart(period)),
+          lt(aiInvoiceReads.createdAt, periodEnd(period)),
+        ),
+      );
+    return Number(row?.pages ?? 0);
+  }
+
+  /** What every shop together spent on Pimpo's key in `period`. */
+  private async platformSpentUsd(period: string): Promise<number> {
+    const [row] = await this.db
+      .select({
+        total: sql<number>`coalesce(sum(${aiInvoiceReads.costUsd}), 0)`,
+      })
+      .from(aiInvoiceReads)
+      .where(
+        and(
+          eq(aiInvoiceReads.keySource, 'platform'),
+          gte(aiInvoiceReads.createdAt, periodStart(period)),
+          lt(aiInvoiceReads.createdAt, periodEnd(period)),
+        ),
+      );
+    return Number(row?.total ?? 0);
+  }
+
+  /**
    * The console's spend history. The read is already paid for and the owner is
    * waiting on it, so a failed write here is logged, never thrown.
    */
@@ -274,6 +457,7 @@ export class InvoiceService {
     pageCount: number,
     usage: {inputTokens: number; outputTokens: number},
     costUsd: number,
+    keySource: InvoiceKeySource,
   ): Promise<void> {
     try {
       await this.db.insert(aiInvoiceReads).values({
@@ -284,6 +468,7 @@ export class InvoiceService {
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         costUsd,
+        keySource,
       });
     } catch (err) {
       this.logger.error(
@@ -306,6 +491,8 @@ export class InvoiceService {
           spentUsd: spentExpr,
           reads: sql<number>`count(*)`,
           pages: sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}), 0)`,
+          platformUsd: PLATFORM_USD,
+          platformPages: PLATFORM_PAGES,
         })
         .from(aiInvoiceReads)
         .where(inRange),
@@ -328,6 +515,10 @@ export class InvoiceService {
       spentUsd: Number(totals[0]?.spentUsd ?? 0),
       readCount: Number(totals[0]?.reads ?? 0),
       pageCount: Number(totals[0]?.pages ?? 0),
+      // Of which on Pimpo's key — the part that is our money.
+      platformSpentUsd: Number(totals[0]?.platformUsd ?? 0),
+      platformPageCount: Number(totals[0]?.platformPages ?? 0),
+      platformBudgetUsd: this.platformBudgetUsd,
       topBusinesses: top.map((r) => ({
         businessId: r.businessId,
         name: r.name,
@@ -344,12 +535,16 @@ export class InvoiceService {
         spentUsd: sql<number>`coalesce(sum(${aiInvoiceReads.costUsd}), 0)`,
         reads: sql<number>`count(*)`,
         pages: sql<number>`coalesce(sum(${aiInvoiceReads.pageCount}), 0)`,
+        platformUsd: PLATFORM_USD,
+        platformPages: PLATFORM_PAGES,
       })
       .from(aiInvoiceReads)
       .where(
         and(
           eq(aiInvoiceReads.businessId, businessId),
-          from ? gte(aiInvoiceReads.createdAt, businessDayStart(from)) : undefined,
+          from
+            ? gte(aiInvoiceReads.createdAt, businessDayStart(from))
+            : undefined,
           to ? lte(aiInvoiceReads.createdAt, businessDayEnd(to)) : undefined,
         ),
       );
@@ -357,6 +552,9 @@ export class InvoiceService {
       spentUsd: Number(totals?.spentUsd ?? 0),
       readCount: Number(totals?.reads ?? 0),
       pageCount: Number(totals?.pages ?? 0),
+      // Of which on Pimpo's key — the part that is our money.
+      platformSpentUsd: Number(totals?.platformUsd ?? 0),
+      platformPageCount: Number(totals?.platformPages ?? 0),
     };
   }
 

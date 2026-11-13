@@ -3296,6 +3296,9 @@ export const aiInvoiceReads = pgTable(
     inputTokens: integer('input_tokens').default(0).notNull(),
     outputTokens: integer('output_tokens').default(0).notNull(),
     costUsd: doublePrecision('cost_usd').default(0).notNull(),
+    // 'shop' | 'platform' — whose key paid (0108). 'platform' pages count
+    // against the shop's monthly plan allowance; 'shop' ones are uncapped.
+    keySource: varchar('key_source', {length: 10}).default('shop').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({

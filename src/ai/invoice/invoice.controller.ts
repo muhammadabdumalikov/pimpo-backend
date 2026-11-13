@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Post,
   UploadedFiles,
   UseGuards,
@@ -53,8 +54,9 @@ const ALLOWED_MIMES = [
 /**
  * Reading a supplier delivery note into receipt lines.
  *
- * Pro tier, like the rest of the AI surface: it runs on the same BYOK key, and
- * a plan with no key configured has nothing to run it with.
+ * Pro tier. A shop that connected its own AI key reads on it, without a cap;
+ * one that did not reads on Pimpo's key, inside its plan's monthly page
+ * allowance (invoice-quota.ts: Business 100, Business+ 500).
  *
  * Not owner-only — receiving goods is a manager's job, and this endpoint never
  * exposes the key, only spends it.
@@ -66,6 +68,17 @@ const ALLOWED_MIMES = [
 @ApiBearerAuth('JWT-auth')
 export class InvoiceController {
   constructor(private readonly invoices: InvoiceService) {}
+
+  @Get('usage')
+  @ApiOperation({
+    summary: 'Skaner qaysi kalitda ishlaydi va shu oy necha sahifa qoldi',
+    description:
+      "Whose key the next read runs on and, on Pimpo's key, this month's " +
+      'page allowance: limit, used, left and the day it starts over.',
+  })
+  usage(@CurrentBusiness() business: IBusiness) {
+    return this.invoices.usage(business.id);
+  }
 
   @Post('parse')
   @UseInterceptors(
