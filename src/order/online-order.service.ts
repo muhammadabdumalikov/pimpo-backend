@@ -153,7 +153,13 @@ export interface StorefrontOrderView {
   cancelNote: string | null;
   canCancel: boolean;
   timeline: {status: string; at: Date}[];
-  items: {productName: string; quantity: number; lineTotal: string}[];
+  items: {
+    productName: string;
+    quantity: number;
+    lineTotal: string;
+    // The buyer's choices (ONLAYN-SOTUVCHI.md Q8), null when none.
+    options: {name: string; value: string}[] | null;
+  }[];
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -197,14 +203,18 @@ function mergeTender(
 }
 
 // Lines of the order still waiting for their goods.
-const pendingLinesSql = sql<number>`(SELECT count(*)::int FROM order_items i WHERE i.order_id = ${orders.id} AND i.stock_pending)`;
+// Written with the table name spelled out: in a select with no join Drizzle
+// renders `${orders.id}` as a bare "id", which inside these subqueries binds
+// to order_items.id instead and silently reads every order as having none.
+const pendingLinesSql = sql<number>`(SELECT count(*)::int FROM order_items i WHERE i.order_id = "orders"."id" AND i.stock_pending)`;
 // Every waiting line fits in the order branch's stock right now ("Tovar bor").
 // Per order: two orders may both read ready for the same last units — the
 // seller decides who gets them (Q6, no auto-allocation).
-const stockReadySql = sql<boolean>`(EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = ${orders.id} AND i.stock_pending) AND NOT EXISTS (SELECT 1 FROM (SELECT i.product_id, sum(i.quantity) AS q FROM order_items i WHERE i.order_id = ${orders.id} AND i.stock_pending AND i.product_id IS NOT NULL GROUP BY i.product_id) x LEFT JOIN branch_stock b ON b.product_id = x.product_id AND b.branch_id = ${orders.branchId} WHERE coalesce(b.quantity, 0) + 0.000001 < x.q))`;
+const stockReadySql = sql<boolean>`(EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = "orders"."id" AND i.stock_pending) AND NOT EXISTS (SELECT 1 FROM (SELECT i.product_id, sum(i.quantity) AS q FROM order_items i WHERE i.order_id = "orders"."id" AND i.stock_pending AND i.product_id IS NOT NULL GROUP BY i.product_id) x LEFT JOIN branch_stock b ON b.product_id = x.product_id AND b.branch_id = "orders"."branch_id" WHERE coalesce(b.quantity, 0) + 0.000001 < x.q))`;
 
 // Latest status move of an order — the "waiting since" of the list.
-const lastMoveAt = sql<Date | null>`(SELECT max(e.created_at) FROM order_status_events e WHERE e.order_id = ${orders.id}) AT TIME ZONE 'UTC'`;
+// "orders"."id" spelled out — see pendingLinesSql below.
+const lastMoveAt = sql<Date | null>`(SELECT max(e.created_at) FROM order_status_events e WHERE e.order_id = "orders"."id") AT TIME ZONE 'UTC'`;
 
 /**
  * Storefront orders after checkout (YETKAZISH.md): the state machine, the
@@ -1198,6 +1208,7 @@ export class OnlineOrderService {
           productName: orderItems.productName,
           quantity: orderItems.quantity,
           lineTotal: orderItems.lineTotal,
+          options: orderItems.options,
         })
         .from(orderItems)
         .where(inArray(orderItems.orderId, ids)),
@@ -1249,10 +1260,11 @@ export class OnlineOrderService {
           timeline,
           items: lines
             .filter((l) => l.orderId === o.id)
-            .map(({productName, quantity, lineTotal}) => ({
+            .map(({productName, quantity, lineTotal, options}) => ({
               productName,
               quantity,
               lineTotal,
+              options: options ?? null,
             })),
         };
       });
