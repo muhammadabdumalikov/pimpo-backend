@@ -50,6 +50,7 @@ import {IN_PROGRESS_STATUSES} from '../order/online-order.rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
 import {creditBalances} from '../common/supplier-credit';
+import {shiftsOfBranch} from '../common/branch-shifts';
 
 export interface DateRange {
   from?: string;
@@ -1421,20 +1422,7 @@ export class ReportService {
           eq(cashShifts.businessId, businessId),
           eq(cashShifts.status, 'closed'),
           ...this.dateWhere(cashShifts.closedAt, range),
-          // A shift has no branch of its own — its register does. A legacy
-          // register with no branch sells from the default one.
-          ...(range?.branchId
-            ? [
-                sql`${cashShifts.registerId} IN (
-                  SELECT r.id FROM cash_registers r
-                  WHERE r.business_id = ${businessId}
-                    AND (r.branch_id = ${range.branchId}
-                      OR (r.branch_id IS NULL AND EXISTS (
-                        SELECT 1 FROM branches b
-                        WHERE b.id = ${range.branchId} AND b.is_default)))
-                )`,
-              ]
-            : []),
+          ...(range?.branchId ? [shiftsOfBranch(businessId, range.branchId)] : []),
         ),
       )
       .orderBy(desc(cashShifts.closedAt));

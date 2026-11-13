@@ -31,6 +31,7 @@ import {
   ReleaseDefectiveDto,
   WriteOffDefectiveDto,
 } from './dto/defective.dto';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 // Yaroqsiz tovarlar ombori. The till's defective customer returns land here
 // through the sale-return flow (sale:return); everything on this controller is
@@ -49,6 +50,7 @@ export class DefectiveController {
   constructor(private readonly defectiveService: DefectiveService) {}
 
   @Get()
+  @BranchScope('filter')
   @RequirePermission('defective:manage')
   @ApiOperation({summary: 'Defective stock on hand, per product and branch'})
   @ApiQuery({name: 'branchId', required: false})
@@ -79,6 +81,7 @@ export class DefectiveController {
   }
 
   @Get('movements')
+  @BranchScope('filter')
   @RequirePermission('defective:manage')
   @ApiOperation({summary: 'Defective stock movement history, newest first'})
   @ApiQuery({name: 'branchId', required: false})

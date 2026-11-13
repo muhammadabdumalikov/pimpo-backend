@@ -26,6 +26,7 @@ import {
   CreateOpeningStockDto,
   UpsertOpeningStockItemsDto,
 } from './dto/opening-stock.dto';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 // "Boshlang'ich qoldiq" documents (FILIAL-ASSORTIMENT.md). Open on every tier
 // (Q15); writes need the stock-take permission (Q8).
@@ -37,6 +38,7 @@ export class OpeningStockController {
   constructor(private readonly service: OpeningStockService) {}
 
   @Get()
+  @BranchScope('filter')
   @ApiOperation({summary: 'List opening stock documents'})
   @ApiQuery({name: 'branchId', required: false})
   @ApiQuery({name: 'status', required: false})

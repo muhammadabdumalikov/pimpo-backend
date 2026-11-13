@@ -449,6 +449,7 @@ export class SaleReturnService {
       to?: string;
       orderId?: string;
       search?: string;
+      branchId?: string;
     } = {},
   ): Promise<{
     returns: SaleReturnWithItems[];
@@ -467,6 +468,7 @@ export class SaleReturnService {
     const limit = Math.min(options.limit || 20, 100);
     const where = [eq(saleReturns.businessId, businessId)];
     if (options.orderId) where.push(eq(saleReturns.orderId, options.orderId));
+    if (options.branchId) where.push(eq(saleReturns.branchId, options.branchId));
     if (options.from) {
       where.push(gte(saleReturns.createdAt, businessDayStart(options.from)));
     }

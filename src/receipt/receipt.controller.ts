@@ -38,6 +38,7 @@ import { AddPaymentDto } from './dto/add-payment.dto';
 import { CreateReturnDto } from './dto/create-return.dto';
 import { ApplyPricesDto } from './dto/apply-prices.dto';
 import {QuerySupplySummaryDto} from '../finance/dto/query-supply-summary.dto';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 @ApiTags('receipts')
 @Controller('receipts')
@@ -81,6 +82,7 @@ export class ReceiptController {
   }
 
   @Get()
+  @BranchScope('filter')
   @RequirePermission('receipt:read')
   @ApiOperation({ summary: 'Get all goods receipts for current business' })
   @ApiQuery({ name: 'page', required: false, type: Number })
@@ -125,6 +127,7 @@ export class ReceiptController {
 
   // Declared before ':id' so the path is not read as a receipt id.
   @Get('supply-summary')
+  @BranchScope('business')
   @RequirePermission('receipt:read')
   @ApiOperation({
     summary:

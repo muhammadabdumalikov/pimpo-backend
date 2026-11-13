@@ -33,6 +33,7 @@ import {QueryCashMovementsDto} from './dto/query-cash-movements.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 @ApiTags('shifts')
 @Controller()
@@ -150,6 +151,7 @@ export class ShiftController {
   }
 
   @Get('shifts')
+  @BranchScope('filter')
   @ApiOperation({summary: 'Shift history (paginated)'})
   @ApiQuery({name: 'page', required: false, type: Number})
   @ApiQuery({name: 'limit', required: false, type: Number})
@@ -159,11 +161,13 @@ export class ShiftController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('registerId') registerId?: string,
+    @Query('branchId') branchId?: string,
   ) {
     return this.shiftService.getShifts(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       registerId,
+      branchId: branchId || undefined,
     });
   }
 

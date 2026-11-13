@@ -138,6 +138,9 @@ export const CacheKeys = {
   // roles list. Invalidated with the list on any role write.
   rolePermissions: (businessId: string, roleId: string) =>
     `roles:perms:${businessId}:${roleId}`,
+  // The branch a staff account is pinned to when it lacks `branch:all`.
+  staffBranch: (businessId: string, staffId: string) =>
+    `staff:branch:${businessId}:${staffId}`,
   suppliers: (businessId: string) => `suppliers:${businessId}`,
   settingsReceipt: (businessId: string) => `settings:receipt:${businessId}`,
   // The whole label-template list. There is no separate key for the legacy

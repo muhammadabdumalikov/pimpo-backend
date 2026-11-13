@@ -14,6 +14,7 @@ import {generateId} from '../utils/uuid';
 import {hashPassword} from '../utils/password';
 import {hashPin} from '../utils/pin';
 import {SubscriptionService} from '../subscription/subscription.service';
+import {BranchScopeService} from '../permission/branch-scope.service';
 
 export type StaffView = Omit<Staff, 'password' | 'pinHash'> & {
   roleName: string | null;
@@ -101,6 +102,7 @@ export class StaffService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly subscriptionService: SubscriptionService,
+    private readonly branchScopes: BranchScopeService,
   ) {}
 
   private get db() {
@@ -367,6 +369,8 @@ export class StaffService {
       })
       .where(and(eq(staff.businessId, businessId), eq(staff.id, id)));
 
+    // A branch change re-pins what this account may read.
+    await this.branchScopes.invalidate(businessId, id);
     return (await this.findOne(businessId, id)) as StaffView;
   }
 
@@ -378,6 +382,7 @@ export class StaffService {
     await this.db
       .delete(staff)
       .where(and(eq(staff.businessId, businessId), eq(staff.id, id)));
+    await this.branchScopes.invalidate(businessId, id);
   }
 
   /** Seat usage for the UI ("3 / 10 hisob ishlatilgan"). */

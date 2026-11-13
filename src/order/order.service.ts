@@ -2135,7 +2135,7 @@ export class OrderService {
    */
   async getSalesSummary(
     businessId: string,
-    options: {from?: string; to?: string} = {},
+    options: {from?: string; to?: string; branchId?: string} = {},
   ) {
     // Heavy aggregation read by the dashboard — cached with a short TTL so the
     // DB isn't hit on every refresh. Kept fresh within TTL.ORDERS_SUMMARY; no
@@ -2149,7 +2149,7 @@ export class OrderService {
 
   private async computeSalesSummary(
     businessId: string,
-    options: {from?: string; to?: string} = {},
+    options: {from?: string; to?: string; branchId?: string} = {},
   ): Promise<{
     count: number;
     units: number;
@@ -2163,6 +2163,7 @@ export class OrderService {
       eq(orders.businessId, businessId),
       eq(orders.status, 'Completed'),
     ];
+    if (options.branchId) where.push(eq(orders.branchId, options.branchId));
     if (options.from) {
       where.push(gte(orders.createdAt, businessDayStart(options.from)));
     }
@@ -2215,6 +2216,7 @@ export class OrderService {
     // Returns in the range come off the day's figures (money handed back per
     // method, debt written down).
     const rwhere = [eq(saleReturns.businessId, businessId)];
+    if (options.branchId) rwhere.push(eq(saleReturns.branchId, options.branchId));
     if (options.from) {
       rwhere.push(gte(saleReturns.createdAt, businessDayStart(options.from)));
     }
@@ -2263,7 +2265,7 @@ export class OrderService {
 
   async getCount(
     businessId: string,
-    options?: {status?: string; source?: string},
+    options?: {status?: string; source?: string; branchId?: string},
   ): Promise<number> {
     return this.cache.wrap(
       CacheKeys.ordersCount(businessId, options),
@@ -2274,7 +2276,7 @@ export class OrderService {
 
   private async computeCount(
     businessId: string,
-    options?: {status?: string; source?: string},
+    options?: {status?: string; source?: string; branchId?: string},
   ): Promise<number> {
     const where = [eq(orders.businessId, businessId)];
     if (options?.status) {
@@ -2282,6 +2284,9 @@ export class OrderService {
     }
     if (options?.source) {
       where.push(eq(orders.source, options.source));
+    }
+    if (options?.branchId) {
+      where.push(eq(orders.branchId, options.branchId));
     }
     const result = await this.dbService.db
       .select({count: count()})

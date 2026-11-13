@@ -23,6 +23,7 @@ import {PermissionsGuard} from '../permission/permissions.guard';
 import {RequirePermission} from '../permission/permission.decorator';
 import {SaleReturnService} from './sale-return.service';
 import {CreateSaleReturnDto, PreviewSaleReturnDto} from './dto/sale-return.dto';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 @ApiTags('returns')
 @Controller('returns')
@@ -75,6 +76,7 @@ export class SaleReturnController {
   }
 
   @Get()
+  @BranchScope('filter')
   @RequirePermission('sale:read')
   @ApiOperation({summary: 'Return history (newest first)'})
   @ApiQuery({name: 'page', required: false})
@@ -95,8 +97,10 @@ export class SaleReturnController {
     @Query('to') to?: string,
     @Query('orderId') orderId?: string,
     @Query('search') search?: string,
+    @Query('branchId') branchId?: string,
   ) {
     return this.returns.findAll(business.id, {
+      branchId: branchId || undefined,
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       from,

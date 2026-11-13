@@ -35,6 +35,7 @@ import { UpdateStoreSettingsDto } from './dto/store-settings.dto';
 import { BusinessResponseDto } from './dto/business-response.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
 import { CurrentUserResponseDto } from './dto/current-user-response.dto';
+import { BranchScopeService } from '../permission/branch-scope.service';
 
 @ApiTags('businesses')
 @Controller('businesses')
@@ -42,6 +43,7 @@ export class BusinessController {
   constructor(
     private readonly businessService: BusinessService,
     private readonly authService: AuthService,
+    private readonly branchScopes: BranchScopeService,
   ) {}
 
   @Post('register')
@@ -121,7 +123,11 @@ export class BusinessController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getCurrentUser(@CurrentAccount() account: IAccount) {
-    return this.authService.getCurrentUser(account);
+    const current = await this.authService.getCurrentUser(account);
+    // The branch this account is pinned to (null = may see every branch), so
+    // the app can lock its store switcher. The server enforces it regardless.
+    const branchScope = await this.branchScopes.scopeFor(account);
+    return {...current, account: {...current.account, branchScope}};
   }
 
   // NOTE: the `me/*` routes must stay declared before the `:id` routes below,

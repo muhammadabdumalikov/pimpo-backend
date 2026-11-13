@@ -39,6 +39,7 @@ const isYmd = (v?: string): v is string => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 import { OnlineOrderService } from './online-order.service';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 @ApiTags('orders')
 @Controller('orders')
@@ -100,6 +101,7 @@ export class OrderController {
   }
 
   @Get()
+  @BranchScope('filter')
   @RequirePermission('sale:read')
   @ApiOperation({summary: 'List orders for current business'})
   @ApiQuery({name: 'page', required: false})
@@ -190,6 +192,7 @@ export class OrderController {
   }
 
   @Get('summary')
+  @BranchScope('filter')
   @RequirePermission('sale:read')
   @ApiOperation({
     summary: 'Sales summary (count/units/revenue + payment split) for a range',
@@ -200,11 +203,17 @@ export class OrderController {
     @CurrentBusiness() business: IBusiness,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('branchId') branchId?: string,
   ) {
-    return this.orderService.getSalesSummary(business.id, {from, to});
+    return this.orderService.getSalesSummary(business.id, {
+      from,
+      to,
+      branchId: branchId || undefined,
+    });
   }
 
   @Get('count')
+  @BranchScope('filter')
   @RequirePermission('sale:read')
   @ApiOperation({summary: 'Get total order count'})
   @ApiQuery({name: 'status', required: false})
@@ -213,11 +222,19 @@ export class OrderController {
     @CurrentBusiness() business: IBusiness,
     @Query('status') status?: string,
     @Query('source') source?: string,
+    @Query('branchId') branchId?: string,
   ) {
-    return {count: await this.orderService.getCount(business.id, {status, source})};
+    return {
+      count: await this.orderService.getCount(business.id, {
+        status,
+        source,
+        branchId: branchId || undefined,
+      }),
+    };
   }
 
   @Get('revenue')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @ApiOperation({summary: 'Get total revenue from completed orders'})
   async getRevenue(@CurrentBusiness() business: IBusiness) {
@@ -225,6 +242,7 @@ export class OrderController {
   }
 
   @Get('monthly-sales')
+  @BranchScope('filter')
   @RequirePermission('report:view')
   @ApiOperation({
     summary:
@@ -271,6 +289,7 @@ export class OrderController {
   }
 
   @Get('branch-sales')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @ApiOperation({
     summary:
@@ -324,6 +343,7 @@ export class OrderController {
   }
 
   @Get('product-performance')
+  @BranchScope('filter')
   @RequirePermission('report:view')
   @ApiOperation({
     summary: 'Per-product sales/revenue/profit from completed orders',
@@ -345,6 +365,7 @@ export class OrderController {
   }
 
   @Get('sales-by-employee')
+  @BranchScope('filter')
   @RequirePermission('staff:sales:view')
   @ApiOperation({
     summary: 'Completed-order sales grouped by cashier (employee)',

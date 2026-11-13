@@ -51,6 +51,7 @@ import {
   type ReconRow,
   type SaleTotals,
 } from './reconciliation';
+import {shiftsOfBranch} from '../common/branch-shifts';
 
 /** Category shape the kassa UI still expects (direction, not kind). */
 export interface CashCategoryCompat {
@@ -427,7 +428,12 @@ export class ShiftService {
   /** Paginated shift history for the business. */
   async getShifts(
     businessId: string,
-    options?: {page?: number; limit?: number; registerId?: string},
+    options?: {
+      page?: number;
+      limit?: number;
+      registerId?: string;
+      branchId?: string;
+    },
   ): Promise<{
     shifts: CashShift[];
     total: number;
@@ -441,6 +447,9 @@ export class ShiftService {
     const where = [eq(cashShifts.businessId, businessId)];
     if (options?.registerId) {
       where.push(eq(cashShifts.registerId, options.registerId));
+    }
+    if (options?.branchId) {
+      where.push(shiftsOfBranch(businessId, options.branchId));
     }
 
     const all = await this.dbService.db

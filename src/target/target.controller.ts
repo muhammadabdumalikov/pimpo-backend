@@ -9,6 +9,7 @@ import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 // Monthly targets are an extended-analytics feature — Business (pro) and up.
 @ApiTags('targets')
@@ -20,6 +21,7 @@ export class TargetController {
   constructor(private readonly targetService: TargetService) {}
 
   @Get()
+  @BranchScope('business')
   @RequirePermission('report:view')
   @ApiOperation({summary: 'Oylik reja vs fakt (progress)'})
   @ApiQuery({name: 'month', required: false, description: 'YYYY-MM (default: joriy oy)'})

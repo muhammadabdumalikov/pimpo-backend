@@ -14,6 +14,7 @@ import {PlanTierGuard} from '../subscription/plan-tier.guard';
 import {MinTier} from '../subscription/required-tier.decorator';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {BranchScope} from '../permission/branch-scope.decorator';
 
 const LOSS_SECTIONS = [
   'customer',
@@ -40,6 +41,7 @@ const LOSS_CONDITIONS = [
 // the comparison two tiers above what they were paying for. Business+ is a
 // scale ceiling (unlimited branches / 50 users), not a separate report set.
 @ApiTags('reports')
+@BranchScope('filter')
 @Controller('reports')
 @UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
 @MinTier('basic')
@@ -67,6 +69,7 @@ export class ReportController {
   }
 
   @Get('stock')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @ApiOperation({summary: 'Qoldiqlar bo\'yicha hisobot (stock valuation as of a date)'})
   @ApiQuery({name: 'date', required: false, description: 'ISO date; defaults to now'})
@@ -222,6 +225,7 @@ export class ReportController {
   }
 
   @Get('stock-takes')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @ApiOperation({summary: 'Inventarizatsiya natijalari hisoboti'})
   @ApiQuery({name: 'from', required: false, description: 'ISO date (inclusive)'})
@@ -337,6 +341,7 @@ export class ReportController {
   // ═══ Level-2 reports (HISOBOTLAR.md §6, 2-daraja) ═════════════════════════
 
   @Get('debt-aging')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Nasiya (qarzlar) aging — as-of-now snapshot'})
@@ -412,6 +417,7 @@ export class ReportController {
   }
 
   @Get('transfer-suggestions')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Filiallararo transfer tavsiyasi (rebalans)'})
@@ -466,6 +472,7 @@ export class ReportController {
   }
 
   @Get('branch-comparison')
+  @BranchScope('business')
   @RequirePermission('report:view')
   @MinTier('pro')
   @ApiOperation({summary: 'Filiallar taqqoslash'})

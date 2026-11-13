@@ -21,9 +21,9 @@ import type {BusinessType} from '../common/business-type';
  *
  * Not expressed here (deliberately):
  *  • Subscription tier — a BUSINESS-level gate, handled by PlanTierGuard.
- *  • Data scope ("only own branch / own sales") — that is a row filter, not an
- *    action. It gets its own field on the role when we need it; folding it in
- *    here would multiply every key by three.
+ *  • Data scope beyond branches ("only own sales") — a row filter, not an
+ *    action. The one scope that exists, "all branches vs own branch", is the
+ *    single `branch:all` key below, enforced by BranchScopeInterceptor.
  *  • Field-level cost visibility on products (`priceIn`) — a redaction rather
  *    than an action, and it runs through reports, receipts and the till. It
  *    needs its own pass.
@@ -136,6 +136,12 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
 
   // ── Hisobotlar ───────────────────────────────────────────────────────────
   {key: 'report:view', group: 'reports'},
+  // Data scope: see every store's figures and switch between them. Without
+  // it a staff account is pinned to its own branch (staff.branch_id, else the
+  // default branch) on every branch-scoped read — BranchScopeInterceptor
+  // rewrites `branchId` on @BranchScope('filter') routes and refuses the
+  // business-wide ones (@BranchScope('business')). The owner always has it.
+  {key: 'branch:all', group: 'reports'},
   // P&L lays out cost, margin and net profit — its own key, so a manager can
   // read the operational reports without seeing what the shop earns.
   {key: 'report:profit:view', group: 'reports'},
