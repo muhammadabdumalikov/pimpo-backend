@@ -45,7 +45,11 @@ import {
   isNull,
   notInArray,
 } from 'drizzle-orm';
-import {capitalRow, liveRow} from '../finance/ledger-rules';
+import {
+  NON_PNL_SOURCES,
+  capitalRow,
+  liveRow,
+} from '../finance/ledger-rules';
 import {IN_PROGRESS_STATUSES} from '../order/online-order.rules';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
 import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
@@ -217,10 +221,7 @@ export class ReportService {
         eq(financialTransactions.currency, 'UZS'),
         // Money to and from suppliers is stock bought or given back, which
         // COGS already carries — not an expense or income of its own.
-        notInArray(financialTransactions.source, [
-          'supplier_payment',
-          'supplier_refund',
-        ]),
+        notInArray(financialTransactions.source, [...NON_PNL_SOURCES]),
         liveRow(),
         not(capitalRow()),
         ...this.rawDateWhere(

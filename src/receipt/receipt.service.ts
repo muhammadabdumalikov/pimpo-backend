@@ -158,10 +158,12 @@ interface PreparedReceipt {
     string,
     {name: string; priceOut: string; quantityType?: string | null}
   >;
-  // What is owed: the lines' gross less the discount ("К оплате").
+  // What is owed: the lines' gross less the discount ("К оплате"), plus any
+  // landed cost (cargo) the payload adds on top.
   total: number;
   discountAmount: number;
   discountPct: number | null;
+  extraCost: number;
   itemCount: number;
 }
 
@@ -384,10 +386,17 @@ export class ReceiptService {
         total: money(gross),
       });
     }
+    // Cargo (ONLAYN-SOTUVCHI.md Q9) goes the other way: added on top of what
+    // is left after the discount, pro rata to each line's value, so every
+    // unit carries its share of getting the goods here.
+    const extraCost =
+      dto.extraCost != null && dto.extraCost > 0 ? Math.round(dto.extraCost * 100) / 100 : 0;
+    const netGross = gross - discount.amount;
     for (const line of lines) {
-      if (discount.amount > 0) {
+      if (discount.amount > 0 || (extraCost > 0 && netGross > 0)) {
         const doc = Number(line.priceIn);
-        const net = netUnitPrice(doc, gross, discount.amount);
+        let net = netUnitPrice(doc, gross, discount.amount);
+        if (extraCost > 0 && netGross > 0) net = (net * (netGross + extraCost)) / netGross;
         line.docPriceIn = line.priceIn;
         line.priceIn = money(net);
         line.priceInBase = money(net * rateToBase);
@@ -407,9 +416,10 @@ export class ReceiptService {
       lines,
       received,
       productInfo,
-      total: gross - discount.amount,
+      total: gross - discount.amount + (netGross > 0 ? extraCost : 0),
       discountAmount: discount.amount,
       discountPct: discount.pct,
+      extraCost: netGross > 0 ? extraCost : 0,
       itemCount,
     };
   }
@@ -468,6 +478,7 @@ export class ReceiptService {
       total,
       discountAmount,
       discountPct,
+      extraCost,
       itemCount,
     } = await this.prepareReceipt(businessId, dto);
 
@@ -490,6 +501,7 @@ export class ReceiptService {
         totalAmount: money(total),
         discountAmount: money(discountAmount),
         discountPct: discountPct != null ? String(discountPct) : null,
+        extraCost: money(extraCost),
         currency,
         usdRate: currency === 'USD' ? money(rateToBase) : null,
         itemCount,
@@ -1148,6 +1160,7 @@ export class ReceiptService {
       total,
       discountAmount,
       discountPct,
+      extraCost,
       itemCount,
     } = await this.prepareReceipt(businessId, dto);
 
@@ -1195,6 +1208,7 @@ export class ReceiptService {
           totalAmount: money(total),
           discountAmount: money(discountAmount),
           discountPct: discountPct != null ? String(discountPct) : null,
+          extraCost: money(extraCost),
           currency,
           usdRate: currency === 'USD' ? money(rateToBase) : null,
           itemCount,

@@ -2,8 +2,7 @@ import {
   canTransition,
   deliveryFeeFor,
   deliveryTypeOf,
-  legacyTarget,
-} from './online-order.rules';
+  legacyTarget, needsStock} from './online-order.rules';
 
 describe('online order transitions', () => {
   it('walks the delivery flow forward', () => {
@@ -64,5 +63,24 @@ describe('helpers', () => {
     expect(
       deliveryFeeFor(50000, {deliveryFee: 15000, freeDeliveryFrom: null}),
     ).toBe(15000);
+  });
+
+  // ONLAYN-SOTUVCHI.md §2: taken, waiting for goods.
+  it('puts Awaiting between Pending and Assembling', () => {
+    expect(canTransition('Pending', 'Awaiting', 'delivery')).toBe(true);
+    expect(canTransition('Awaiting', 'Assembling', 'delivery')).toBe(true);
+    expect(canTransition('Awaiting', 'Completed', 'pickup')).toBe(true);
+    expect(canTransition('Awaiting', 'Cancelled', 'pickup')).toBe(true);
+    expect(canTransition('Assembling', 'Awaiting', 'delivery')).toBe(false);
+    expect(canTransition('Awaiting', 'Pending', 'pickup')).toBe(false);
+  });
+
+  it('needs every line on the shelf only past Awaiting', () => {
+    expect(needsStock('Awaiting')).toBe(false);
+    expect(needsStock('Pending')).toBe(false);
+    expect(needsStock('Cancelled')).toBe(false);
+    for (const s of ['Assembling', 'Delivering', 'ReadyForPickup', 'Completed'] as const) {
+      expect(needsStock(s)).toBe(true);
+    }
   });
 });

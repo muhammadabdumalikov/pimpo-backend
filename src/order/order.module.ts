@@ -10,6 +10,8 @@ import { BranchModule } from '../branch/branch.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { FeatureModule } from '../feature/feature.module';
 import { PriceStepModule } from '../price-step/price-step.module';
+import { FinanceModule } from '../finance/finance.module';
+import { ReceiptModule } from '../receipt/receipt.module';
 import { OnlineOrderService } from './online-order.service';
 import { StoreSettingsService } from './store-settings.service';
 import {
@@ -18,7 +20,7 @@ import {
 } from './online-order.controller';
 
 @Module({
-  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule, PriceStepModule],
+  imports: [UserModule, SubscriptionModule, BranchModule, TelegramModule, FeatureModule, PriceStepModule, FinanceModule, ReceiptModule],
   controllers: [
     OrderController,
     SaleReturnController,

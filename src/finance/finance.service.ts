@@ -21,6 +21,7 @@ import {
 import {
   eq,
   and,
+  asc,
   ne,
   desc,
   gte,
@@ -44,6 +45,7 @@ import {QuerySupplySummaryDto} from './dto/query-supply-summary.dto';
 import {CancelTransactionDto} from './dto/cancel-transaction.dto';
 import {
   CANCELLABLE_SOURCES,
+  NON_PNL_SOURCES,
   capitalRow,
   liveRow,
   type FinanceSource,
@@ -91,6 +93,13 @@ export interface FundingOptions {
 
 // Non-cash "account" that collects kassa card/non-cash money for a business.
 const NONCASH_DEFAULT_NAME = 'Naqdsiz (kassa)';
+
+// Cash account an online order's cash lands on when the shop has none yet
+// (an online seller has no register, ONLAYN-SOTUVCHI.md Q5).
+const ORDER_CASH_DEFAULT_NAME = 'Naqd';
+
+// Income category a deposit kept on cancel is booked under (Q7).
+const KEPT_DEPOSIT_CATEGORY_NAME = 'Ushlab qolingan zaklad';
 
 // Expense category salary payments are booked under (see PayrollService).
 export const PAYROLL_CATEGORY_NAME = 'Ish haqi';
@@ -702,6 +711,160 @@ export class FinanceService {
     });
   }
 
+  // ─── Online orders (ONLAYN-SOTUVCHI.md Q5, Q7) ─────────────────────────────
+
+  /**
+   * The account an online order's money lands on: the one the user picked, or
+   * by method — cash on the shop's first cash account ("Naqd" is created for a
+   * shop that has none), any other method on the shared non-cash account.
+   */
+  async orderAccountTx(
+    tx: DbTx,
+    businessId: string,
+    method: string,
+    accountId?: string | null,
+  ): Promise<Account> {
+    if (accountId) {
+      const account = await this.loadAccount(businessId, accountId, tx);
+      if (account.type === 'external' || !account.isActive) {
+        throw new AppException(ErrorCode.FINANCE_ACCOUNT_NOT_FOUND);
+      }
+      return account;
+    }
+    if (method !== 'cash') {
+      return this.getOrCreateNoncashAccountTx(tx, businessId);
+    }
+    const [cash] = await tx
+      .select()
+      .from(accounts)
+      .where(
+        and(
+          eq(accounts.businessId, businessId),
+          eq(accounts.type, 'cash'),
+          eq(accounts.isActive, true),
+        ),
+      )
+      .orderBy(asc(accounts.createdAt))
+      .limit(1);
+    if (cash) return cash;
+    const [created] = await tx
+      .insert(accounts)
+      .values({
+        id: generateId(),
+        businessId,
+        name: ORDER_CASH_DEFAULT_NAME,
+        type: 'cash',
+        isActive: true,
+      })
+      .returning();
+    return created;
+  }
+
+  /**
+   * Money taken on an online order (a deposit or the balance) or a deposit
+   * given back, booked into `account` on the day it happens — no shift in
+   * between. The P&L skips both sources: the sale is the revenue. A refund is
+   * never refused below zero; the money already left.
+   */
+  async recordOrderMoneyTx(
+    tx: DbTx,
+    businessId: string,
+    account: Account,
+    params: {
+      source: 'order_payment' | 'order_refund';
+      amount: number;
+      note?: string | null;
+      cashierId?: string | null;
+      cashierName?: string | null;
+    },
+  ): Promise<FinancialTransaction> {
+    return this.insertLegTx(tx, businessId, account, {
+      kind: params.source === 'order_payment' ? 'income' : 'expense',
+      source: params.source,
+      amount: params.amount,
+      currency: 'UZS',
+      note: params.note,
+      cashierId: params.cashierId,
+      cashierName: params.cashierName,
+    });
+  }
+
+  /**
+   * A deposit the shop keeps when the order is cancelled (Q7): the money stays
+   * where it is, but it stops being the customer's and becomes other income.
+   * Booked as a pair on the same account — the order money leaves (not P&L)
+   * and comes back as "Ushlab qolingan zaklad" income (P&L) — so the balance
+   * does not move and the ledger still says what happened.
+   */
+  async recordKeptDepositTx(
+    tx: DbTx,
+    businessId: string,
+    account: Account,
+    params: {
+      amount: number;
+      note?: string | null;
+      cashierId?: string | null;
+      cashierName?: string | null;
+    },
+  ): Promise<void> {
+    const category = await this.getOrCreateKeptDepositCategoryTx(
+      tx,
+      businessId,
+    );
+    const pairId = generateId();
+    const leg = {
+      amount: params.amount,
+      currency: 'UZS',
+      note: params.note,
+      cashierId: params.cashierId,
+      cashierName: params.cashierName,
+      pairId,
+    };
+    await this.insertLegTx(tx, businessId, account, {
+      ...leg,
+      kind: 'expense',
+      source: 'order_refund',
+    });
+    await this.insertLegTx(tx, businessId, account, {
+      ...leg,
+      kind: 'income',
+      source: 'order_deposit_kept',
+      categoryId: category.id,
+      categoryName: category.name,
+    });
+  }
+
+  private async getOrCreateKeptDepositCategoryTx(
+    tx: DbTx,
+    businessId: string,
+  ): Promise<FinancialCategory> {
+    const [named] = await tx
+      .select()
+      .from(financialCategories)
+      .where(
+        and(
+          eq(financialCategories.businessId, businessId),
+          eq(financialCategories.kind, 'income'),
+          eq(financialCategories.name, KEPT_DEPOSIT_CATEGORY_NAME),
+          eq(financialCategories.isActive, true),
+        ),
+      )
+      .limit(1);
+    if (named) return named;
+    const [created] = await tx
+      .insert(financialCategories)
+      .values({
+        id: generateId(),
+        businessId,
+        name: KEPT_DEPOSIT_CATEGORY_NAME,
+        kind: 'income',
+        isCapital: false,
+        isActive: true,
+      })
+      .returning();
+    return created;
+  }
+
   // ─── Transactions (Tranzaksiyalar) ────────────────────────────────────────
   // A manual row's category must exist and be of the row's kind. A kirim
   // always needs one — its category is what says capital or profit.
@@ -1145,10 +1308,7 @@ export class FinanceService {
       // to and from suppliers is stock, capital is the owner's. Written as a
       // subquery because this listing does not join the categories.
       conditions.push(
-        notInArray(financialTransactions.source, [
-          'supplier_payment',
-          'supplier_refund',
-        ]),
+        notInArray(financialTransactions.source, [...NON_PNL_SOURCES]),
         ne(financialTransactions.source, 'reversal'),
         sql`NOT (COALESCE((SELECT fc.is_capital FROM financial_categories fc WHERE fc.id = ${financialTransactions.categoryId}), false) OR (${financialTransactions.kind} = 'income' AND ${financialTransactions.categoryId} IS NULL AND ${financialTransactions.source} IN ('manual', 'cash_movement')))`,
       );

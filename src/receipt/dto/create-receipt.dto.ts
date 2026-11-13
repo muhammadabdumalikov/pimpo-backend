@@ -144,4 +144,15 @@ export class CreateReceiptDto {
   @Max(100)
   @IsOptional()
   discountPct?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Landed cost (cargo) added on top, in the receipt currency. Spread over ' +
+      'the lines pro rata into their unit cost; included in totalAmount.',
+    example: 450000,
+  })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @IsOptional()
+  extraCost?: number;
 }

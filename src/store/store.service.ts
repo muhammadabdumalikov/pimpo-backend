@@ -40,6 +40,12 @@ const publicProductColumns = {
   categoryId: products.categoryId,
   quantity: products.quantity,
   quantityType: products.quantityType,
+  // Online seller (ONLAYN-SOTUVCHI.md): orderable with no stock, choices,
+  // and the lead time shown with it.
+  preorder: products.preorder,
+  options: products.options,
+  leadTime: products.leadTime,
+  description: products.description,
 };
 
 // On hand at the branch online orders are served from (YETKAZISH.md Q14);
@@ -68,6 +74,10 @@ export type StorePublicProduct = {
   categoryId: string | null;
   quantity: number;
   quantityType: string | null;
+  preorder: boolean;
+  options: {name: string; values: string[]}[] | null;
+  leadTime: string | null;
+  description: string | null;
 };
 
 @Injectable()
@@ -267,7 +277,7 @@ export class StoreService {
       // so reusing it in SELECT and ORDER BY is safe; price_out is numeric, so
       // it sorts by value.
       .orderBy(
-        sql`(${quantity} > 0) DESC`,
+        sql`(${quantity} > 0 OR ${products.preorder}) DESC`,
         ...(sort === 'price_asc'
           ? [asc(products.priceOut)]
           : sort === 'price_desc'
@@ -454,6 +464,7 @@ export class StoreService {
         id: products.id,
         name: products.name,
         priceOut: products.priceOut,
+        preorder: products.preorder,
         quantity: onHand(branchId),
       })
       .from(products)
@@ -469,7 +480,8 @@ export class StoreService {
           productId: item.productId,
         });
       }
-      if (product.quantity < item.quantity) {
+      // "Buyurtmaga olinadi": the line waits for stock instead (Q4).
+      if (!product.preorder && product.quantity < item.quantity) {
         throw new AppException(ErrorCode.STORE_INSUFFICIENT_STOCK, {
           qty: item.quantity,
           name: product.name,

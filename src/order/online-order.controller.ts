@@ -26,8 +26,11 @@ import {RequirePermission} from '../permission/permission.decorator';
 import {OnlineOrderService} from './online-order.service';
 import {StoreSettingsService} from './store-settings.service';
 import {
+  ArrivalDto,
   CancelOnlineOrderDto,
   CompleteOnlineOrderDto,
+  CreateManualOnlineOrderDto,
+  DepositDto,
   DispatchOnlineOrderDto,
   UpdateOnlineOrderItemsDto,
   UpdateStoreDeliveryDto,
@@ -51,7 +54,7 @@ export class OnlineOrderController {
   @ApiQuery({
     name: 'group',
     required: false,
-    enum: ['new', 'active', 'done', 'cancelled', 'all'],
+    enum: ['new', 'awaiting', 'inwork', 'active', 'done', 'cancelled', 'all'],
   })
   @ApiQuery({name: 'search', required: false})
   @ApiQuery({name: 'page', required: false})
@@ -79,6 +82,37 @@ export class OnlineOrderController {
     return this.online.counts(business.id);
   }
 
+  @Get('awaiting-stock')
+  @ApiOperation({
+    summary: 'What the waiting orders need, per product ("Tovar keldi")',
+  })
+  awaitingStock(@CurrentBusiness() business: IBusiness) {
+    return this.online.awaitingStock(business.id);
+  }
+
+  @Post()
+  @ApiOperation({summary: 'Type in an order taken in a DM (starts accepted)'})
+  createManual(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Body() dto: CreateManualOnlineOrderDto,
+  ) {
+    return this.online.createManual(business.id, account, dto);
+  }
+
+  @Post('arrivals')
+  @ApiOperation({
+    summary:
+      'Goods for waiting orders arrived: receive them (cost + cargo), optionally paid from an account',
+  })
+  arrivals(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Body() dto: ArrivalDto,
+  ) {
+    return this.online.receiveArrival(business.id, account, dto);
+  }
+
   @Get(':id')
   @ApiParam({name: 'id'})
   @ApiOperation({summary: 'One storefront order with lines and status history'})
@@ -95,6 +129,18 @@ export class OnlineOrderController {
     @Param('id') id: string,
   ) {
     return this.online.accept(business.id, id, account);
+  }
+
+  @Post(':id/deposits')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({summary: 'Take a deposit (zaklad) before hand-over'})
+  addDeposit(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: DepositDto,
+  ) {
+    return this.online.addDeposit(business.id, id, account, dto);
   }
 
   @Post(':id/dispatch')
@@ -145,7 +191,14 @@ export class OnlineOrderController {
     @Param('id') id: string,
     @Body() dto: CancelOnlineOrderDto,
   ) {
-    return this.online.cancel(business.id, id, account, dto.reason, dto.note);
+    return this.online.cancel(
+      business.id,
+      id,
+      account,
+      dto.reason,
+      dto.note,
+      dto.deposit ?? 'refund',
+    );
   }
 
   @Put(':id/items')

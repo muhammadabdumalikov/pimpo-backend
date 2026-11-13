@@ -103,6 +103,26 @@ export interface StoreFulfilment {
   locale?: string | null;
 }
 
+/**
+ * Server-only extras of a storefront or hand-made online order
+ * (ONLAYN-SOTUVCHI.md) — never part of the HTTP DTO.
+ */
+export interface OnlineEntry {
+  // Q1–Q2: a line whose branch stock does not cover it is written without
+  // touching stock (order_items.stock_pending) instead of overselling.
+  deferUnstocked?: boolean;
+  // The buyer's choices, by index of dto.items.
+  itemOptions?: ({name: string; value: string}[] | null)[];
+  // Set when staff typed the order in (Q3): it starts accepted — Awaiting
+  // when a line waits for stock, else Assembling — and the history names them.
+  manual?: {
+    channel: string | null;
+    actorType: 'owner' | 'staff';
+    actorId: string | null;
+    actorName: string | null;
+  };
+}
+
 /** Receipt-only extras served next to an order (see receiptContext). */
 export interface OrderReceiptContext {
   /** Register of the sale's shift — picks its receipt template. */
@@ -389,6 +409,7 @@ export class OrderService {
     dto: CreateOrderDto & {
       telegramUserId?: string | null;
       fulfilment?: StoreFulfilment;
+      online?: OnlineEntry;
     },
     account?: IAccount,
     // A sale coming back off the offline queue, not one being rung up now. Set
@@ -513,10 +534,11 @@ export class OrderService {
       // A dish draws its recipe's ingredients instead of its own stock.
       isDish: boolean;
       note: string | null;
+      options: {name: string; value: string}[] | null;
     }[] = [];
     let itemCount = 0;
 
-    for (const item of dto.items) {
+    for (const [index, item] of dto.items.entries()) {
       const [product] = await this.dbService.db
         .select()
         .from(products)
@@ -581,6 +603,7 @@ export class OrderService {
             : weightSourceFor(product, item.weightSource),
         isDish: product.kind === 'dish',
         note: item.note?.trim() || null,
+        options: dto.online?.itemOptions?.[index] ?? null,
       });
       // Weighed goods count as one item (their fractional kg isn't a piece
       // count), so itemCount stays a whole number for the integer column.
@@ -648,13 +671,39 @@ export class OrderService {
           note: string | null;
           // Set on a dish line: what its recipe drew (stock moved already).
           drawn: DishConsumption | null;
+          // Not drawn yet — waits for the goods (OnlineEntry.deferUnstocked).
+          stockPending: boolean;
+          options: {name: string; value: string}[] | null;
         }[] = [];
         let total = 0;
 
         for (const p of planned) {
           let drawn: DishConsumption | null = null;
           let c: {costTotal: number; costIn: number; revenueTotal: number};
-          if (p.isDish) {
+          // An online order line the branch cannot cover yet waits whole
+          // (Q2): no lot is touched, its cost is settled when it is drawn.
+          let stockPending = false;
+          if (dto.online?.deferUnstocked && !p.isDish) {
+            const [onHand] = await tx
+              .select({quantity: branchStock.quantity})
+              .from(branchStock)
+              .where(
+                and(
+                  eq(branchStock.productId, p.productId),
+                  eq(branchStock.branchId, branchId),
+                ),
+              )
+              .limit(1);
+            stockPending = (onHand?.quantity ?? 0) + 1e-9 < p.quantity;
+          }
+          if (stockPending) {
+            const unitPrice = p.priceOverride ?? p.priceOut;
+            c = {
+              costTotal: 0,
+              costIn: 0,
+              revenueTotal: Math.round(unitPrice * p.quantity * 100) / 100,
+            };
+          } else if (p.isDish) {
             // The dish card holds no stock: its recipe's ingredients are drawn
             // from this branch's lots instead, and they are the line's cost.
             drawn = await consumeDishTx(tx, {
@@ -719,6 +768,8 @@ export class OrderService {
             weightSource: p.weightSource,
             note: p.note,
             drawn,
+            stockPending,
+            options: p.options,
           });
         }
 
@@ -833,6 +884,13 @@ export class OrderService {
         }
 
         const taxAmount = vatRate > 0 ? (total * vatRate) / (100 + vatRate) : 0;
+        // A hand-made online order starts accepted (ONLAYN-SOTUVCHI.md Q3).
+        const manual = dto.online?.manual ?? null;
+        const status = manual
+          ? lines.some((l) => l.stockPending)
+            ? 'Awaiting'
+            : 'Assembling'
+          : (dto.status ?? 'Pending');
         const receiptNo = await nextReceiptNo(tx, businessId);
         const queueNo = isFood ? await nextQueueNo(tx, businessId) : null;
 
@@ -845,7 +903,8 @@ export class OrderService {
           customerName,
           customerPhone: dto.phone ?? null,
           telegramUserId: dto.telegramUserId ?? null,
-          status: dto.status ?? 'Pending',
+          status,
+          channel: manual?.channel ?? null,
           totalAmount: money(total),
           subtotalAmount: money(subtotal),
           discountType,
@@ -884,16 +943,18 @@ export class OrderService {
             : {}),
         });
 
-        // The order's first history row: the customer placed it.
+        // The order's first history row: the customer placed it, or staff
+        // typed it in.
         if (isStoreSale) {
           await tx.insert(orderStatusEvents).values({
             id: generateId(),
             businessId,
             orderId,
             fromStatus: null,
-            toStatus: dto.status ?? 'Pending',
-            actorType: 'customer',
-            actorName: customerName,
+            toStatus: status,
+            actorType: manual?.actorType ?? 'customer',
+            actorId: manual?.actorId ?? null,
+            actorName: manual ? manual.actorName : customerName,
           });
         }
 
@@ -912,6 +973,8 @@ export class OrderService {
             costTotal: line.costTotal,
             weightSource: line.weightSource,
             note: line.note,
+            stockPending: line.stockPending,
+            options: line.options,
           })),
         );
 
@@ -939,8 +1002,9 @@ export class OrderService {
         // changes it. This used to re-point it at the new FIFO-front lot, which
         // quietly undid every hand-set price at the next sale.
         for (const line of lines) {
-          // A dish's stock moved through its ingredients above.
-          if (line.drawn) continue;
+          // A dish's stock moved through its ingredients above; a waiting
+          // line moves when its goods arrive.
+          if (line.drawn || line.stockPending) continue;
           await tx
             .insert(branchStock)
             .values({
@@ -1382,6 +1446,7 @@ export class OrderService {
     dto: CreateOrderDto & {
       telegramUserId?: string | null;
       fulfilment?: StoreFulfilment;
+      online?: OnlineEntry;
     },
   ): Promise<OrderWithItems> {
     const firstId = dto.items[0]?.productId;
@@ -1930,7 +1995,8 @@ export class OrderService {
     branchId: string | null,
   ): Promise<void> {
     for (const item of items) {
-      if (!item.productId) continue;
+      // A line still waiting for its goods never took any stock to give back.
+      if (!item.productId || item.stockPending) continue;
       // A dish line goes back as the ingredients it drew (FASTFOOD.md §4).
       const restored = await restoreDishComponentsTx(tx, {
         businessId,
@@ -1994,6 +2060,138 @@ export class OrderService {
           ),
         );
     }
+  }
+
+  /**
+   * Draw an online order's waiting lines from stock (ONLAYN-SOTUVCHI.md Q1):
+   * the goods arrived and the order moves past 'Awaiting'. Each line is drawn
+   * whole from the order's branch at today's lots — the cost is what those
+   * goods cost — while its price stays what the customer was quoted. Refused,
+   * naming the product, if the branch still cannot cover a line; nothing is
+   * drawn then. Runs in the caller's transaction (the status move). Returns
+   * the product ids drawn, for the waiting-price settle after commit.
+   */
+  async drawPendingLinesTx(
+    tx: DbTx,
+    businessId: string,
+    order: Pick<Order, 'id' | 'branchId'>,
+  ): Promise<string[]> {
+    const pending = await tx
+      .select()
+      .from(orderItems)
+      .where(
+        and(eq(orderItems.orderId, order.id), eq(orderItems.stockPending, true)),
+      );
+    if (!pending.length) return [];
+
+    const branchId =
+      order.branchId ?? (await this.branchService.ensureDefault(businessId)).id;
+    const [settings] = await tx
+      .select({costingMethod: receiptSettings.costingMethod})
+      .from(receiptSettings)
+      .where(eq(receiptSettings.businessId, businessId))
+      .limit(1);
+    const method: CostingMethod =
+      settings?.costingMethod === 'FIFO' ? 'FIFO' : 'AVERAGE';
+
+    // Same product on two lines draws against one running figure.
+    const need = new Map<string, number>();
+    for (const line of pending) {
+      if (!line.productId) continue;
+      need.set(line.productId, (need.get(line.productId) ?? 0) + line.quantity);
+    }
+    for (const [productId, quantity] of need) {
+      const [onHand] = await tx
+        .select({quantity: branchStock.quantity})
+        .from(branchStock)
+        .where(
+          and(
+            eq(branchStock.productId, productId),
+            eq(branchStock.branchId, branchId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      const available = onHand?.quantity ?? 0;
+      if (available + 1e-9 < quantity) {
+        const line = pending.find((l) => l.productId === productId)!;
+        throw new AppException(ErrorCode.ORDER_STOCK_NOT_ARRIVED, {
+          name: line.productName,
+          need: quantity,
+          available: Math.max(0, available),
+        });
+      }
+    }
+
+    for (const line of pending) {
+      if (!line.productId) {
+        // The card was deleted while the order waited: nothing to draw.
+        await tx
+          .update(orderItems)
+          .set({stockPending: false})
+          .where(eq(orderItems.id, line.id));
+        continue;
+      }
+      const [product] = await tx
+        .select({priceIn: products.priceIn, priceOut: products.priceOut})
+        .from(products)
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, line.productId),
+          ),
+        )
+        .limit(1);
+      const c = await consumeBatches(
+        tx,
+        businessId,
+        line.productId,
+        line.quantity,
+        method,
+        Number(product?.priceIn ?? 0),
+        Number(line.priceOut),
+        branchId,
+      );
+      await tx
+        .update(orderItems)
+        .set({
+          stockPending: false,
+          costIn: money(c.costIn),
+          costTotal: money(c.costTotal),
+        })
+        .where(eq(orderItems.id, line.id));
+      await tx
+        .update(branchStock)
+        .set({
+          quantity: sql`ROUND((${branchStock.quantity} - ${line.quantity})::numeric, 3)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(branchStock.productId, line.productId),
+            eq(branchStock.branchId, branchId),
+          ),
+        );
+      await tx
+        .update(products)
+        .set({
+          quantity: sql`ROUND((${products.quantity} - ${line.quantity})::numeric, 3)`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(products.businessId, businessId),
+            eq(products.id, line.productId),
+          ),
+        );
+    }
+    return [...need.keys()];
+  }
+
+  /** After a draw commits: lower prices waiting on the sold-out stock apply. */
+  async settleWaitingPrices(businessId: string, productIds: string[]) {
+    if (!productIds.length) return;
+    await this.priceSteps.settle(businessId, productIds).catch(() => undefined);
   }
 
   /**

@@ -5,6 +5,8 @@
 export type StoreLocale = 'uz' | 'uzc' | 'ru' | 'en';
 
 export type StoreOrderMessageKind =
+  | 'Awaiting'
+  | 'Arrived'
   | 'Assembling'
   | 'Delivering'
   | 'ReadyForPickup'
@@ -29,9 +31,14 @@ export interface StoreOrderMessage {
   cancelNote?: string | null;
   // Lines trimmed while assembling: quantity before → after (0 = removed).
   changes?: {name: string; from: number; to: number}[];
+  // Deposit already taken (ONLAYN-SOTUVCHI.md): shown, and taken off "to pay".
+  prepaidAmount?: string | number | null;
 }
 
 type Dict = {
+  awaiting: string;
+  arrived: string;
+  paid: string;
   assembling: string;
   delivering: string;
   ready: string;
@@ -52,6 +59,9 @@ type Dict = {
 
 const DICTS: Record<StoreLocale, Dict> = {
   uz: {
+    awaiting: '🕓 Buyurtmangiz qabul qilindi. Mahsulot kelishi bilan xabar beramiz',
+    arrived: '📦 Mahsulotingiz keldi, buyurtmangiz yig\'ilmoqda',
+    paid: "Oldindan to'langan",
     assembling: "✅ Buyurtmangiz qabul qilindi va yig'ilmoqda",
     delivering: "🚚 Buyurtmangiz yo'lda",
     ready: '🏪 Buyurtmangiz tayyor, olib ketishingiz mumkin',
@@ -74,6 +84,9 @@ const DICTS: Record<StoreLocale, Dict> = {
     },
   },
   uzc: {
+    awaiting: '🕓 Буюртмангиз қабул қилинди. Маҳсулот келиши билан хабар берамиз',
+    arrived: '📦 Маҳсулотингиз келди, буюртмангиз йиғилмоқда',
+    paid: 'Олдиндан тўланган',
     assembling: '✅ Буюртмангиз қабул қилинди ва йиғилмоқда',
     delivering: '🚚 Буюртмангиз йўлда',
     ready: '🏪 Буюртмангиз тайёр, олиб кетишингиз мумкин',
@@ -96,6 +109,9 @@ const DICTS: Record<StoreLocale, Dict> = {
     },
   },
   ru: {
+    awaiting: '🕓 Ваш заказ принят. Сообщим, как только товар поступит',
+    arrived: '📦 Ваш товар поступил, заказ собирается',
+    paid: 'Предоплата',
     assembling: '✅ Ваш заказ принят и собирается',
     delivering: '🚚 Ваш заказ в пути',
     ready: '🏪 Ваш заказ готов, можно забирать',
@@ -118,6 +134,9 @@ const DICTS: Record<StoreLocale, Dict> = {
     },
   },
   en: {
+    awaiting: "🕓 Your order was accepted. We'll let you know when the goods arrive",
+    arrived: '📦 Your goods arrived and your order is being packed',
+    paid: 'Prepaid',
     assembling: '✅ Your order was accepted and is being packed',
     delivering: '🚚 Your order is on its way',
     ready: '🏪 Your order is ready for pickup',
@@ -159,6 +178,12 @@ export function buildStoreOrderMessage(m: StoreOrderMessage): string | null {
   const lines: string[] = [];
 
   switch (m.kind) {
+    case 'Awaiting':
+      lines.push(t.awaiting);
+      break;
+    case 'Arrived':
+      lines.push(t.arrived);
+      break;
     case 'Assembling':
       lines.push(t.assembling);
       break;
@@ -208,8 +233,10 @@ export function buildStoreOrderMessage(m: StoreOrderMessage): string | null {
   lines.push('', `🧾 ${t.order}: #${m.orderId.slice(0, 8).toUpperCase()}`);
   if (m.itemCount != null) lines.push(`📦 ${t.goods(qty(m.itemCount))}`);
   if (fee > 0) lines.push(`🚚 ${t.delivery}: ${money(fee)} ${t.som}`);
+  const prepaid = Number(m.prepaidAmount) || 0;
+  if (prepaid > 0) lines.push(`✅ ${t.paid}: ${money(prepaid)} ${t.som}`);
   lines.push(
-    `💰 ${t.pay}: ${money((Number(m.totalAmount) || 0) + fee)} ${t.som}`,
+    `💰 ${t.pay}: ${money(Math.max(0, (Number(m.totalAmount) || 0) + fee - prepaid))} ${t.som}`,
   );
   if (m.shopName) lines.push('', `🏪 ${m.shopName}`);
   return lines.join('\n');

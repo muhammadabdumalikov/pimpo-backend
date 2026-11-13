@@ -1,5 +1,7 @@
 import {ApiProperty} from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -10,8 +12,11 @@ import {
   Min,
   MinLength,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import {Type} from 'class-transformer';
 import {PRODUCT_KINDS, type ProductKind} from '../../common/business-type';
+import {ProductOptionGroupDto} from './create-product.dto';
 
 export class UpdateProductDto {
   @ApiProperty({
@@ -222,4 +227,50 @@ export class UpdateProductDto {
   @IsNumber({maxDecimalPlaces: 3})
   @Min(0.001)
   recipeYield?: number;
+
+  @ApiProperty({
+    description:
+      '"Buyurtmaga olinadi" (ONLAYN-SOTUVCHI.md Q4): the storefront takes orders for this card with no stock on hand.',
+    required: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  preorder?: boolean;
+
+  @ApiProperty({
+    description:
+      "Light variants (Q8): choices a buyer picks, e.g. [{name: \"O'lcham\", values: [\"40\", \"41\"]}]. Max 3 groups × 30 values. Stock stays per card.",
+    required: false,
+    nullable: true,
+    type: [ProductOptionGroupDto],
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsArray()
+  @ArrayMaxSize(3)
+  @ValidateNested({each: true})
+  @Type(() => ProductOptionGroupDto)
+  options?: ProductOptionGroupDto[] | null;
+
+  @ApiProperty({
+    description: 'Lead time shown next to a preorder card ("15–20 kun").',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  @MaxLength(60)
+  leadTime?: string | null;
+
+  @ApiProperty({
+    description: 'Product description shown on the storefront (plain text, ≤ 2000).',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  @MaxLength(2000)
+  description?: string | null;
 }

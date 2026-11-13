@@ -15,6 +15,18 @@ import {
   ValidateNested,
 } from 'class-validator';
 
+export class StoreOrderItemOptionDto {
+  @ApiProperty({ example: "O'lcham" })
+  @IsString()
+  @MaxLength(40)
+  name: string;
+
+  @ApiProperty({ example: '41' })
+  @IsString()
+  @MaxLength(40)
+  value: string;
+}
+
 export class StoreOrderItemDto {
   @ApiProperty({ description: 'Product id' })
   @IsString()
@@ -24,6 +36,17 @@ export class StoreOrderItemDto {
   @IsInt()
   @Min(1)
   quantity: number;
+
+  @ApiProperty({
+    description: "The buyer's choices from the card's options (ONLAYN-SOTUVCHI.md Q8)",
+    type: [StoreOrderItemOptionDto],
+    required: false,
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => StoreOrderItemOptionDto)
+  options?: StoreOrderItemOptionDto[];
 }
 
 export class StoreCheckoutDto {

@@ -1,9 +1,12 @@
 // The storefront order state machine (YETKAZISH.md §2). Pure — unit-tested in
 // online-order.rules.spec.ts.
 //
-//   Pending ─┬─> Assembling ─┬─> Delivering      (delivery) ─┬─> Completed
-//            │               └─> ReadyForPickup  (pickup)   ─┘
+//   Pending ─┬─> Awaiting ─> Assembling ─┬─> Delivering      (delivery) ─┬─> Completed
+//            │                           └─> ReadyForPickup  (pickup)   ─┘
 //            └─> (any later step, skipping is allowed — Q7)
+//
+// Awaiting ("Tovar kutilmoqda", ONLAYN-SOTUVCHI.md §2): taken, but at least
+// one line is not drawn from stock yet. Moving past it draws those lines.
 //   every non-final step ──> Cancelled (with a reason — Q8)
 //
 // Never backwards: the customer was already told, and a completed order has
@@ -11,6 +14,7 @@
 
 export type OnlineStatus =
   | 'Pending'
+  | 'Awaiting'
   | 'Assembling'
   | 'Delivering'
   | 'ReadyForPickup'
@@ -21,7 +25,9 @@ export type DeliveryType = 'pickup' | 'delivery';
 
 export const ONLINE_GROUPS = {
   new: ['Pending'],
-  active: ['Assembling', 'Delivering', 'ReadyForPickup'],
+  awaiting: ['Awaiting'],
+  inwork: ['Assembling', 'Delivering', 'ReadyForPickup'],
+  active: ['Awaiting', 'Assembling', 'Delivering', 'ReadyForPickup'],
   done: ['Completed'],
   cancelled: ['Cancelled'],
 } as const satisfies Record<string, readonly OnlineStatus[]>;
@@ -31,6 +37,7 @@ export type OnlineGroup = keyof typeof ONLINE_GROUPS | 'all';
 /** Statuses an order has stock out for but is not a sale yet. */
 export const IN_PROGRESS_STATUSES: readonly OnlineStatus[] = [
   'Pending',
+  'Awaiting',
   'Assembling',
   'Delivering',
   'ReadyForPickup',
@@ -49,12 +56,21 @@ export const CUSTOMER_CANCEL_REASON = 'customer_cancelled';
 
 const RANK: Record<OnlineStatus, number> = {
   Pending: 0,
-  Assembling: 1,
-  Delivering: 2,
-  ReadyForPickup: 2,
-  Completed: 3,
-  Cancelled: 3,
+  Awaiting: 1,
+  Assembling: 2,
+  Delivering: 3,
+  ReadyForPickup: 3,
+  Completed: 4,
+  Cancelled: 4,
 };
+
+/** Statuses whose lines must all be drawn from stock (anything past Awaiting). */
+export function needsStock(to: OnlineStatus): boolean {
+  return RANK[to] >= RANK.Assembling && to !== 'Cancelled';
+}
+
+export const ORDER_CHANNELS = ['instagram', 'telegram', 'other'] as const;
+export type OrderChannel = (typeof ORDER_CHANNELS)[number];
 
 /** A storefront order with no delivery_type predates delivery: pickup. */
 export function deliveryTypeOf(raw: string | null | undefined): DeliveryType {

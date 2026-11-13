@@ -183,6 +183,19 @@ export class StoreController {
       telegramUserId: telegramUser?.id ?? null,
       branchId,
       fulfilment,
+      // A preorder line the branch cannot cover waits for its goods
+      // (ONLAYN-SOTUVCHI.md Q1) instead of overselling.
+      online: {
+        deferUnstocked: true,
+        itemOptions: dto.items.map((i) =>
+          i.options?.length
+            ? i.options
+                .map((o) => ({ name: o.name.trim(), value: o.value.trim() }))
+                .filter((o) => o.name && o.value)
+                .slice(0, 3)
+            : null,
+        ),
+      },
     });
 
     return {

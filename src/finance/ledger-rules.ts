@@ -16,7 +16,22 @@ export type FinanceSource =
   // Value of undocumented opening stock (FILIAL-ASSORTIMENT.md Q4): capital,
   // not cash — goods the owner brought into the business.
   | 'opening_stock'
+  // Online seller (ONLAYN-SOTUVCHI.md Q5, Q7): money taken on an online order
+  // (deposit or balance) and deposits given back. Not P&L — the sale is the
+  // revenue, read from orders on the day it completes.
+  | 'order_payment'
+  | 'order_refund'
+  // The income leg of a deposit the shop kept on cancel: other income in P&L.
+  | 'order_deposit_kept'
   | 'reversal'; // storno row
+
+/** Ledger sources the P&L never reads as income or expense of their own. */
+export const NON_PNL_SOURCES: readonly FinanceSource[] = [
+  'supplier_payment',
+  'supplier_refund',
+  'order_payment',
+  'order_refund',
+];
 
 // Only these can be stornoed from Moliya; the rest belong to their module.
 export const CANCELLABLE_SOURCES: readonly FinanceSource[] = [

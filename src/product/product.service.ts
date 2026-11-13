@@ -114,6 +114,29 @@ export interface ScanResolution {
   notInBranch?: {id: string; name: string} | null;
 }
 
+/**
+ * A card's choice groups, tidied (ONLAYN-SOTUVCHI.md Q8): trimmed, blanks and
+ * repeats dropped, at most 3 groups of 30 values. None left → null.
+ */
+export function cleanProductOptions(
+  raw: {name: string; values: string[]}[] | null | undefined,
+): {name: string; values: string[]}[] | null {
+  if (!raw) return null;
+  const groups: {name: string; values: string[]}[] = [];
+  for (const g of raw) {
+    const name = String(g?.name ?? '').trim().slice(0, 40);
+    if (!name || groups.some((x) => x.name === name)) continue;
+    const values = [
+      ...new Set(
+        (g.values ?? []).map((v) => String(v ?? '').trim().slice(0, 40)).filter(Boolean),
+      ),
+    ].slice(0, 30);
+    if (values.length) groups.push({name, values});
+    if (groups.length === 3) break;
+  }
+  return groups.length ? groups : null;
+}
+
 @Injectable()
 export class ProductService {
   private readonly logger = new Logger(ProductService.name);
@@ -180,6 +203,10 @@ export class ProductService {
       kind?: ProductKind;
       showInMenu?: boolean;
       recipeYield?: number;
+      preorder?: boolean;
+      options?: {name: string; values: string[]}[] | null;
+      leadTime?: string | null;
+      description?: string | null;
     },
   ): Promise<Product> {
     // Dish and semi-finished cards (FASTFOOD.md §2) belong to food businesses.
@@ -275,6 +302,11 @@ export class ProductService {
       kind,
       showInMenu: kind === 'stock' ? (data.showInMenu ?? false) : false,
       recipeYield: kind === 'semi' ? (data.recipeYield ?? null) : null,
+      // Online seller (ONLAYN-SOTUVCHI.md): only stock cards wait for goods.
+      preorder: kind === 'stock' ? (data.preorder ?? false) : false,
+      options: cleanProductOptions(data.options),
+      leadTime: data.leadTime?.trim() || null,
+      description: data.description?.trim() || null,
       isActive: true,
     };
 
@@ -1243,6 +1275,11 @@ export class ProductService {
     data = {...data};
     delete data.kind;
     delete data.recipeYield;
+    if (data.options !== undefined) data.options = cleanProductOptions(data.options);
+    if (data.leadTime !== undefined) data.leadTime = data.leadTime?.trim() || null;
+    if (data.description !== undefined)
+      data.description = data.description?.trim() || null;
+    if (hasRecipe(existing.kind)) delete data.preorder;
     if (hasRecipe(existing.kind)) {
       delete data.quantity;
       delete data.priceIn;

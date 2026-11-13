@@ -264,6 +264,19 @@ export const products = pgTable(
     // unit ("this makes 2 kg of sauce"). 30 g of it in a dish draws 30/2000 of
     // each ingredient. Also where cooking loss lives (1 kg raw → 0.7 kg fried).
     recipeYield: doublePrecision('recipe_yield'),
+    // ── Online seller (ONLAYN-SOTUVCHI.md) ──
+    // "Buyurtmaga olinadi": the storefront takes an order for this card even when
+    // none is on hand; the line then waits for stock (order_items.stock_pending).
+    // Only gates the shopper — staff may put any card on a hand-made order.
+    preorder: boolean('preorder').default(false).notNull(),
+    // Light variants (Q8): choices a buyer picks, written onto the order line.
+    // Stock is kept per card, not per choice. [{name: "O'lcham", values: ["41"]}]
+    options: jsonb('options').$type<{name: string; values: string[]}[]>(),
+    // Free text shown next to a preorder card ("15–20 kun"). No dates, no alerts.
+    leadTime: varchar('lead_time', {length: 60}),
+    // What the card is, in the seller's words — shown on the storefront card
+    // and product page. Plain text, line breaks kept.
+    description: text('description'),
     isActive: boolean('is_active').default(true).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -587,6 +600,16 @@ export const orders = pgTable(
     // Why a storefront order was cancelled — ONLINE_CANCEL_REASONS code.
     cancelReason: varchar('cancel_reason', {length: 20}),
     cancelNote: varchar('cancel_note', {length: 255}),
+    // ── Online seller (ONLAYN-SOTUVCHI.md) ──
+    // Deposits ("zaklad") taken before hand-over, net of refunds: a cache of
+    // order_payments (deposit − refund), like returnedAmount. Completing takes
+    // totalAmount + deliveryFee − prepaidAmount.
+    prepaidAmount: decimal('prepaid_amount', {precision: 12, scale: 2})
+      .notNull()
+      .default('0'),
+    // Where a hand-made order came from: 'instagram' | 'telegram' | 'other'.
+    // Null = the shopper placed it on the storefront.
+    channel: varchar('channel', {length: 12}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -670,6 +693,13 @@ export const orderItems = pgTable(
     // Kitchen note for the line ("piyozsiz, achchiq") — printed under it on the
     // kitchen ticket. Never changes what the recipe draws.
     note: varchar('note', {length: 200}),
+    // Online seller (ONLAYN-SOTUVCHI.md Q1–Q2): true while the line has NOT
+    // been drawn from stock yet — the goods have not arrived. Its cost is 0
+    // until it is drawn (OnlineOrderService), which happens before the order
+    // can move past 'Awaiting'. False on every till sale and every older row.
+    stockPending: boolean('stock_pending').default(false).notNull(),
+    // The buyer's choices for this line (products.options): [{name, value}].
+    options: jsonb('options').$type<{name: string; value: string}[]>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
@@ -793,6 +823,12 @@ export const goodsReceipts = pgTable('goods_receipts', {
   // the amount (it is re-applied when the lines change); null when the amount
   // was typed and stays fixed.
   discountPct: decimal('discount_pct', {precision: 7, scale: 4}),
+  // Landed cost added on top of the lines (cargo, ONLAYN-SOTUVCHI.md Q9), in
+  // the receipt currency. Spread over the lines pro rata into price_in — the
+  // mirror image of discountAmount. totalAmount includes it.
+  extraCost: decimal('extra_cost', {precision: 12, scale: 2})
+    .notNull()
+    .default('0'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -4007,6 +4043,49 @@ export const orderStatusEvents = pgTable(
 );
 
 export type OrderStatusEvent = typeof orderStatusEvents.$inferSelect;
+
+// Money taken on a storefront/hand-made order before or at hand-over
+// (ONLAYN-SOTUVCHI.md Q5, Q7): a deposit ("zaklad"), the balance at
+// completion, or a deposit refunded on cancel. Each row is booked straight
+// into a Moliya account (financeTxId) on the day it happens — never through a
+// shift. orders.prepaid_amount caches deposit − refund.
+export const orderPayments = pgTable(
+  'order_payments',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    orderId: varchar('order_id', {length: 36})
+      .notNull()
+      .references(() => orders.id, {onDelete: 'cascade'}),
+    // 'deposit' | 'balance' | 'refund'
+    kind: varchar('kind', {length: 10}).notNull(),
+    // Always positive; `kind` says the direction.
+    amount: decimal('amount', {precision: 12, scale: 2}).notNull(),
+    // Payment method code (payment_methods / 'cash' | 'card' …).
+    method: varchar('method', {length: 50}).notNull(),
+    accountId: varchar('account_id', {length: 36}),
+    accountName: varchar('account_name', {length: 255}),
+    financeTxId: varchar('finance_tx_id', {length: 36}),
+    actorId: varchar('actor_id', {length: 36}),
+    actorName: varchar('actor_name', {length: 255}),
+    note: varchar('note', {length: 255}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    orderIdx: index('order_payments_order_idx').on(
+      table.orderId,
+      table.createdAt,
+    ),
+    businessCreatedIdx: index('order_payments_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export type OrderPayment = typeof orderPayments.$inferSelect;
 
 // How a shop hands over online orders (Q3, Q4, Q14, Q19). Not on
 // `businesses`: that row is spread wholesale into login/profile payloads.

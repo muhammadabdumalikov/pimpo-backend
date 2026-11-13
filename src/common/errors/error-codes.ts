@@ -199,6 +199,10 @@ export enum ErrorCode {
   STORE_INSUFFICIENT_STOCK = 'STORE_INSUFFICIENT_STOCK',
   ORDER_CANCELLED_IMMUTABLE = 'ORDER_CANCELLED_IMMUTABLE',
   STORE_NOT_FOUND = 'STORE_NOT_FOUND',
+  // Storefront banners (store_banners)
+  STORE_BANNER_NOT_FOUND = 'STORE_BANNER_NOT_FOUND',
+  STORE_BANNER_LIMIT_REACHED = 'STORE_BANNER_LIMIT_REACHED',
+  STORE_BANNER_INVALID_LINK = 'STORE_BANNER_INVALID_LINK',
   STORE_SLUG_TAKEN = 'STORE_SLUG_TAKEN',
   STORE_SLUG_INVALID = 'STORE_SLUG_INVALID',
   // Online-order delivery (YETKAZISH.md)
@@ -210,6 +214,10 @@ export enum ErrorCode {
   ORDER_ITEMS_ALL_REMOVED = 'ORDER_ITEMS_ALL_REMOVED',
   ORDER_PAYMENT_MISMATCH = 'ORDER_PAYMENT_MISMATCH',
   COURIER_NOT_FOUND = 'COURIER_NOT_FOUND',
+  // Online seller (ONLAYN-SOTUVCHI.md)
+  ORDER_STOCK_NOT_ARRIVED = 'ORDER_STOCK_NOT_ARRIVED',
+  ORDER_DEPOSIT_TOO_LARGE = 'ORDER_DEPOSIT_TOO_LARGE',
+  ORDER_DEPOSIT_NOT_ALLOWED = 'ORDER_DEPOSIT_NOT_ALLOWED',
   STORE_NO_FULFILLMENT_METHOD = 'STORE_NO_FULFILLMENT_METHOD',
   STORE_FULFILLMENT_UNAVAILABLE = 'STORE_FULFILLMENT_UNAVAILABLE',
   STORE_DELIVERY_ADDRESS_REQUIRED = 'STORE_DELIVERY_ADDRESS_REQUIRED',
@@ -1074,6 +1082,19 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.NOT_FOUND,
     message: 'Store not found',
   },
+  [ErrorCode.STORE_BANNER_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Banner not found',
+  },
+  [ErrorCode.STORE_BANNER_LIMIT_REACHED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The storefront already has the maximum number of banners',
+  },
+  [ErrorCode.STORE_BANNER_INVALID_LINK]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'The banner link must be one of this shop\'s products or categories, or an http(s) address',
+  },
   // Online-order delivery (YETKAZISH.md)
   [ErrorCode.ORDER_NOT_ONLINE]: {
     status: HttpStatus.BAD_REQUEST,
@@ -1106,6 +1127,19 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.COURIER_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Courier not found',
+  },
+  // Online seller (ONLAYN-SOTUVCHI.md)
+  [ErrorCode.ORDER_STOCK_NOT_ARRIVED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: '"{name}" has not arrived yet: {need} needed, {available} in stock',
+  },
+  [ErrorCode.ORDER_DEPOSIT_TOO_LARGE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The deposit cannot exceed {max}',
+  },
+  [ErrorCode.ORDER_DEPOSIT_NOT_ALLOWED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A finished order takes no deposit',
   },
   [ErrorCode.STORE_NO_FULFILLMENT_METHOD]: {
     status: HttpStatus.BAD_REQUEST,
