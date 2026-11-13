@@ -112,7 +112,11 @@ export interface MonthlyTotal {
   total: number;
 }
 
-/** Plan + extra branches × 150 000 − discount % (§2 "Oylik summa"). */
+/**
+ * Plan + extra branches × 150 000 − discount % (§2 "Oylik summa"). The
+ * discount covers the plan (the main store) only; extra branches are always
+ * charged in full.
+ */
 export function computeMonthlyTotal(input: {
   planPrice: number;
   extraBranches: number;
@@ -121,7 +125,9 @@ export function computeMonthlyTotal(input: {
   const extraBranches = Math.max(0, input.extraBranches);
   const extraBranchesTotal = extraBranches * EXTRA_BRANCH_PRICE;
   const subtotal = input.planPrice + extraBranchesTotal;
-  const discountAmount = Math.round((subtotal * input.discountPercent) / 100);
+  const discountAmount = Math.round(
+    (input.planPrice * input.discountPercent) / 100,
+  );
   return {
     planPrice: input.planPrice,
     extraBranches,

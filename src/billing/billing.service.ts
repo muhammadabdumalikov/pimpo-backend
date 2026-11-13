@@ -990,7 +990,8 @@ export class BillingService {
     const charge = chargeable
       ? prorate({
           monthlyAmount: EXTRA_BRANCH_PRICE * newSeats,
-          discountPercent: ctx.discountPercent,
+          // Discounts cover the plan only; a branch seat is full price.
+          discountPercent: 0,
           ...days,
         })
       : 0;

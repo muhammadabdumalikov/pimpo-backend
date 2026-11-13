@@ -119,7 +119,7 @@ describe('grace helpers', () => {
 });
 
 describe('computeMonthlyTotal', () => {
-  it('adds 150 000 per extra branch and takes the discount off the lot', () => {
+  it('adds 150 000 per extra branch and takes the discount off the plan only', () => {
     expect(
       computeMonthlyTotal({
         planPrice: 299_000,
@@ -132,8 +132,8 @@ describe('computeMonthlyTotal', () => {
       extraBranchesTotal: 300_000,
       subtotal: 599_000,
       discountPercent: 10,
-      discountAmount: 59_900,
-      total: 539_100,
+      discountAmount: 29_900,
+      total: 569_100,
     });
   });
 });
