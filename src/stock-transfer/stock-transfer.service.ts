@@ -112,18 +112,30 @@ export class StockTransferService {
     dto: CreateStockTransferDto,
     account?: IAccount,
   ): Promise<StockTransfer & {items: StockTransferItem[]}> {
+    const qtyByProduct = this.dedupeLines(dto);
+    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
+      throw new AppException(ErrorCode.STOCK_TAKE_IN_PROGRESS);
+    }
+
+    const cashier = await this.resolveCashier(account);
+    const id = await this.dbService.db.transaction((tx) =>
+      this.createInTx(tx, businessId, dto, qtyByProduct, cashier),
+    );
+    return this.getOne(businessId, id);
+  }
+
+  /**
+   * Validate a document and turn it into deduped per-product quantities.
+   * Shared by create() and callers that move stock inside their own
+   * transaction (opening stock "from another branch").
+   */
+  dedupeLines(dto: CreateStockTransferDto): Map<string, number> {
     if (!dto.items?.length) {
       throw new AppException(ErrorCode.TRANSFER_EMPTY);
     }
     if (dto.fromBranchId === dto.toBranchId) {
       throw new AppException(ErrorCode.TRANSFER_SAME_BRANCH);
     }
-    if (await isStockTakeActive(this.cache, this.dbService.db, businessId)) {
-      throw new AppException(ErrorCode.STOCK_TAKE_IN_PROGRESS);
-    }
-
-    // Dedupe by product (sum quantities) so a repeated row can't fight itself
-    // and the per-product locks/reads below stay one-per-product.
     const qtyByProduct = new Map<string, number>();
     for (const line of dto.items) {
       if (!line.productId) continue;
@@ -132,130 +144,131 @@ export class StockTransferService {
         (qtyByProduct.get(line.productId) ?? 0) + line.quantity,
       );
     }
-    const productIds = [...qtyByProduct.keys()];
-    if (productIds.length === 0) {
+    if (qtyByProduct.size === 0) {
       throw new AppException(ErrorCode.TRANSFER_EMPTY);
     }
+    return qtyByProduct;
+  }
 
-    const cashier = await this.resolveCashier(account);
+  /**
+   * The transfer itself, inside the caller's transaction. The caller has
+   * already checked the stock-take lock. Returns the new transfer id.
+   */
+  async createInTx(
+    tx: Tx,
+    businessId: string,
+    dto: CreateStockTransferDto,
+    qtyByProduct: Map<string, number>,
+    cashier: {id: string | null; name: string | null},
+  ): Promise<string> {
+    const productIds = [...qtyByProduct.keys()];
     const now = new Date();
     const id = generateId();
 
-    await this.dbService.db.transaction(async (tx) => {
-      // Both branches must exist and belong to this business.
-      const branchRows = await tx
-        .select({id: branches.id, name: branches.name})
-        .from(branches)
+    // Both branches must exist and belong to this business.
+    const branchRows = await tx
+      .select({id: branches.id, name: branches.name})
+      .from(branches)
+      .where(
+        and(
+          eq(branches.businessId, businessId),
+          inArray(branches.id, [dto.fromBranchId, dto.toBranchId]),
+        ),
+      );
+    const fromBranch = branchRows.find((b) => b.id === dto.fromBranchId);
+    const toBranch = branchRows.find((b) => b.id === dto.toBranchId);
+    if (!fromBranch || !toBranch) {
+      throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
+    }
+
+    let totalQty = 0;
+    let totalValue = 0;
+    const itemRows: (typeof stockTransferItems.$inferInsert)[] = [];
+
+    for (const productId of productIds) {
+      const qty = Math.round((qtyByProduct.get(productId) ?? 0) * 1000) / 1000;
+      // Lock the product so a concurrent sale can't let the source over-draw.
+      const [product] = await tx
+        .select({id: products.id, name: products.name})
+        .from(products)
         .where(
-          and(
-            eq(branches.businessId, businessId),
-            inArray(branches.id, [dto.fromBranchId, dto.toBranchId]),
-          ),
-        );
-      const fromBranch = branchRows.find((b) => b.id === dto.fromBranchId);
-      const toBranch = branchRows.find((b) => b.id === dto.toBranchId);
-      if (!fromBranch || !toBranch) {
-        throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
-      }
-
-      let totalQty = 0;
-      let totalValue = 0;
-      const itemRows: (typeof stockTransferItems.$inferInsert)[] = [];
-
-      for (const productId of productIds) {
-        const qty =
-          Math.round((qtyByProduct.get(productId) ?? 0) * 1000) / 1000;
-        // Lock the product so a concurrent sale can't let the source over-draw.
-        const [product] = await tx
-          .select({id: products.id, name: products.name})
-          .from(products)
-          .where(
-            and(
-              eq(products.businessId, businessId),
-              eq(products.id, productId),
-            ),
-          )
-          .for('update')
-          .limit(1);
-        if (!product) {
-          throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
-            productId,
-          });
-        }
-
-        const available = await getBranchStock(
-          tx,
-          product.id,
-          dto.fromBranchId,
-        );
-        if (qty > available) {
-          throw new AppException(ErrorCode.TRANSFER_EXCEEDS_STOCK, {
-            qty,
-            name: product.name,
-            available,
-          });
-        }
-
-        const {costTotal, unitCost} = await this.moveBatchesFifo(
-          tx,
-          businessId,
-          product.id,
-          dto.fromBranchId,
-          dto.toBranchId,
-          qty,
-        );
-
-        // Move the per-branch on-hand: leaves source, arrives at destination.
-        // The two deltas cancel on products.quantity (no net stock change).
-        await applyBranchStockDelta(
-          tx,
-          businessId,
-          product.id,
-          dto.fromBranchId,
-          -qty,
-        );
-        await applyBranchStockDelta(
-          tx,
-          businessId,
-          product.id,
-          dto.toBranchId,
-          qty,
-        );
-
-        totalQty = Math.round((totalQty + qty) * 1000) / 1000;
-        totalValue = round2(totalValue + costTotal);
-        itemRows.push({
-          id: generateId(),
-          transferId: id,
-          businessId,
-          productId: product.id,
-          productName: product.name,
-          quantity: qty,
-          unitCost: unitCost.toFixed(2),
-          lineTotal: costTotal.toFixed(2),
+          and(eq(products.businessId, businessId), eq(products.id, productId)),
+        )
+        .for('update')
+        .limit(1);
+      if (!product) {
+        throw new AppException(ErrorCode.PRODUCT_NOT_FOUND_BY_ID, {
+          productId,
         });
       }
 
-      await tx.insert(stockTransfers).values({
-        id,
-        businessId,
-        fromBranchId: dto.fromBranchId,
-        fromBranchName: fromBranch.name,
-        toBranchId: dto.toBranchId,
-        toBranchName: toBranch.name,
-        status: 'completed',
-        itemCount: itemRows.length,
-        totalQty: totalQty.toFixed(3),
-        totalValue: totalValue.toFixed(2),
-        createdByCashierId: cashier.id,
-        createdByCashierName: cashier.name,
-        note: dto.note ?? null,
-        createdAt: now,
-      });
-      await tx.insert(stockTransferItems).values(itemRows);
-    });
+      const available = await getBranchStock(tx, product.id, dto.fromBranchId);
+      if (qty > available) {
+        throw new AppException(ErrorCode.TRANSFER_EXCEEDS_STOCK, {
+          qty,
+          name: product.name,
+          available,
+        });
+      }
 
-    return this.getOne(businessId, id);
+      const {costTotal, unitCost} = await this.moveBatchesFifo(
+        tx,
+        businessId,
+        product.id,
+        dto.fromBranchId,
+        dto.toBranchId,
+        qty,
+      );
+
+      // Move the per-branch on-hand: leaves source, arrives at destination.
+      // The two deltas cancel on products.quantity (no net stock change).
+      await applyBranchStockDelta(
+        tx,
+        businessId,
+        product.id,
+        dto.fromBranchId,
+        -qty,
+      );
+      await applyBranchStockDelta(
+        tx,
+        businessId,
+        product.id,
+        dto.toBranchId,
+        qty,
+      );
+
+      totalQty = Math.round((totalQty + qty) * 1000) / 1000;
+      totalValue = round2(totalValue + costTotal);
+      itemRows.push({
+        id: generateId(),
+        transferId: id,
+        businessId,
+        productId: product.id,
+        productName: product.name,
+        quantity: qty,
+        unitCost: unitCost.toFixed(2),
+        lineTotal: costTotal.toFixed(2),
+      });
+    }
+
+    await tx.insert(stockTransfers).values({
+      id,
+      businessId,
+      fromBranchId: dto.fromBranchId,
+      fromBranchName: fromBranch.name,
+      toBranchId: dto.toBranchId,
+      toBranchName: toBranch.name,
+      status: 'completed',
+      itemCount: itemRows.length,
+      totalQty: totalQty.toFixed(3),
+      totalValue: totalValue.toFixed(2),
+      createdByCashierId: cashier.id,
+      createdByCashierName: cashier.name,
+      note: dto.note ?? null,
+      createdAt: now,
+    });
+    await tx.insert(stockTransferItems).values(itemRows);
+    return id;
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ import {ShiftModule} from './shift/shift.module';
 import {StockTakeModule} from './stock-take/stock-take.module';
 import {DefectiveModule} from './defective/defective.module';
 import {StockTransferModule} from './stock-transfer/stock-transfer.module';
+import {OpeningStockModule} from './opening-stock/opening-stock.module';
 import {FinanceModule} from './finance/finance.module';
 import {PayrollModule} from './payroll/payroll.module';
 import {ReportModule} from './report/report.module';
@@ -120,6 +121,7 @@ class JwtGlobalModule {}
     StockTakeModule,
     DefectiveModule,
     StockTransferModule,
+    OpeningStockModule,
     FinanceModule,
     PayrollModule,
     ReportModule,

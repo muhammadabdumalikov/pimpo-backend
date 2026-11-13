@@ -13,6 +13,9 @@ export type FinanceSource =
   | 'shift_close'
   | 'cash_movement'
   | 'stock_take'
+  // Value of undocumented opening stock (FILIAL-ASSORTIMENT.md Q4): capital,
+  // not cash — goods the owner brought into the business.
+  | 'opening_stock'
   | 'reversal'; // storno row
 
 // Only these can be stornoed from Moliya; the rest belong to their module.

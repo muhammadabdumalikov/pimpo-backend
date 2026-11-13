@@ -105,6 +105,12 @@ export interface ScanResolution {
    * empty result, but only one of them is a catalogue gap.
    */
   isScaleLabel: boolean;
+  /**
+   * Set when nothing matched in the requested branch but another branch's
+   * card carries the code: the till says "not in this branch" instead of
+   * "unknown barcode" (FILIAL-ASSORTIMENT.md Q11).
+   */
+  notInBranch?: {id: string; name: string} | null;
 }
 
 @Injectable()
@@ -1744,7 +1750,43 @@ export class ProductService {
       };
     }
 
-    return {...base, product: null};
+    return {
+      ...base,
+      product: null,
+      notInBranch: branchId
+        ? await this.findCardElsewhere(businessId, terms)
+        : null,
+    };
+  }
+
+  /** An active card carrying one of these codes exactly, in any branch. */
+  private async findCardElsewhere(
+    businessId: string,
+    terms: string[],
+  ): Promise<{id: string; name: string} | null> {
+    const codes = [
+      ...new Set(terms.filter(Boolean).map((t) => t.toLowerCase())),
+    ];
+    if (codes.length === 0) return null;
+    const list = sql.join(
+      codes.map((c) => sql`${c}`),
+      sql`, `,
+    );
+    const [card] = await this.dbService.db
+      .select({id: products.id, name: products.name})
+      .from(products)
+      .where(
+        and(
+          eq(products.businessId, businessId),
+          eq(products.isActive, true),
+          or(
+            sql`lower(${products.barcode}) IN (${list})`,
+            sql`lower(${products.code}) IN (${list})`,
+          ),
+        ),
+      )
+      .limit(1);
+    return card ?? null;
   }
 
   /**

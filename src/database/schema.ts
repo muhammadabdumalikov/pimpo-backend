@@ -2251,6 +2251,85 @@ export const stockTransferItems = pgTable(
   }),
 );
 
+// "Boshlang'ich qoldiq" (FILIAL-ASSORTIMENT.md Q4/Q9): a counted document that
+// only ADDS stock to one branch. A draft is kept server-side while the shop
+// scans; completing it either opens lots at the typed cost and books the value
+// as capital ('undocumented'), or moves the goods from another branch through
+// the stock-transfer service ('transfer').
+export const openingStocks = pgTable(
+  'opening_stocks',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    branchId: varchar('branch_id', {length: 36})
+      .notNull()
+      .references(() => branches.id),
+    branchName: varchar('branch_name', {length: 255}), // snapshot
+    source: varchar('source', {length: 12}).notNull(), // 'undocumented' | 'transfer'
+    fromBranchId: varchar('from_branch_id', {length: 36}).references(
+      () => branches.id,
+    ),
+    fromBranchName: varchar('from_branch_name', {length: 255}), // snapshot
+    status: varchar('status', {length: 12}).notNull().default('draft'), // 'draft' | 'completed' | 'cancelled'
+    itemCount: integer('item_count').notNull().default(0),
+    totalQty: decimal('total_qty', {precision: 14, scale: 3})
+      .notNull()
+      .default('0'),
+    // Cost value of what was added (snapshot at completion).
+    totalValue: decimal('total_value', {precision: 14, scale: 2})
+      .notNull()
+      .default('0'),
+    // The stock transfer a 'transfer' document completed into.
+    transferId: varchar('transfer_id', {length: 36}).references(
+      () => stockTransfers.id,
+    ),
+    createdByCashierId: varchar('created_by_cashier_id', {length: 36}),
+    createdByCashierName: varchar('created_by_cashier_name', {length: 255}),
+    note: varchar('note', {length: 500}),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    businessCreatedIdx: index('opening_stocks_business_created_idx').on(
+      table.businessId,
+      table.createdAt,
+    ),
+  }),
+);
+
+export const openingStockItems = pgTable(
+  'opening_stock_items',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    openingStockId: varchar('opening_stock_id', {length: 36})
+      .notNull()
+      .references(() => openingStocks.id, {onDelete: 'cascade'}),
+    businessId: varchar('business_id', {length: 36}).notNull(),
+    productId: varchar('product_id', {length: 36})
+      .notNull()
+      .references(() => products.id, {onDelete: 'cascade'}),
+    productName: varchar('product_name', {length: 255}).notNull(),
+    // doublePrecision: weighed goods are counted in fractional kg.
+    quantity: doublePrecision('quantity').notNull(),
+    // Typed cost; null = take the card's priceIn at completion.
+    unitCost: decimal('unit_cost', {precision: 10, scale: 2}),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    docProductUq: uniqueIndex('opening_stock_items_doc_product_uq').on(
+      table.openingStockId,
+      table.productId,
+    ),
+  }),
+);
+
+export type OpeningStock = typeof openingStocks.$inferSelect;
+export type OpeningStockItem = typeof openingStockItems.$inferSelect;
+
 export const stockTransfersRelations = relations(
   stockTransfers,
   ({one, many}) => ({

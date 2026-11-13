@@ -251,6 +251,14 @@ export enum ErrorCode {
   TRANSFER_EMPTY = 'TRANSFER_EMPTY',
   TRANSFER_SAME_BRANCH = 'TRANSFER_SAME_BRANCH',
   TRANSFER_EXCEEDS_STOCK = 'TRANSFER_EXCEEDS_STOCK',
+
+  // ── Opening stock / assortment copy (FILIAL-ASSORTIMENT.md) ────────────────
+  OPENING_STOCK_NOT_FOUND = 'OPENING_STOCK_NOT_FOUND',
+  OPENING_STOCK_NOT_DRAFT = 'OPENING_STOCK_NOT_DRAFT',
+  OPENING_STOCK_EMPTY = 'OPENING_STOCK_EMPTY',
+  OPENING_STOCK_COST_MISSING = 'OPENING_STOCK_COST_MISSING',
+  OPENING_STOCK_SOURCE_INVALID = 'OPENING_STOCK_SOURCE_INVALID',
+  ASSORTMENT_SAME_BRANCH = 'ASSORTMENT_SAME_BRANCH',
   TRANSFER_NOT_FOUND = 'TRANSFER_NOT_FOUND',
 
   // ── Storage ────────────────────────────────────────────────────────────────
@@ -1252,6 +1260,32 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message:
       'Cannot transfer {qty} of "{name}"; only {available} in the source store',
+  },
+
+  // Opening stock / assortment copy
+  [ErrorCode.OPENING_STOCK_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Opening stock document not found',
+  },
+  [ErrorCode.OPENING_STOCK_NOT_DRAFT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This opening stock document is already closed',
+  },
+  [ErrorCode.OPENING_STOCK_EMPTY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Add at least one product before completing',
+  },
+  [ErrorCode.OPENING_STOCK_COST_MISSING]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Enter a cost price for: {names}',
+  },
+  [ErrorCode.OPENING_STOCK_SOURCE_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Choose a different source store than the receiving one',
+  },
+  [ErrorCode.ASSORTMENT_SAME_BRANCH]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Copy the assortment from a different store',
   },
   [ErrorCode.TRANSFER_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,

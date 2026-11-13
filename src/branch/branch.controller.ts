@@ -9,6 +9,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Query,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -16,6 +17,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
   ApiParam,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { BranchService } from './branch.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
@@ -25,6 +27,7 @@ import { IAccount, IBusiness } from '../business/types';
 import { BillingService } from '../billing/billing.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
+import { CopyAssortmentDto } from './dto/copy-assortment.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
 
@@ -67,6 +70,42 @@ export class BranchController {
     @Body() dto: CreateBranchDto,
   ) {
     return this.branchService.create(business.id, dto, account?.id ?? business.id);
+  }
+
+  @Get(':id/assortment-preview')
+  @RequirePermission('settings:manage')
+  @ApiOperation({
+    summary: 'Cards another branch stocks that this one lacks, per category',
+  })
+  @ApiParam({ name: 'id', description: 'Receiving branch id' })
+  @ApiQuery({ name: 'fromBranchId', required: true })
+  @ApiQuery({ name: 'liveOnly', required: false, type: Boolean })
+  async assortmentPreview(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Query('fromBranchId') fromBranchId: string,
+    @Query('liveOnly') liveOnly?: string,
+  ) {
+    return this.branchService.assortmentPreview(
+      business.id,
+      id,
+      fromBranchId,
+      liveOnly !== 'false',
+    );
+  }
+
+  @Post(':id/copy-assortment')
+  @RequirePermission('settings:manage')
+  @ApiOperation({
+    summary: "Copy another branch's assortment here (0-stock rows; adds only missing)",
+  })
+  @ApiParam({ name: 'id', description: 'Receiving branch id' })
+  async copyAssortment(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+    @Body() dto: CopyAssortmentDto,
+  ) {
+    return this.branchService.copyAssortment(business.id, id, dto);
   }
 
   @Put(':id')
