@@ -28,7 +28,8 @@
     "db:import-mxik": "ts-node src/database/import-mxik.ts",
     "ai:schema-doc": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/gen-schema-doc.ts",
     "ai:try-invoice": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/try-invoice.ts",
-    "ai:packshot-bakeoff": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/packshot-bakeoff.ts"
+    "ai:packshot-bakeoff": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/packshot-bakeoff.ts",
+    "thumbs:backfill": "TS_NODE_PROJECT=tsconfig.drizzle.json ts-node scripts/backfill-thumbs.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

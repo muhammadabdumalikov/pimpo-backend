@@ -87,10 +87,11 @@ export class GlobalBarcodeService {
     // Fail on an unknown barcode before anything is uploaded.
     await this.get(barcode);
     const webp = await toCatalogWebp(file);
-    const {url} = await this.storage.upload(webp, {
+    const {url, key} = await this.storage.upload(webp, {
       key: `global-barcodes/${keySegment(barcode)}/${generateId()}.webp`,
       contentType: 'image/webp',
     });
+    await this.storage.uploadThumb(key, webp);
     return this.replace(barcode, url);
   }
 

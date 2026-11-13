@@ -9,6 +9,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import {Injectable, Logger} from '@nestjs/common';
+import {THUMB_SUFFIX, makeThumbWebp, thumbKey} from './thumbnail';
 
 export interface UploadOptions {
   /** S3 key (path) for the object. If not set, a key is generated. */
@@ -97,6 +98,30 @@ export class StorageService {
     );
 
     return {url: this.getUrl(key), key};
+  }
+
+  /**
+   * Stores the small copy of a picture just uploaded under `key`. Best effort:
+   * a picture sharp cannot read (or a failed put) only costs the small copy —
+   * clients then show the original — never the upload itself.
+   */
+  async uploadThumb(key: string, source: Buffer): Promise<void> {
+    if (!this.enabled || !this.client || key.endsWith(THUMB_SUFFIX)) return;
+    try {
+      const thumb = await makeThumbWebp(source);
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: thumbKey(key),
+          Body: thumb,
+          ContentType: 'image/webp',
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Thumbnail for ${key} not stored: ${(err as Error)?.message ?? err}`,
+      );
+    }
   }
 
   /**

@@ -16,6 +16,7 @@ import {
   products,
 } from '../../database/schema';
 import {StorageService} from '../../storage/storage.service';
+import {thumbKey} from '../../storage/thumbnail';
 import {TelegramSenderService} from '../../telegram/telegram-sender.service';
 import {IAccount} from '../../business/types';
 import {generateId} from '../../utils/uuid';
@@ -407,6 +408,7 @@ export class AiImageService {
       );
       throw new AppException(ErrorCode.AI_IMAGE_FAILED);
     }
+    await this.storage.uploadThumb(stored.key, made.image);
     await this.db
       .update(aiImageGenerations)
       .set({imageKey: stored.key, imageUrl: stored.url})
@@ -481,6 +483,7 @@ export class AiImageService {
       );
       throw new AppException(ErrorCode.AI_IMAGE_FAILED);
     }
+    await this.storage.uploadThumb(stored.key, image);
     await this.db
       .update(aiImageGenerations)
       .set({imageKey: stored.key, imageUrl: stored.url, purgedAt: null})
@@ -714,6 +717,9 @@ export class AiImageService {
       }
       try {
         await this.storage.delete(row.imageKey!);
+        await this.storage
+          .delete(thumbKey(row.imageKey!))
+          .catch(() => undefined);
       } catch (err) {
         this.logger.warn(
           `AI image sweep could not delete ${row.imageKey}: ${(err as Error)?.message}`,
