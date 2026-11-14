@@ -2,6 +2,7 @@ import {
   addCalendarMonth,
   classifyPlanChange,
   computeBillingStage,
+  AI_ADDON_PRICE,
   computeMonthlyTotal,
   graceEndsAt,
   isRestricted,
@@ -138,12 +139,44 @@ describe('computeMonthlyTotal', () => {
       planPrice: 299_000,
       extraBranches: 2,
       extraBranchesTotal: 300_000,
+      aiAddon: 0,
       subtotal: 599_000,
       discountPercent: 0,
       discountAmount: 0,
       discountLines: [],
       total: 599_000,
     });
+  });
+
+  it('adds the AI add-on at list price; plan discounts never reach it', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 199_000,
+      planTier: 'online',
+      extraBranches: 0,
+      aiAddon: true,
+      discounts: [
+        d('half', {percent: 50, scope: 'all'}),
+        d('lock', {kind: 'price', scope: 'plan', amount: 150_000}),
+      ],
+      now,
+    });
+    expect(m.aiAddon).toBe(AI_ADDON_PRICE);
+    expect(m.subtotal).toBe(199_000 + AI_ADDON_PRICE);
+    // 150 000 locked price, half off it, then the add-on in full.
+    expect(m.total).toBe(75_000 + AI_ADDON_PRICE);
+    expect(m.discountAmount).toBe(m.subtotal - m.total);
+  });
+
+  it('lets a fixed amount eat into the add-on as part of the month', () => {
+    const m = computeMonthlyTotal({
+      planPrice: 199_000,
+      planTier: 'online',
+      extraBranches: 0,
+      aiAddon: true,
+      discounts: [d('gift', {kind: 'amount', scope: 'all', amount: 300_000})],
+      now,
+    });
+    expect(m.total).toBe(199_000 + AI_ADDON_PRICE - 300_000);
   });
 
   it('reads a row from before kinds existed as a percent off the plan only', () => {
@@ -160,6 +193,7 @@ describe('computeMonthlyTotal', () => {
       planPrice: 299_000,
       extraBranches: 2,
       extraBranchesTotal: 300_000,
+      aiAddon: 0,
       subtotal: 599_000,
       discountPercent: 10,
       discountAmount: 29_900,

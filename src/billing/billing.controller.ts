@@ -28,7 +28,7 @@ import {RequirePermission} from '../permission/permission.decorator';
 import {PlatformAdminGuard} from '../subscription/platform-admin.guard';
 import {TopUpBalanceDto} from '../subscription/dto/billing.dto';
 import {BillingService} from './billing.service';
-import {ChangePlanDto, CreatePaymentRequestDto} from './dto/billing.dto';
+import {ChangePlanDto, CreatePaymentRequestDto, SetAiAddonDto} from './dto/billing.dto';
 
 /**
  * The shop's side of subscription billing (OBUNA-TOLOV.md §6.1), mounted on
@@ -115,6 +115,37 @@ export class BillingController {
     @Query('tier') tier: string,
   ) {
     return this.billing.previewPlanChange(business, String(tier ?? ''));
+  }
+
+  @Get('ai-addon/preview')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'What turning the AI bot add-on on would charge right now',
+  })
+  @ApiResponse({status: 403, description: 'AI_ADDON_NOT_AVAILABLE'})
+  previewAiAddon(@CurrentBusiness() business: IBusiness) {
+    return this.billing.previewAiAddon(business.id);
+  }
+
+  @Post('ai-addon')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'AI bot add-on on (charges the rest of the period) or off (from the next renewal)',
+  })
+  @ApiResponse({status: 409, description: 'BILLING_INSUFFICIENT_BALANCE'})
+  @ApiResponse({status: 403, description: 'AI_ADDON_NOT_AVAILABLE'})
+  setAiAddon(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Body() dto: SetAiAddonDto,
+  ) {
+    return this.billing.setAiAddon(business.id, dto.enabled, account.id);
   }
 
   @Post('subscribe')

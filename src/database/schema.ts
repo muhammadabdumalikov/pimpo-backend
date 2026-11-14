@@ -37,7 +37,8 @@ export const businesses = pgTable('businesses', {
   storeEnabled: boolean('store_enabled').default(false).notNull(),
   // What kind of business this is: 'retail' (a shop — the default, and every
   // business before FASTFOOD.md) or 'food' (a fast-food kitchen: dishes with
-  // recipes, a daily queue number, the kitchen ticket). Picked at sign-up, then
+  // recipes, a daily queue number, the kitchen ticket) or 'online' (a seller
+  // with no shop or till, ONLAYN-SOTUVCHI.md §10). Picked at sign-up, then
   // changed only from the platform console. It switches defaults and unlocks
   // the food features; it never deletes data.
   businessType: varchar('business_type', {length: 10})
@@ -184,6 +185,9 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   // Extra branch seats already paid for this period (Q13): a branch opened
   // beyond this count is charged pro rata, one closed and reopened is not.
   paidExtraBranches: integer('paid_extra_branches').default(0).notNull(),
+  // The AI bot add-on is part of this period (paid, or given with the online
+  // trial) — the bot answers while it is true (0109).
+  aiAddon: boolean('ai_addon').default(false).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -2421,6 +2425,9 @@ export const billingProfiles = pgTable('billing_profiles', {
   inn: varchar('inn', {length: 20}),
   contractNumber: varchar('contract_number', {length: 50}),
   contractDate: timestamp('contract_date', {withTimezone: true}),
+  // The owner wants the AI bot add-on next period: renewals add its price
+  // while this is on (0109, ONLAYN-SOTUVCHI.md E4).
+  aiAddon: boolean('ai_addon').default(false).notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
@@ -2468,7 +2475,7 @@ export const billingTransactions = pgTable(
     businessId: varchar('business_id', {length: 36})
       .notNull()
       .references(() => businesses.id, {onDelete: 'cascade'}),
-    // 'topup' | 'renewal' | 'plan_change' | 'branch' | 'adjustment'
+    // 'topup' | 'renewal' | 'plan_change' | 'branch' | 'addon' | 'adjustment'
     type: varchar('type', {length: 20}).notNull(),
     amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
     balanceAfter: decimal('balance_after', {precision: 14, scale: 2}).notNull(),

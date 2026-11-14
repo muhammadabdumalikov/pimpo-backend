@@ -9,7 +9,7 @@ import { AppException } from '../common/errors/app.exception';
 import { ErrorCode } from '../common/errors/error-codes';
 import { IBusiness } from '../business/types';
 import { SubscriptionService } from './subscription.service';
-import { MIN_TIER_KEY } from './required-tier.decorator';
+import { AI_ADDON_KEY, MIN_TIER_KEY } from './required-tier.decorator';
 import { TIER_RANK, type Tier } from './tier';
 
 /**
@@ -42,6 +42,16 @@ export class PlanTierGuard implements CanActivate {
 
     const tier = await this.subscriptionService.getEffectiveTier(business.id);
     if (TIER_RANK[tier] < TIER_RANK[minTier]) {
+      const addonStandsIn = this.reflector.getAllAndOverride<boolean | undefined>(
+        AI_ADDON_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      if (
+        addonStandsIn &&
+        (await this.subscriptionService.aiAssistantAllowed(business.id))
+      ) {
+        return true;
+      }
       throw new AppException(ErrorCode.PLAN_UPGRADE_REQUIRED, {
         required: minTier,
         current: tier,

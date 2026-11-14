@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import { DatabaseService } from '../database/database.service';
@@ -13,6 +14,7 @@ import { and, eq, or } from 'drizzle-orm';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/uuid';
 import type {BusinessType} from '../common/business-type';
+import { FeatureService } from '../feature/feature.service';
 
 // New businesses start on a 1-month free trial of the Standart (basic) plan.
 const TRIAL_TIER = 'basic';
@@ -20,14 +22,17 @@ const TRIAL_DAYS = 30;
 
 @Injectable()
 export class BusinessService {
-  constructor(private readonly dbService: DatabaseService) {}
+  constructor(
+    private readonly dbService: DatabaseService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
 
   async create(data: {
     name: string;
     email?: string | null;
     login: string;
     password: string;
-    // 'food' only from the platform console for now (FASTFOOD.md Q18/Q23).
+    // 'food' and 'online' are picked at sign-up or from the platform console.
     businessType?: BusinessType;
   }): Promise<Business> {
     // Check if login (or email, when provided) already exists. Email is
@@ -70,8 +75,23 @@ export class BusinessService {
     // BusinessModule). If the basic plan is missing for any reason, registration
     // must still succeed — the business simply falls back to the internal floor.
     await this.startTrial(business.id, business.businessType).catch(() => undefined);
+    if (business.businessType === 'online') {
+      await this.enableCustomerBot(business.id).catch(() => undefined);
+    }
 
     return business;
+  }
+
+  /**
+   * The online trial sells "AI bot included" (ONLAYN-SOTUVCHI.md Q10), so the
+   * shop joins the `ai_assistant` beta list at sign-up. A rollout of 'off'
+   * still silences it — the flag stays the platform's kill switch. Through
+   * FeatureService so its caches drop at once; resolved lazily because
+   * FeatureModule imports BusinessModule.
+   */
+  private async enableCustomerBot(businessId: string): Promise<void> {
+    const features = this.moduleRef.get(FeatureService, {strict: false});
+    await features.setOverrides('ai_assistant', [businessId], true);
   }
 
   /**
@@ -83,8 +103,16 @@ export class BusinessService {
     const [plan] = await this.dbService.db
       .select({ id: subscriptionPlans.id })
       .from(subscriptionPlans)
-      // A kitchen's trial runs on the kitchen plan (FASTFOOD.md Q21).
-      .where(eq(subscriptionPlans.tier, businessType === 'food' ? 'food' : TRIAL_TIER))
+      // A kitchen's trial runs on the kitchen plan (FASTFOOD.md Q21), an
+      // online seller's on the online plan (ONLAYN-SOTUVCHI.md E7).
+      .where(
+        eq(
+          subscriptionPlans.tier,
+          businessType === 'food' || businessType === 'online'
+            ? businessType
+            : TRIAL_TIER,
+        ),
+      )
       .limit(1);
     if (!plan) return;
 
@@ -113,6 +141,9 @@ export class BusinessService {
       // Plan changes are free during the trial and its reminders read
       // "continue" (OBUNA-TOLOV.md Q15).
       isTrial: true,
+      // The online trial includes the AI bot (Q10). billing_profiles.ai_addon
+      // stays off, so the first paid month does not bill it unasked (E7).
+      aiAddon: businessType === 'online',
     });
   }
 

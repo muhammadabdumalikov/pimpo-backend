@@ -83,7 +83,7 @@ export class AssistantSettingsService implements OnModuleInit {
         hasOnlineStore: (await this.tools.storeBaseUrl(businessId)) !== null,
         usage: {
           thisMonth: await this.assistant.aiAnswersThisMonth(businessId),
-          limit: this.assistant.monthlyLimit(),
+          limit: await this.assistant.monthlyLimitFor(businessId),
         },
       },
     };

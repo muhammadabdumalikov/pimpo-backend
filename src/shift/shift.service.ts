@@ -52,6 +52,7 @@ import {
   type SaleTotals,
 } from './reconciliation';
 import {shiftsOfBranch} from '../common/branch-shifts';
+import {getBusinessType} from '../common/business-type';
 
 /** Category shape the kassa UI still expects (direction, not kind). */
 export interface CashCategoryCompat {
@@ -369,6 +370,12 @@ export class ShiftService {
     dto: OpenShiftDto,
     account?: IAccount,
   ): Promise<CashShift> {
+    // An online seller has no till (ONLAYN-SOTUVCHI.md Q5): its order money
+    // goes straight to Moliya accounts, so a shift would only split it.
+    if ((await getBusinessType(this.dbService.db, businessId)) === 'online') {
+      throw new AppException(ErrorCode.SHIFT_NOT_FOR_ONLINE);
+    }
+
     // Freeze the register while a stock-take is open (INVENTARIZATSIYA.md §9.4).
     await this.assertNoStockTakeInProgress(businessId);
 

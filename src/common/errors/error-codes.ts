@@ -177,6 +177,9 @@ export enum ErrorCode {
   SHIFT_NOT_FOUND = 'SHIFT_NOT_FOUND',
   SHIFT_ALREADY_CLOSED = 'SHIFT_ALREADY_CLOSED',
   SHIFT_CLOSE_FORBIDDEN = 'SHIFT_CLOSE_FORBIDDEN',
+  // An online seller has no till: its money goes straight to Moliya
+  // accounts (ONLAYN-SOTUVCHI.md Q5, E9).
+  SHIFT_NOT_FOR_ONLINE = 'SHIFT_NOT_FOR_ONLINE',
 
   // ── Staff ──────────────────────────────────────────────────────────────────
   STAFF_ROLE_NOT_FOUND = 'STAFF_ROLE_NOT_FOUND',
@@ -306,6 +309,9 @@ export enum ErrorCode {
   // An open-ended paid subscription was granted by the platform admin; only
   // the admin may change it (OBUNA-TOLOV.md §5).
   SUBSCRIPTION_MANAGED_BY_ADMIN = 'SUBSCRIPTION_MANAGED_BY_ADMIN',
+  // The AI bot add-on is sold on the online seller plan only
+  // (ONLAYN-SOTUVCHI.md D10, E4).
+  AI_ADDON_NOT_AVAILABLE = 'AI_ADDON_NOT_AVAILABLE',
 
   // ── Billing (OBUNA-TOLOV.md §6) ─────────────────────────────────────────────
   // params {required, balance, shortfall}
@@ -1012,6 +1018,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     message:
       'Only the cashier who opened this shift (or an owner) can close it',
   },
+  [ErrorCode.SHIFT_NOT_FOR_ONLINE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'An online seller has no till shifts',
+  },
 
   // Staff
   [ErrorCode.STAFF_ROLE_NOT_FOUND]: {
@@ -1420,6 +1430,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SUBSCRIPTION_MANAGED_BY_ADMIN]: {
     status: HttpStatus.FORBIDDEN,
     message: 'This subscription is managed by the platform administrator',
+  },
+  [ErrorCode.AI_ADDON_NOT_AVAILABLE]: {
+    status: HttpStatus.FORBIDDEN,
+    message: 'The AI bot add-on is sold on the online seller plan only',
   },
 
   // Billing

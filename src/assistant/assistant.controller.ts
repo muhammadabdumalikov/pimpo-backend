@@ -19,7 +19,7 @@ import type {IBusiness} from '../business/types';
 import {FeatureGuard} from '../feature/feature.guard';
 import {RequireFeature} from '../feature/require-feature.decorator';
 import {PlanTierGuard} from '../subscription/plan-tier.guard';
-import {MinTier} from '../subscription/required-tier.decorator';
+import {MinTier, OrAiAddon} from '../subscription/required-tier.decorator';
 import {PermissionsGuard} from '../permission/permissions.guard';
 import {RequirePermission} from '../permission/permission.decorator';
 import type {TgUpdate} from '../telegram/telegram-update-hooks';
@@ -73,6 +73,7 @@ export class AssistantWebhookController {
 @UseGuards(JwtAuthGuard, FeatureGuard, PlanTierGuard, PermissionsGuard)
 @RequireFeature('ai_assistant')
 @MinTier('proplus')
+@OrAiAddon()
 @RequirePermission('settings:manage')
 @ApiBearerAuth('JWT-auth')
 export class AssistantSettingsController {

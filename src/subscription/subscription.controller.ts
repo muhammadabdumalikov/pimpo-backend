@@ -22,6 +22,7 @@ import {
   ApiHeader,
 } from '@nestjs/swagger';
 import { SubscriptionService } from './subscription.service';
+import { isBusinessType } from '../common/business-type';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
 import { PlatformAdminGuard } from './platform-admin.guard';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
@@ -51,8 +52,11 @@ export class SubscriptionController {
     description: 'List of subscription plans',
   })
   async getPlans(@Query('type') type?: string) {
-    // ?type=food lists the fast-food plan; anything else the shop plans.
-    return await this.subscriptionService.getAllPlans(type === 'food' ? 'food' : 'retail');
+    // ?type=food lists the fast-food plan, ?type=online the online seller
+    // plan; anything else the shop plans.
+    return await this.subscriptionService.getAllPlans(
+      isBusinessType(type) ? type : 'retail',
+    );
   }
 
   @Get('plans/:id')

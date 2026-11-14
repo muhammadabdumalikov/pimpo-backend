@@ -14,7 +14,6 @@ import {
 import {generateId} from '../utils/uuid';
 import {FeatureService} from '../feature/feature.service';
 import {SubscriptionService} from '../subscription/subscription.service';
-import {tierAtLeast} from '../subscription/tier';
 import {createProvider} from '../ai/providers/provider.factory';
 import {
   AI_PROVIDER_IDS,
@@ -90,7 +89,7 @@ export class AssistantService {
     this.chains.set(key, next);
   }
 
-  /** Flag on, assistant switched on, Business+ plan — else the bot stays silent. */
+  /** Flag on, assistant switched on, Business+ or the add-on — else the bot stays silent. */
   async activeSettings(businessId: string): Promise<AiAssistantSettings | null> {
     const [settings] = await this.db
       .select()
@@ -99,8 +98,7 @@ export class AssistantService {
       .limit(1);
     if (!settings?.enabled) return null;
     if (!(await this.features.isEnabled(businessId, 'ai_assistant'))) return null;
-    const tier = await this.subscriptions.getEffectiveTier(businessId);
-    if (!tierAtLeast(tier, 'proplus')) return null;
+    if (!(await this.subscriptions.aiAssistantAllowed(businessId))) return null;
     return settings;
   }
 
@@ -163,7 +161,8 @@ export class AssistantService {
     const limitReason =
       (await this.aiAnswersSince(chat.id, null, 60 * 60 * 1000)) >= PER_CUSTOMER_HOURLY
         ? 'rate_limit'
-        : (await this.aiAnswersThisMonth(businessId)) >= monthlyLimit()
+        : (await this.aiAnswersThisMonth(businessId)) >=
+            (await this.monthlyLimitFor(businessId))
           ? 'quota'
           : null;
     if (limitReason) {
@@ -414,8 +413,9 @@ export class AssistantService {
     return n;
   }
 
-  monthlyLimit(): number {
-    return monthlyLimit();
+  /** The month's answer allowance: the add-on's 1 000, Business+'s env value. */
+  monthlyLimitFor(businessId: string): Promise<number> {
+    return this.subscriptions.aiAssistantMonthlyLimit(businessId, monthlyLimit());
   }
 
   private async hasOpenHandoff(chatId: string, reason: string): Promise<boolean> {

@@ -37,8 +37,9 @@ export class CreateBusinessDto {
 
   @ApiPropertyOptional({
     description:
-      "'retail' (default) or 'food' — a fast-food kitchen (FASTFOOD.md Q18). " +
-      'A food business starts its trial on the kitchen plan.',
+      "'retail' (default), 'food' — a fast-food kitchen (FASTFOOD.md Q18) — or " +
+      "'online' — a seller with no shop or till (ONLAYN-SOTUVCHI.md §10). " +
+      'Food and online businesses start their trial on their own plan.',
     enum: BUSINESS_TYPES,
   })
   @IsOptional()

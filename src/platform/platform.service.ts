@@ -563,11 +563,16 @@ export class PlatformService {
         used30: Number(one(assistantRows)?.c ?? 0),
       },
     };
+    // The online plan gets the bot only with the add-on (ONLAYN-SOTUVCHI.md E10).
+    const assistantAllowed = await this.subscriptionService.aiAssistantAllowed(id);
     const modules = (Object.keys(MODULE_MIN_TIER) as ShopModuleKey[]).map(
       (key) => ({
         key,
         minTier: MODULE_MIN_TIER[key],
-        available: tierAtLeast(tier, MODULE_MIN_TIER[key]),
+        available:
+          key === 'assistant'
+            ? assistantAllowed
+            : tierAtLeast(tier, MODULE_MIN_TIER[key]),
         ...moduleUse[key],
       }),
     );

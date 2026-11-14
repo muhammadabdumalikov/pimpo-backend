@@ -29,7 +29,7 @@ export class CreatePlatformBusinessDto {
   password: string;
 
   @ApiPropertyOptional({
-    description: "'retail' (default) or 'food' — a fast-food kitchen (FASTFOOD.md)",
+    description: "'retail' (default), 'food' (FASTFOOD.md) or 'online' (ONLAYN-SOTUVCHI.md)",
     enum: BUSINESS_TYPES,
   })
   @IsOptional()
@@ -43,7 +43,7 @@ export class CreatePlatformBusinessDto {
  */
 export class UpdatePlatformBusinessDto extends UpdateBusinessDto {
   @ApiPropertyOptional({
-    description: "'retail' or 'food'. Switches defaults; never deletes data.",
+    description: "'retail', 'food' or 'online'. Switches defaults; never deletes data.",
     enum: BUSINESS_TYPES,
   })
   @IsOptional()

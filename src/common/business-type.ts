@@ -4,8 +4,9 @@ import {DatabaseService} from '../database/database.service';
 
 // What kind of business this is (businesses.business_type, FASTFOOD.md §1).
 // 'food' unlocks dishes, recipes, the queue number and the kitchen ticket;
-// everything else about the two is shared.
-export const BUSINESS_TYPES = ['retail', 'food'] as const;
+// 'online' is a seller with no shop or till (ONLAYN-SOTUVCHI.md §10): no
+// shifts, its own plan. Everything else about them is shared.
+export const BUSINESS_TYPES = ['retail', 'food', 'online'] as const;
 export type BusinessType = (typeof BUSINESS_TYPES)[number];
 
 export function isBusinessType(value: unknown): value is BusinessType {
@@ -39,5 +40,6 @@ export async function getBusinessType(
     .from(businesses)
     .where(eq(businesses.id, businessId))
     .limit(1);
-  return row?.businessType === 'food' ? 'food' : 'retail';
+  const type = row?.businessType;
+  return isBusinessType(type) ? type : 'retail';
 }

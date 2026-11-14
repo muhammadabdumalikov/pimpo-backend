@@ -14,6 +14,7 @@ export type BillingTransactionType =
   | 'renewal'
   | 'plan_change'
   | 'branch'
+  | 'addon'
   | 'adjustment';
 
 /** What a ledger line may explain (OBUNA-TOLOV.md §3); shown to the shop. */
@@ -29,6 +30,8 @@ export interface BillingTransactionMeta {
   discountAmount?: number;
   days?: number;
   branchName?: string;
+  /** The AI bot add-on in this charge (ONLAYN-SOTUVCHI.md E5). */
+  aiAddon?: number;
 }
 
 /** Two decimals, as numeric(14,2) stores them — no float dust in the ledger. */

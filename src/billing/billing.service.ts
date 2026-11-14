@@ -36,7 +36,11 @@ import {PermissionService} from '../permission/permission.service';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {generateId} from '../utils/uuid';
+import {isBusinessType} from '../common/business-type';
+import {sellsAiAddon} from '../subscription/tier';
+import type {AiAddonView} from '../subscription/subscription.service';
 import {
+  AI_ADDON_PRICE,
   GRACE_DAYS,
   asDate,
   classifyPlanChange,
@@ -191,6 +195,15 @@ export interface PlatformBillingSummary {
 }
 
 /** GET /mobile/home → attention.subscription (§6.1). */
+export interface AiAddonPreview {
+  /** Taken from the balance now (0 when it is free, see aiAddonQuote). */
+  charge: number;
+  daysRemaining: number;
+  balance: number;
+  shortfall: number;
+  monthlyPrice: number;
+}
+
 export interface BillingAttention {
   endDate: string | null;
   daysLeft: number | null;
@@ -216,6 +229,8 @@ interface BillingContext {
    * per plan in monthlyFor(), not once here.
    */
   discounts: DiscountTerm[];
+  /** The owner keeps the AI bot add-on for the next period (E4). */
+  aiAddonWanted: boolean;
   now: Date;
 }
 
@@ -233,7 +248,7 @@ const DISCOUNT_TERM_COLUMNS = {
 
 /** What a month on `plan` costs this shop, with its discounts. */
 function monthlyFor(
-  ctx: Pick<BillingContext, 'discounts' | 'now'>,
+  ctx: Pick<BillingContext, 'discounts' | 'aiAddonWanted' | 'now'>,
   plan: {tier: string; price: string | number} | null,
   extraBranches: number,
 ): MonthlyTotal {
@@ -241,6 +256,9 @@ function monthlyFor(
     planPrice: plan ? Number(plan.price) : 0,
     planTier: plan?.tier ?? null,
     extraBranches,
+    // Billed only on the plan that sells it: a shop moved off the online
+    // plan stops paying for it even if the flag is still on.
+    aiAddon: ctx.aiAddonWanted && sellsAiAddon(plan?.tier),
     discounts: ctx.discounts,
     now: ctx.now,
   });
@@ -339,9 +357,15 @@ export class BillingService {
       )
       .orderBy(asc(subscriptionDiscounts.createdAt));
 
+    const [profile] = await tx
+      .select({aiAddon: billingProfiles.aiAddon})
+      .from(billingProfiles)
+      .where(eq(billingProfiles.businessId, businessId));
+
     const active = Number(activeBranches);
     return {
       balance,
+      aiAddonWanted: !!profile?.aiAddon,
       sub: subRow ? {...subRow.sub, plan: subRow.plan} : null,
       activeBranches: active,
       extraBranches: Math.max(0, active - 1),
@@ -377,6 +401,7 @@ export class BillingService {
           planPrice: Number(pending.price),
           planTier: pending.tier,
           extraBranches: billing.monthly.extraBranches,
+          aiAddon: billing.monthly.aiAddon > 0 && sellsAiAddon(pending.tier),
           discounts: billing.discounts,
         }).total;
       }
@@ -700,6 +725,7 @@ export class BillingService {
           periodEnd: period.end.toISOString(),
           extraBranches: monthly.extraBranches,
           discountPercent: monthly.discountPercent,
+          ...(monthly.aiAddon > 0 && {aiAddon: monthly.aiAddon}),
           ...(monthly.discountAmount > 0 && {
             discountAmount: monthly.discountAmount,
           }),
@@ -731,6 +757,8 @@ export class BillingService {
         isTrial: false,
         pendingPlanId: null,
         paidExtraBranches: monthly.extraBranches,
+        // Paid for in this charge, so the bot answers the whole new period.
+        aiAddon: monthly.aiAddon > 0,
       });
       return {plan, monthly, period, balanceAfter: posted.balanceAfter};
     });
@@ -797,7 +825,7 @@ export class BillingService {
     tier: string,
   ): Promise<SubscriptionPlan> {
     const plans = await this.subscriptions.getAllPlans(
-      business.businessType === 'food' ? 'food' : 'retail',
+      isBusinessType(business.businessType) ? business.businessType : 'retail',
     );
     const plan = plans.find(
       (p) => p.tier === tier && p.isActive && p.tier !== 'free',
@@ -1088,6 +1116,91 @@ export class BillingService {
     return created;
   }
 
+  // ─── AI bot add-on (ONLAYN-SOTUVCHI.md E4–E7) ──────────────────────────────
+
+  /**
+   * What switching the add-on on costs now: the rest of a running paid
+   * period at the list price. Free while it is already part of the period,
+   * on the trial, on an admin-granted open-ended plan, and past the end (the
+   * renewal then bills it in full).
+   */
+  private aiAddonQuote(ctx: BillingContext, now: Date): AiAddonPreview {
+    const sub = ctx.sub;
+    if (!sub || !sellsAiAddon(sub.plan.tier)) {
+      throw new AppException(ErrorCode.AI_ADDON_NOT_AVAILABLE);
+    }
+    const running =
+      sub.endDate != null && !sub.isTrial && !isPastEnd(sub.endDate, now);
+    const chargeable = running && !sub.aiAddon;
+    const days =
+      chargeable && sub.endDate != null
+        ? periodDays(sub.startDate, sub.endDate, now)
+        : {daysRemaining: 0, periodDays: 1};
+    const charge = chargeable
+      ? prorate({monthlyAmount: AI_ADDON_PRICE, ...days})
+      : 0;
+    return {
+      charge,
+      daysRemaining: days.daysRemaining,
+      balance: ctx.balance,
+      shortfall: Math.max(0, charge - ctx.balance),
+      monthlyPrice: AI_ADDON_PRICE,
+    };
+  }
+
+  /** GET /subscriptions/ai-addon/preview — what turning it on costs now. */
+  async previewAiAddon(businessId: string): Promise<AiAddonPreview> {
+    const now = new Date();
+    return this.aiAddonQuote(await this.readContext(businessId, now), now);
+  }
+
+  /**
+   * POST /subscriptions/ai-addon. On: charge the rest of the period (refused
+   * whole on a short balance), make it part of this period and keep it for
+   * the next. Off: only the next renewal drops it — the paid period runs out
+   * with the bot still answering, and nothing is refunded (E6).
+   */
+  async setAiAddon(
+    businessId: string,
+    enabled: boolean,
+    createdBy: string,
+  ): Promise<AiAddonView> {
+    const now = new Date();
+    await this.db.transaction(async (tx) => {
+      const ctx = await this.loadContext(tx, businessId, now, true);
+      const sub = ctx.sub;
+      if (enabled) {
+        const q = this.aiAddonQuote(ctx, now);
+        if (q.charge > 0 && sub?.endDate) {
+          await postBillingTransaction(tx, businessId, {
+            type: 'addon',
+            amount: -q.charge,
+            meta: {
+              aiAddon: AI_ADDON_PRICE,
+              days: q.daysRemaining,
+              periodEnd: asDate(sub.endDate).toISOString(),
+            },
+            createdBy,
+          });
+        }
+        if (sub && !sub.aiAddon) {
+          await tx
+            .update(businessSubscriptions)
+            .set({aiAddon: true, updatedAt: now})
+            .where(eq(businessSubscriptions.id, sub.id));
+        }
+      } else if (!sub || !sellsAiAddon(sub.plan.tier)) {
+        throw new AppException(ErrorCode.AI_ADDON_NOT_AVAILABLE);
+      }
+      await tx
+        .update(billingProfiles)
+        .set({aiAddon: enabled, updatedAt: now})
+        .where(eq(billingProfiles.businessId, businessId));
+    });
+    await this.invalidate(businessId);
+    return this.subscriptions.aiAddonView(businessId);
+  }
+
   // ─── Platform ─────────────────────────────────────────────────────────────
 
   private async profile(businessId: string): Promise<BillingProfile> {
@@ -1372,6 +1485,7 @@ export class BillingService {
           .select({
             businessId: billingProfiles.businessId,
             balance: billingProfiles.balance,
+            aiAddon: billingProfiles.aiAddon,
           })
           .from(billingProfiles),
         this.db
@@ -1412,6 +1526,9 @@ export class BillingService {
     const balance = new Map(
       profiles.map((p) => [p.businessId, Number(p.balance)]),
     );
+    const wantsAiAddon = new Set(
+      profiles.filter((p) => p.aiAddon).map((p) => p.businessId),
+    );
     const branchCount = new Map(
       branchCounts.map((b) => [b.businessId, Number(b.c)]),
     );
@@ -1432,7 +1549,11 @@ export class BillingService {
         ? pendingPlan.get(s.pendingPlanId)
         : undefined) ?? {price: s.planPrice, tier: s.planTier};
       const total = monthlyFor(
-        {discounts: discountsBy.get(s.businessId) ?? [], now},
+        {
+          discounts: discountsBy.get(s.businessId) ?? [],
+          aiAddonWanted: wantsAiAddon.has(s.businessId),
+          now,
+        },
         next,
         (branchCount.get(s.businessId) ?? 1) - 1,
       ).total;
