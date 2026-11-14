@@ -1397,10 +1397,10 @@ export class OnlineOrderService {
     );
     const label =
       input.kind === 'deposit'
-        ? 'Zaklad'
+        ? "Oldindan to'lov"
         : input.kind === 'balance'
           ? "Buyurtma to'lovi"
-          : 'Zaklad qaytarildi';
+          : "Oldindan to'lov qaytarildi";
     const txn = await this.finance.recordOrderMoneyTx(tx, businessId, account, {
       source: input.kind === 'refund' ? 'order_refund' : 'order_payment',
       amount: input.amount,

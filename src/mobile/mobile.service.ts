@@ -459,10 +459,11 @@ export class MobileService {
 
   async getMoney(account: IAccount) {
     const businessId = account.businessId;
-    const [financeRead, debtRead, receiptRead] = await Promise.all([
+    const [financeRead, debtRead, receiptRead, onlineRead] = await Promise.all([
       this.permissions.can(account, 'finance:read'),
       this.permissions.can(account, 'debt:read'),
       this.permissions.can(account, 'receipt:read'),
+      this.permissions.can(account, 'sale:online:manage'),
     ]);
     // Not cached: the owner opens "Pul" right after recording an expense or a
     // till movement and must see it — a stale balance here reads as lost money.
@@ -474,7 +475,32 @@ export class MobileService {
       customerDebt: debtRead ? data.customerDebt : null,
       supplierDebt: receiptRead ? data.supplierDebt : null,
       supply: receiptRead ? data.supply : null,
+      orderDeposits: financeRead || onlineRead ? data.orderDeposits : null,
     };
+  }
+
+  /**
+   * Prepayments taken on orders not yet handed over or cancelled
+   * (ONLAYN-SOTUVCHI.md §5 "Pul"): money already in the accounts that is
+   * still owed back as goods — or as a refund if the order falls through.
+   */
+  private async openOrderDeposits(
+    businessId: string,
+  ): Promise<{amount: number; orders: number}> {
+    const [row] = await this.db
+      .select({
+        amount: sql<string>`COALESCE(SUM(${orders.prepaidAmount}), 0)`,
+        orders: sql<number>`count(*)::int`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          sql`${orders.prepaidAmount} > 0`,
+          sql`${orders.status} NOT IN ('Completed', 'Cancelled')`,
+        ),
+      );
+    return {amount: Number(row?.amount ?? 0), orders: Number(row?.orders ?? 0)};
   }
 
   /**
@@ -495,7 +521,7 @@ export class MobileService {
     const todayStart = businessDayStart(today);
     const monthFrom = `${today.slice(0, 8)}01`;
 
-    const [accountRows, registers, open, debts, payables, pnl, supply] =
+    const [accountRows, registers, open, debts, payables, pnl, supply, deposits] =
       await Promise.all([
         this.finance.getAccounts(businessId),
         this.shifts.getRegisters(businessId),
@@ -504,6 +530,7 @@ export class MobileService {
         this.payableRows(businessId),
         this.reports.getPnl(businessId, {from: monthFrom, to: today}),
         this.finance.getSupplySummary(businessId, {from: monthFrom, to: today}),
+        this.openOrderDeposits(businessId),
       ]);
 
     const totals = new Map<string, number>();
@@ -587,6 +614,7 @@ export class MobileService {
       supply: {month: monthFrom.slice(0, 7), ...supplyTotals(supply)} as {
         month: string;
       } & ReturnType<typeof supplyTotals> | null,
+      orderDeposits: deposits as {amount: number; orders: number} | null,
     };
   }
 

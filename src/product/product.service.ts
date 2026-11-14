@@ -137,6 +137,9 @@ export function cleanProductOptions(
   return groups.length ? groups : null;
 }
 
+/** Stock buckets of the product list (stockCondition). */
+export type ProductStockFilter = 'in' | 'low' | 'out' | 'alert' | 'preorder';
+
 @Injectable()
 export class ProductService {
   private readonly logger = new Logger(ProductService.name);
@@ -647,15 +650,20 @@ export class ProductService {
   // (products.quantity, or branch_stock.quantity in branch scope).
   // `alert` is the owner's phone signal (MOBILE.md): only products the owner
   // gave a threshold to — the default 10 would flag most of a small shop.
+  // A "Buyurtmaga olinadi" card (ONLAYN-SOTUVCHI.md Q4) is sold before it is
+  // in stock, so it is never low or sold out; `preorder` lists those cards.
   private stockCondition(
-    stock: 'in' | 'low' | 'out' | 'alert',
+    stock: ProductStockFilter,
     qtyCol: typeof products.quantity | typeof branchStock.quantity,
   ) {
     const threshold = sql`coalesce(${products.lowStockThreshold}, ${ProductService.DEFAULT_LOW_STOCK_THRESHOLD})`;
-    if (stock === 'out') return sql`${qtyCol} <= 0`;
+    const notPreorder = sql`not ${products.preorder}`;
+    if (stock === 'preorder') return sql`${products.preorder}`;
+    if (stock === 'out') return sql`${qtyCol} <= 0 and ${notPreorder}`;
     if (stock === 'alert')
-      return sql`${products.lowStockThreshold} > 0 and ${qtyCol} > 0 and ${qtyCol} <= ${products.lowStockThreshold}`;
-    if (stock === 'low') return sql`${qtyCol} > 0 and ${qtyCol} <= ${threshold}`;
+      return sql`${products.lowStockThreshold} > 0 and ${qtyCol} > 0 and ${qtyCol} <= ${products.lowStockThreshold} and ${notPreorder}`;
+    if (stock === 'low')
+      return sql`${qtyCol} > 0 and ${qtyCol} <= ${threshold} and ${notPreorder}`;
     return sql`${qtyCol} > ${threshold}`;
   }
 
@@ -669,7 +677,7 @@ export class ProductService {
       // stock as `quantity` (instead of the cross-branch sum).
       branchId?: string;
       // Filter by stock status bucket (see stockCondition).
-      stock?: 'in' | 'low' | 'out' | 'alert';
+      stock?: ProductStockFilter;
       // Filter to one category.
       categoryId?: string;
       // Filter to one supplier — the product's default supplier. The literal

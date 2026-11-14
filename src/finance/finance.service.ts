@@ -99,7 +99,10 @@ const NONCASH_DEFAULT_NAME = 'Naqdsiz (kassa)';
 const ORDER_CASH_DEFAULT_NAME = 'Naqd';
 
 // Income category a deposit kept on cancel is booked under (Q7).
-const KEPT_DEPOSIT_CATEGORY_NAME = 'Ushlab qolingan zaklad';
+const KEPT_DEPOSIT_CATEGORY_NAME = "Ushlab qolingan oldindan to'lov";
+// The first name of that category ("zaklad" is Russian-borrowed); a row made
+// under it is found and renamed rather than duplicated.
+const KEPT_DEPOSIT_CATEGORY_LEGACY_NAME = 'Ushlab qolingan zaklad';
 
 // Expense category salary payments are booked under (see PayrollService).
 export const PAYROLL_CATEGORY_NAME = 'Ish haqi';
@@ -793,7 +796,7 @@ export class FinanceService {
    * A deposit the shop keeps when the order is cancelled (Q7): the money stays
    * where it is, but it stops being the customer's and becomes other income.
    * Booked as a pair on the same account — the order money leaves (not P&L)
-   * and comes back as "Ushlab qolingan zaklad" income (P&L) — so the balance
+   * and comes back as "Ushlab qolingan oldindan to'lov" income (P&L) — so the balance
    * does not move and the ledger still says what happened.
    */
   async recordKeptDepositTx(
@@ -845,11 +848,22 @@ export class FinanceService {
         and(
           eq(financialCategories.businessId, businessId),
           eq(financialCategories.kind, 'income'),
-          eq(financialCategories.name, KEPT_DEPOSIT_CATEGORY_NAME),
+          inArray(financialCategories.name, [
+            KEPT_DEPOSIT_CATEGORY_NAME,
+            KEPT_DEPOSIT_CATEGORY_LEGACY_NAME,
+          ]),
           eq(financialCategories.isActive, true),
         ),
       )
       .limit(1);
+    if (named?.name === KEPT_DEPOSIT_CATEGORY_LEGACY_NAME) {
+      const [renamed] = await tx
+        .update(financialCategories)
+        .set({name: KEPT_DEPOSIT_CATEGORY_NAME})
+        .where(eq(financialCategories.id, named.id))
+        .returning();
+      return renamed ?? named;
+    }
     if (named) return named;
     const [created] = await tx
       .insert(financialCategories)

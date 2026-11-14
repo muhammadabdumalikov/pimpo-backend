@@ -121,8 +121,9 @@ export class ProductController {
   @ApiQuery({
     name: 'stock',
     required: false,
-    enum: ['in', 'low', 'out'],
-    description: 'Filter by stock status bucket',
+    enum: ['in', 'low', 'out', 'alert', 'preorder'],
+    description:
+      "Filter by stock status bucket; low/out/alert leave out 'Buyurtmaga olinadi' cards, preorder lists them",
   })
   @ApiQuery({
     name: 'supplierId',
@@ -221,7 +222,11 @@ export class ProductController {
       ? new Date(priceChangedSince)
       : undefined;
     const stockFilter =
-      stock === 'in' || stock === 'low' || stock === 'out' || stock === 'alert'
+      stock === 'in' ||
+      stock === 'low' ||
+      stock === 'out' ||
+      stock === 'alert' ||
+      stock === 'preorder'
         ? stock
         : undefined;
     const result = await this.productService.findAll(business.id, {
