@@ -32,6 +32,10 @@ export interface BillingTransactionMeta {
   branchName?: string;
   /** The AI bot add-on in this charge (ONLAYN-SOTUVCHI.md E5). */
   aiAddon?: number;
+  /** 'year' on a yearly renewal (OBUNA-TOLOV.md §9); absent = a month. */
+  cycle?: 'month' | 'year';
+  /** So'm the yearly price saved against twelve months. */
+  yearlyDiscount?: number;
 }
 
 /** Two decimals, as numeric(14,2) stores them — no float dust in the ledger. */

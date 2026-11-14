@@ -62,7 +62,7 @@ describe('billingRenewedText', () => {
       [
         '✅ Obuna yangilandi: Biznes, 10.12.2026 gacha.',
         "Balansdan 299 000 so'm yechildi. Qoldiq: 1 000 so'm.",
-        "Keyingi oy uchun balansda yana 298 000 so'm kerak bo'ladi.",
+        "Keyingi to'lov uchun balansda yana 298 000 so'm kerak bo'ladi.",
       ].join('\n'),
     );
   });

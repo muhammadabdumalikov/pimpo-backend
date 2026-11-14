@@ -31,6 +31,10 @@ import {
   type MonthlyTotal,
   AI_ADDON_MONTHLY_ANSWERS,
   AI_ADDON_PRICE,
+  YEARLY_DISCOUNT_PERCENT,
+  asBillingCycle,
+  cycleTotal,
+  type BillingCycle,
 } from '../billing/billing';
 import { lockBillingProfile } from '../billing/billing-ledger';
 
@@ -56,6 +60,18 @@ export type BillingInfo = {
     /** discountAmount split by discount (billing.ts computeMonthlyTotal). */
     discountLines: DiscountLine[];
     total: number;
+  };
+  /** Monthly or yearly billing (OBUNA-TOLOV.md §9). */
+  cycle: {
+    /** What the next renewal charges for, as the owner set it. */
+    wanted: BillingCycle;
+    /** What the current period was paid for. */
+    current: BillingCycle;
+    /** Twelve months of `monthly.total` less the yearly discount. */
+    yearlyTotal: number;
+    discountPercent: number;
+    /** What the next renewal takes: yearlyTotal or monthly.total. */
+    renewalTotal: number;
   };
   discounts: DiscountView[];
 };
@@ -255,6 +271,7 @@ export class SubscriptionService implements OnModuleInit {
         pendingPlanId: businessSubscriptions.pendingPlanId,
         paidExtraBranches: businessSubscriptions.paidExtraBranches,
         aiAddon: businessSubscriptions.aiAddon,
+        billingCycle: businessSubscriptions.billingCycle,
         createdAt: businessSubscriptions.createdAt,
         updatedAt: businessSubscriptions.updatedAt,
         plan: subscriptionPlans,
@@ -653,6 +670,16 @@ export class SubscriptionService implements OnModuleInit {
         discountAmount: monthly.discountAmount,
         discountLines: monthly.discountLines,
         total: monthly.total,
+      },
+      cycle: {
+        wanted: asBillingCycle(profile?.billingCycle),
+        current: asBillingCycle(subscription?.billingCycle),
+        yearlyTotal: cycleTotal(monthly.total, 'year'),
+        discountPercent: YEARLY_DISCOUNT_PERCENT,
+        renewalTotal: cycleTotal(
+          monthly.total,
+          asBillingCycle(profile?.billingCycle),
+        ),
       },
       discounts: activeDiscounts.map((d) => ({
         id: d.id,

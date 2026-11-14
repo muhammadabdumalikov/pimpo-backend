@@ -38,9 +38,16 @@ import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import {generateId} from '../utils/uuid';
 import {isBusinessType} from '../common/business-type';
 import {sellsAiAddon} from '../subscription/tier';
-import type {AiAddonView} from '../subscription/subscription.service';
+import type {
+  AiAddonView,
+  BillingInfo,
+} from '../subscription/subscription.service';
 import {
   AI_ADDON_PRICE,
+  asBillingCycle,
+  cycleTotal,
+  periodAmount,
+  type BillingCycle,
   GRACE_DAYS,
   asDate,
   classifyPlanChange,
@@ -127,7 +134,12 @@ export interface BillingStatus {
   canPay: boolean;
   pay: null | {
     amountDue: number;
+    /** What the next renewal charges (a year when `cycle` is 'year'). */
     monthlyTotal: number;
+    /** The cycle `monthlyTotal` and `amountDue` are for (OBUNA-TOLOV.md §9). */
+    cycle: BillingCycle;
+    /** One month — the least a renewal takes when a year is not covered. */
+    minimumTotal: number;
     balance: number;
     lastRejected: LastRejected | null;
   };
@@ -135,7 +147,11 @@ export interface BillingStatus {
 
 export interface PaymentInfo {
   amountDue: number;
+  /** What the next renewal charges (a year when `cycle` is 'year'). */
   monthlyTotal: number;
+  cycle: BillingCycle;
+  /** One month — the least a renewal takes when a year is not covered. */
+  minimumTotal: number;
   balance: number;
   requisites: PaymentRequisites;
   pendingRequest: PendingRequestView | null;
@@ -231,6 +247,8 @@ interface BillingContext {
   discounts: DiscountTerm[];
   /** The owner keeps the AI bot add-on for the next period (E4). */
   aiAddonWanted: boolean;
+  /** The cycle the next renewal is for, as the owner set it (OBUNA-TOLOV.md §9). */
+  cycleWanted: BillingCycle;
   now: Date;
 }
 
@@ -268,7 +286,15 @@ function monthlyFor(
 interface Quote {
   sub: ActiveSubscription | null;
   balance: number;
+  /** The cycle the next renewal is for, as the owner set it. */
+  cycle: BillingCycle;
+  /** What the next renewal charges: a year when the owner chose yearly. */
   renewalTotal: number;
+  /**
+   * The least that keeps the shop running: one month. A renewal short of a
+   * wanted year still takes a month (OBUNA-TOLOV.md §9), so the warnings measure this.
+   */
+  minimumTotal: number;
   amountDue: number;
 }
 
@@ -358,7 +384,10 @@ export class BillingService {
       .orderBy(asc(subscriptionDiscounts.createdAt));
 
     const [profile] = await tx
-      .select({aiAddon: billingProfiles.aiAddon})
+      .select({
+        aiAddon: billingProfiles.aiAddon,
+        billingCycle: billingProfiles.billingCycle,
+      })
       .from(billingProfiles)
       .where(eq(billingProfiles.businessId, businessId));
 
@@ -366,6 +395,7 @@ export class BillingService {
     return {
       balance,
       aiAddonWanted: !!profile?.aiAddon,
+      cycleWanted: asBillingCycle(profile?.billingCycle),
       sub: subRow ? {...subRow.sub, plan: subRow.plan} : null,
       activeBranches: active,
       extraBranches: Math.max(0, active - 1),
@@ -391,13 +421,13 @@ export class BillingService {
       this.subscriptions.getBusinessSubscription(businessId),
       this.subscriptions.getBillingInfo(businessId),
     ]);
-    let renewalTotal = billing.monthly.total;
+    let monthlyTotal = billing.monthly.total;
     if (sub?.pendingPlanId) {
       const pending = await this.subscriptions.getPlanById(sub.pendingPlanId);
       if (pending) {
         // Re-priced from the rows, not from the current plan's percent: a
         // discount tied to the current plan does not follow the shop down.
-        renewalTotal = computeMonthlyTotal({
+        monthlyTotal = computeMonthlyTotal({
           planPrice: Number(pending.price),
           planTier: pending.tier,
           extraBranches: billing.monthly.extraBranches,
@@ -406,10 +436,15 @@ export class BillingService {
         }).total;
       }
     }
+    // Older cached views (before OBUNA-TOLOV.md §9) carry no cycle block.
+    const wanted = asBillingCycle(billing.cycle?.wanted);
+    const renewalTotal = cycleTotal(monthlyTotal, wanted);
     return {
       sub,
       balance: billing.balance,
+      cycle: wanted,
       renewalTotal,
+      minimumTotal: monthlyTotal,
       amountDue: Math.max(0, renewalTotal - billing.balance),
     };
   }
@@ -482,7 +517,7 @@ export class BillingService {
       ? computeBillingStage({
           endDate,
           balance: q.balance,
-          amountNeeded: q.renewalTotal,
+          amountNeeded: q.minimumTotal,
           now,
         })
       : 'none';
@@ -529,6 +564,8 @@ export class BillingService {
         ? {
             amountDue: core.q.amountDue,
             monthlyTotal: core.q.renewalTotal,
+            cycle: core.q.cycle,
+            minimumTotal: core.q.minimumTotal,
             balance: core.q.balance,
             lastRejected: this.recentRejection(core.requests, now),
           }
@@ -561,6 +598,8 @@ export class BillingService {
     return {
       amountDue: q.amountDue,
       monthlyTotal: q.renewalTotal,
+      cycle: q.cycle,
+      minimumTotal: q.minimumTotal,
       balance: q.balance,
       requisites,
       pendingRequest: requests.pending,
@@ -710,16 +749,26 @@ export class BillingService {
       }
 
       const monthly = monthlyFor(ctx, plan, ctx.extraBranches);
-      // No partial charges (Q1): short of the full month, nothing changes.
+      // No partial charges (Q1): short of the full month, nothing changes. A
+      // wanted year the balance cannot cover falls back to a month (OBUNA-TOLOV.md §9), so
+      // the shop keeps running and the choice waits for the next renewal.
       if (ctx.balance < monthly.total) return null;
+      const yearly = cycleTotal(monthly.total, 'year');
+      const cycle: BillingCycle =
+        ctx.cycleWanted === 'year' && ctx.balance >= yearly ? 'year' : 'month';
+      const charged = cycle === 'year' ? yearly : monthly.total;
 
-      const period = nextPeriod(sub.endDate, now);
+      const period = nextPeriod(sub.endDate, now, cycle);
       const posted = await postBillingTransaction(tx, businessId, {
         type: 'renewal',
-        amount: -monthly.total,
+        amount: -charged,
         meta: {
           planTier: plan.tier,
           planName: plan.name,
+          ...(cycle === 'year' && {
+            cycle,
+            yearlyDiscount: monthly.total * 12 - yearly,
+          }),
           ...(plan.id !== sub.plan.id && {fromPlanName: sub.plan.name}),
           periodStart: period.start.toISOString(),
           periodEnd: period.end.toISOString(),
@@ -759,8 +808,17 @@ export class BillingService {
         paidExtraBranches: monthly.extraBranches,
         // Paid for in this charge, so the bot answers the whole new period.
         aiAddon: monthly.aiAddon > 0,
+        billingCycle: cycle,
       });
-      return {plan, monthly, period, balanceAfter: posted.balanceAfter};
+      return {
+        plan,
+        monthly,
+        charged,
+        cycle,
+        yearlyFellBack: ctx.cycleWanted === 'year' && cycle === 'month',
+        period,
+        balanceAfter: posted.balanceAfter,
+      };
     });
 
     if (!result) return {renewed: false};
@@ -776,21 +834,26 @@ export class BillingService {
       billingRenewedText({
         planName: result.plan.name,
         periodEnd: result.period.end,
-        charged: result.monthly.total,
+        charged: result.charged,
         balanceAfter: result.balanceAfter,
         nextShortfall,
+        yearly: result.cycle === 'year',
+        yearlyFellBack: result.yearlyFellBack,
       }),
       {
         kind: 'renewed',
         planName: result.plan.name,
         periodEnd: tashkentDate(result.period.end),
-        charged: result.monthly.total,
+        charged: result.charged,
+        // OBUNA-TOLOV.md §9: the inbox text says "1 yil" / "bir oyga" from these.
+        yearly: result.cycle === 'year',
+        yearlyFellBack: result.yearlyFellBack,
         balance: result.balanceAfter,
         shortfall: nextShortfall,
       },
     );
     this.logger.log(
-      `Renewed ${businessId}: ${result.plan.tier} until ${result.period.end.toISOString()} (−${result.monthly.total})`,
+      `Renewed ${businessId}: ${result.plan.tier} until ${result.period.end.toISOString()} (−${result.charged})`,
     );
     return {renewed: true};
   }
@@ -870,10 +933,14 @@ export class BillingService {
     // with its own special price is charged by that price, not by the list.
     const currentMonthly = monthlyFor(ctx, sub?.plan ?? null, ctx.extraBranches);
     const targetMonthly = monthlyFor(ctx, target, ctx.extraBranches);
+    // On a yearly period the difference is charged at the yearly price.
     const charge =
       kind === 'upgrade'
         ? prorate({
-            monthlyAmount: targetMonthly.total - currentMonthly.total,
+            monthlyAmount: periodAmount(
+              targetMonthly.total - currentMonthly.total,
+              asBillingCycle(sub?.billingCycle),
+            ),
             ...days,
           })
         : 0;
@@ -1044,8 +1111,12 @@ export class BillingService {
     const charge = chargeable
       ? prorate({
           // What the unpaid seats add to the month, net of any discount that
-          // covers branches — 150 000 each when there is none.
-          monthlyAmount: totalWith(extraAfter) - totalWith(extraAfter - newSeats),
+          // covers branches — 150 000 each when there is none — at the
+          // period's cycle price.
+          monthlyAmount: periodAmount(
+            totalWith(extraAfter) - totalWith(extraAfter - newSeats),
+            asBillingCycle(sub?.billingCycle),
+          ),
           ...days,
         })
       : 0;
@@ -1137,7 +1208,13 @@ export class BillingService {
         ? periodDays(sub.startDate, sub.endDate, now)
         : {daysRemaining: 0, periodDays: 1};
     const charge = chargeable
-      ? prorate({monthlyAmount: AI_ADDON_PRICE, ...days})
+      ? prorate({
+          monthlyAmount: periodAmount(
+            AI_ADDON_PRICE,
+            asBillingCycle(sub.billingCycle),
+          ),
+          ...days,
+        })
       : 0;
     return {
       charge,
@@ -1199,6 +1276,29 @@ export class BillingService {
     });
     await this.invalidate(businessId);
     return this.subscriptions.aiAddonView(businessId);
+  }
+
+  // ─── Billing cycle (OBUNA-TOLOV.md §9) ────────────────────────────────────
+
+  /**
+   * POST /subscriptions/billing-cycle — monthly or yearly from the next
+   * renewal on. Nothing is charged or refunded now: the current period runs
+   * out at the price it was paid for, and a wanted year the balance cannot
+   * cover at renewal falls back to a month.
+   */
+  async setBillingCycle(
+    businessId: string,
+    cycle: BillingCycle,
+  ): Promise<BillingInfo['cycle']> {
+    await this.db.transaction(async (tx) => {
+      await lockBillingProfile(tx, businessId);
+      await tx
+        .update(billingProfiles)
+        .set({billingCycle: cycle, updatedAt: new Date()})
+        .where(eq(billingProfiles.businessId, businessId));
+    });
+    await this.invalidate(businessId);
+    return (await this.subscriptions.getBillingInfo(businessId)).cycle;
   }
 
   // ─── Platform ─────────────────────────────────────────────────────────────

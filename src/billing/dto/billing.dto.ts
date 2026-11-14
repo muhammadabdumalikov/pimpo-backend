@@ -1,6 +1,7 @@
 import {ApiProperty, ApiPropertyOptional} from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -159,4 +160,11 @@ export class SetAiAddonDto {
   })
   @IsBoolean()
   enabled: boolean;
+}
+
+/** POST /subscriptions/billing-cycle — monthly or yearly from the next renewal (OBUNA-TOLOV.md §9). */
+export class SetBillingCycleDto {
+  @ApiProperty({enum: ['month', 'year']})
+  @IsIn(['month', 'year'])
+  cycle: 'month' | 'year';
 }

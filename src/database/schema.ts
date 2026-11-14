@@ -188,6 +188,9 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   // The AI bot add-on is part of this period (paid, or given with the online
   // trial) — the bot answers while it is true (0109).
   aiAddon: boolean('ai_addon').default(false).notNull(),
+  // 'month' | 'year' — the cycle this period was paid for (0110). Mid-period
+  // charges prorate over the period at that cycle's price.
+  billingCycle: varchar('billing_cycle', {length: 8}).default('month').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -2428,6 +2431,9 @@ export const billingProfiles = pgTable('billing_profiles', {
   // The owner wants the AI bot add-on next period: renewals add its price
   // while this is on (0109, ONLAYN-SOTUVCHI.md E4).
   aiAddon: boolean('ai_addon').default(false).notNull(),
+  // 'month' | 'year' — the cycle the owner wants from the next renewal on
+  // (0110, OBUNA-TOLOV.md §9).
+  billingCycle: varchar('billing_cycle', {length: 8}).default('month').notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

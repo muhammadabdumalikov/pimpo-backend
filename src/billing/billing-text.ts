@@ -85,14 +85,23 @@ export function billingRenewedText(input: {
   charged: number;
   balanceAfter: number;
   nextShortfall: number;
+  /** A year was paid (OBUNA-TOLOV.md §9). */
+  yearly?: boolean;
+  /** A year was wanted but the balance covered only a month. */
+  yearlyFellBack?: boolean;
 }): string {
   const lines = [
-    `✅ Obuna yangilandi: ${input.planName}, ${tashkentDate(input.periodEnd)} gacha.`,
+    `✅ Obuna yangilandi${input.yearly ? ' (1 yilga)' : ''}: ${input.planName}, ${tashkentDate(input.periodEnd)} gacha.`,
     `Balansdan ${money(input.charged)} so'm yechildi. Qoldiq: ${money(input.balanceAfter)} so'm.`,
   ];
+  if (input.yearlyFellBack) {
+    lines.push(
+      "Yillik to'lov uchun balans yetmadi, shuning uchun obuna bir oyga uzaytirildi. Yillik tanlov keyingi to'lovda qayta tekshiriladi.",
+    );
+  }
   if (input.nextShortfall > 0) {
     lines.push(
-      `Keyingi oy uchun balansda yana ${money(input.nextShortfall)} so'm kerak bo'ladi.`,
+      `Keyingi to'lov uchun balansda yana ${money(input.nextShortfall)} so'm kerak bo'ladi.`,
     );
   }
   return lines.join('\n');

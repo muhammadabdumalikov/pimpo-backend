@@ -3,7 +3,10 @@ import {
   classifyPlanChange,
   computeBillingStage,
   AI_ADDON_PRICE,
+  addCalendarMonths,
   computeMonthlyTotal,
+  cycleTotal,
+  periodAmount,
   graceEndsAt,
   isRestricted,
   nextPeriod,
@@ -615,5 +618,36 @@ describe('tashkentHour', () => {
   it('reads the hour on the Tashkent clock', () => {
     expect(tashkentHour(at('2026-11-10T03:00:00Z'))).toBe(8);
     expect(tashkentHour(at('2026-11-10T19:30:00Z'))).toBe(0);
+  });
+});
+
+describe('yearly billing (OBUNA-TOLOV.md §9)', () => {
+  it('prices a year as twelve months less 20 %, to the nearest 1 000', () => {
+    expect(cycleTotal(299_000, 'year')).toBe(2_870_000); // 2 870 400
+    expect(cycleTotal(348_000, 'year')).toBe(3_341_000); // 3 340 800
+    expect(cycleTotal(299_000, 'month')).toBe(299_000);
+  });
+
+  it('opens a twelve-month period, the day clamped once', () => {
+    const p = nextPeriod(new Date('2026-01-31T05:00:00Z'), new Date('2026-01-31T06:00:00Z'), 'year');
+    expect(p.end.toISOString()).toBe('2027-01-31T05:00:00.000Z');
+    // 29 Feb → 28 Feb a year on, not drifted month by month.
+    expect(addCalendarMonths(new Date('2028-02-29T05:00:00Z'), 12).toISOString()).toBe(
+      '2029-02-28T05:00:00.000Z',
+    );
+    expect(nextPeriod(new Date('2026-01-31T05:00:00Z'), new Date('2026-01-31T06:00:00Z')).end.toISOString()).toBe(
+      '2026-02-28T05:00:00.000Z',
+    );
+  });
+
+  it('charges a mid-year change at the yearly price over the days left', () => {
+    // A branch seat (150 000/mo) with half a 365-day year left.
+    const charge = prorate({
+      monthlyAmount: periodAmount(150_000, 'year'),
+      daysRemaining: 182,
+      periodDays: 365,
+    });
+    expect(charge).toBe(718_000); // 1 440 000 × 182 / 365 ≈ 718 027
+    expect(periodAmount(150_000, 'month')).toBe(150_000);
   });
 });

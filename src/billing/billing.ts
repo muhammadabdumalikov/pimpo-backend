@@ -26,6 +26,42 @@ export const EXTRA_BRANCH_PRICE = 150_000;
 export const AI_ADDON_PRICE = 149_000;
 export const AI_ADDON_MONTHLY_ANSWERS = 1_000;
 
+// Yearly billing (OBUNA-TOLOV.md §9): twelve months paid upfront, this much off.
+export const YEARLY_DISCOUNT_PERCENT = 20;
+
+/** The length of a paid period: one calendar month or twelve. */
+export type BillingCycle = 'month' | 'year';
+export const BILLING_CYCLES: readonly BillingCycle[] = ['month', 'year'];
+
+export function isBillingCycle(value: unknown): value is BillingCycle {
+  return value === 'month' || value === 'year';
+}
+
+/** Read a stored cycle; anything unknown is a month. */
+export function asBillingCycle(value: unknown): BillingCycle {
+  return value === 'year' ? 'year' : 'month';
+}
+
+/**
+ * What a period of `cycle` costs for a month that costs `monthly` (the
+ * computeMonthlyTotal total, discounts and add-on included): a year is twelve
+ * months less YEARLY_DISCOUNT_PERCENT, to the nearest 1 000.
+ */
+export function cycleTotal(monthly: number, cycle: BillingCycle): number {
+  if (cycle === 'month') return monthly;
+  return round1000((monthly * 12 * (100 - YEARLY_DISCOUNT_PERCENT)) / 100);
+}
+
+/**
+ * A monthly difference as the period it is charged over sees it — the base
+ * prorate() spreads over the period's days. Not rounded: prorate rounds once.
+ */
+export function periodAmount(monthly: number, cycle: BillingCycle): number {
+  return cycle === 'year'
+    ? (monthly * 12 * (100 - YEARLY_DISCOUNT_PERCENT)) / 100
+    : monthly;
+}
+
 const DAY_MS = 86_400_000;
 
 /**
@@ -449,9 +485,18 @@ export function periodDays(
  * the day clamped to the target month's length (31 Jan → 28/29 Feb).
  */
 export function addCalendarMonth(date: Date | string): Date {
+  return addCalendarMonths(date, 1);
+}
+
+/**
+ * `months` calendar months later on the Tashkent wall clock, the day clamped
+ * once to the target month (31 Jan + 12 → 31 Jan; 29 Feb + 12 → 28 Feb) — not
+ * month by month, which would drift the day down.
+ */
+export function addCalendarMonths(date: Date | string, months: number): Date {
   const local = new Date(asDate(date).getTime() + BUSINESS_OFFSET_MS);
   const y = local.getUTCFullYear();
-  const m = local.getUTCMonth() + 1;
+  const m = local.getUTCMonth() + months;
   const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
   const day = Math.min(local.getUTCDate(), lastDay);
   const shifted = Date.UTC(
@@ -474,9 +519,10 @@ export function addCalendarMonth(date: Date | string): Date {
 export function nextPeriod(
   oldEndDate: Date | string,
   now: Date = new Date(),
+  cycle: BillingCycle = 'month',
 ): {start: Date; end: Date} {
   const start = isRestricted(oldEndDate, now) ? now : asDate(oldEndDate);
-  return {start, end: addCalendarMonth(start)};
+  return {start, end: addCalendarMonths(start, cycle === 'year' ? 12 : 1)};
 }
 
 /**

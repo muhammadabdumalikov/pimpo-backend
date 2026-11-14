@@ -28,7 +28,12 @@ import {RequirePermission} from '../permission/permission.decorator';
 import {PlatformAdminGuard} from '../subscription/platform-admin.guard';
 import {TopUpBalanceDto} from '../subscription/dto/billing.dto';
 import {BillingService} from './billing.service';
-import {ChangePlanDto, CreatePaymentRequestDto, SetAiAddonDto} from './dto/billing.dto';
+import {
+  ChangePlanDto,
+  CreatePaymentRequestDto,
+  SetAiAddonDto,
+  SetBillingCycleDto,
+} from './dto/billing.dto';
 
 /**
  * The shop's side of subscription billing (OBUNA-TOLOV.md §6.1), mounted on
@@ -146,6 +151,22 @@ export class BillingController {
     @Body() dto: SetAiAddonDto,
   ) {
     return this.billing.setAiAddon(business.id, dto.enabled, account.id);
+  }
+
+  @Post('billing-cycle')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Monthly or yearly (20% off) from the next renewal on; nothing is charged now',
+  })
+  setBillingCycle(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: SetBillingCycleDto,
+  ) {
+    return this.billing.setBillingCycle(business.id, dto.cycle);
   }
 
   @Post('subscribe')
