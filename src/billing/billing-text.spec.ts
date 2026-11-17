@@ -1,6 +1,8 @@
 import {
+  NOTICE_KIND,
   billingNoticeText,
   billingRenewedText,
+  reminderVerdict,
   tashkentDate,
 } from './billing-text';
 
@@ -65,5 +67,35 @@ describe('billingRenewedText', () => {
         "Keyingi to'lov uchun balansda yana 298 000 so'm kerak bo'ladi.",
       ].join('\n'),
     );
+  });
+});
+
+describe('reminderVerdict', () => {
+  const ok = {
+    stage: 'urgent' as const,
+    endDate: new Date('2026-11-20T07:00:00Z'),
+    botReady: true,
+    chats: 1,
+  };
+
+  it('allows a reminder for every stage the daily run writes a notice for', () => {
+    for (const stage of ['reminder', 'urgent', 'grace', 'restricted'] as const) {
+      expect(NOTICE_KIND[stage]).toBeDefined();
+      expect(reminderVerdict({...ok, stage})).toBe('ok');
+    }
+  });
+
+  it('has nothing to remind a paid-up or open-ended shop of', () => {
+    expect(reminderVerdict({...ok, stage: 'none'})).toBe('not_due');
+    expect(reminderVerdict({...ok, endDate: null})).toBe('not_due');
+  });
+
+  it('needs the bot and at least one linked chat', () => {
+    expect(reminderVerdict({...ok, botReady: false})).toBe('no_bot');
+    expect(reminderVerdict({...ok, chats: 0})).toBe('no_chats');
+  });
+
+  it('says "not due" first: a shop with no chat and nothing due is not a Telegram problem', () => {
+    expect(reminderVerdict({...ok, stage: 'none', chats: 0, botReady: false})).toBe('not_due');
   });
 });

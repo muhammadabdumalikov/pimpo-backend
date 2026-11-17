@@ -3,8 +3,35 @@
 // its own uz/ru lines from notification/push-text.ts (event 'billing').
 
 import {BUSINESS_OFFSET_MS} from '../common/business-time';
+import type {BillingStage} from './billing';
 
 export type BillingNoticeKind = 'd7' | 'd3' | 'expired' | 'restricted';
+
+/** The notice each billing stage calls for; none while the plan is paid up. */
+export const NOTICE_KIND: Partial<Record<BillingStage, BillingNoticeKind>> = {
+  reminder: 'd7',
+  urgent: 'd3',
+  grace: 'expired',
+  restricted: 'restricted',
+};
+
+/**
+ * Why a reminder can or cannot be sent by hand from the platform console:
+ * nothing is due, the platform bot has no token, or the shop linked no chat.
+ */
+export type ReminderVerdict = 'ok' | 'not_due' | 'no_bot' | 'no_chats';
+
+export function reminderVerdict(input: {
+  stage: BillingStage;
+  endDate: Date | null;
+  botReady: boolean;
+  chats: number;
+}): ReminderVerdict {
+  if (!NOTICE_KIND[input.stage] || !input.endDate) return 'not_due';
+  if (!input.botReady) return 'no_bot';
+  if (input.chats < 1) return 'no_chats';
+  return 'ok';
+}
 
 const money = (n: number) =>
   new Intl.NumberFormat('ru-RU').format(Math.round(n)).replace(/\s/g, ' ');

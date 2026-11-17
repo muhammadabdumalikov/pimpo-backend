@@ -320,6 +320,9 @@ export enum ErrorCode {
   PAYMENT_REQUEST_ALREADY_PENDING = 'PAYMENT_REQUEST_ALREADY_PENDING',
   PAYMENT_REQUEST_NOT_FOUND = 'PAYMENT_REQUEST_NOT_FOUND',
   PAYMENT_REQUEST_ALREADY_RESOLVED = 'PAYMENT_REQUEST_ALREADY_RESOLVED',
+  // A payment reminder sent by hand from the platform console.
+  BILLING_REMINDER_NOT_DUE = 'BILLING_REMINDER_NOT_DUE',
+  BILLING_REMINDER_TOO_SOON = 'BILLING_REMINDER_TOO_SOON',
 
   // ── Supplier ───────────────────────────────────────────────────────────────
   SUPPLIER_NOT_FOUND = 'SUPPLIER_NOT_FOUND',
@@ -1445,6 +1448,14 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BILLING_INSUFFICIENT_BALANCE]: {
     status: HttpStatus.CONFLICT,
     message: 'Insufficient balance: {required} required, {balance} available',
+  },
+  [ErrorCode.BILLING_REMINDER_NOT_DUE]: {
+    status: HttpStatus.CONFLICT,
+    message: 'No payment is due for this business',
+  },
+  [ErrorCode.BILLING_REMINDER_TOO_SOON]: {
+    status: HttpStatus.CONFLICT,
+    message: 'A payment reminder was sent a moment ago',
   },
   [ErrorCode.PAYMENT_REQUEST_ALREADY_PENDING]: {
     status: HttpStatus.CONFLICT,

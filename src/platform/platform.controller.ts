@@ -156,6 +156,18 @@ export class PlatformController {
     return this.platformService.topUpBalance(id, dto.amount, dto.note);
   }
 
+  @Post('businesses/:id/payment-reminder')
+  @UseGuards(PlatformJwtGuard)
+  @ApiBearerAuth('JWT-auth')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Send the shop its payment reminder now, to its linked Telegram chats" })
+  @ApiParam({ name: 'id', description: 'Business ID' })
+  @ApiResponse({ status: 409, description: 'BILLING_REMINDER_NOT_DUE | BILLING_REMINDER_TOO_SOON' })
+  @ApiResponse({ status: 400, description: 'TELEGRAM_NO_TARGETS | TELEGRAM_NOT_CONFIGURED' })
+  sendPaymentReminder(@Param('id') id: string) {
+    return this.platformService.sendPaymentReminder(id);
+  }
+
   @Post('businesses/:id/adjust')
   @UseGuards(PlatformJwtGuard)
   @ApiBearerAuth('JWT-auth')

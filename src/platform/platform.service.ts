@@ -331,7 +331,7 @@ export class PlatformService {
       throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
     }
 
-    const [productRows, branchRows, staffRows, subscription, billing] =
+    const [productRows, branchRows, staffRows, subscription, billing, paymentReminder] =
       await Promise.all([
         this.dbService.db
           .select({ c: count() })
@@ -355,6 +355,7 @@ export class PlatformService {
           ),
         this.subscriptionService.getBusinessSubscription(id),
         this.subscriptionService.getBillingInfo(id),
+        this.billingService.paymentReminderState(id),
       ]);
 
     const { password: _pw, ...safeBusiness } = business;
@@ -381,7 +382,15 @@ export class PlatformService {
           }
         : { tier: 'free' as Tier, planTier: null, planName: null, startDate: null, endDate: null, isExpired: false, isTrial: false },
       billing,
+      // Whether a payment reminder can be sent to the shop's Telegram by hand.
+      paymentReminder,
     };
+  }
+
+  /** Send the shop its payment reminder now (Telegram + inbox), from the console. */
+  async sendPaymentReminder(id: string) {
+    await this.assertBusiness(id);
+    return this.billingService.sendPaymentReminder(id);
   }
 
   /**

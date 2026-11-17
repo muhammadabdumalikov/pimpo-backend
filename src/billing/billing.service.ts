@@ -13,6 +13,7 @@ import {
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {
+  billingNotices,
   billingProfiles,
   billingTransactions,
   branches,
@@ -72,9 +73,14 @@ import {
   type Tx,
 } from './billing-ledger';
 import {
+  NOTICE_KIND,
+  billingNoticeText,
   billingRenewedText,
   paymentRequestedText,
+  reminderVerdict,
   tashkentDate,
+  type BillingNoticeKind,
+  type ReminderVerdict,
 } from './billing-text';
 import type {PaymentRequestFilter} from './dto/billing.dto';
 
@@ -84,6 +90,11 @@ const REJECTION_VISIBLE_MS = 7 * DAY_MS;
 const REQUISITES_KEY = 'payment_requisites';
 // Where a billing push/inbox tap lands.
 const SUBSCRIPTION_URL = '/subscription-management';
+
+// billing_notices.kind of a payment reminder sent by hand from the platform
+// console; the daily run's kinds are BillingNoticeKind.
+const MANUAL_NOTICE = 'manual';
+const REMINDER_COOLDOWN_MINUTES = 10;
 
 // ─── API shapes (OBUNA-TOLOV.md §6 — the frontend is written against these) ──
 
@@ -1741,7 +1752,7 @@ export class BillingService {
   }
 
   /** What the daily notice run needs about one shop. */
-  async noticeState(businessId: string) {
+  async noticeState(businessId: string): Promise<BillingNoticeState> {
     const core = await this.statusCore(businessId, new Date());
     const sub = core.q.sub;
     return {
@@ -1753,6 +1764,150 @@ export class BillingService {
       amountDue: core.q.amountDue,
     };
   }
+
+  /** The message and inbox data of one notice — the daily run's and a hand-sent one's alike. */
+  noticePayload(
+    s: BillingNoticeState & {endDate: Date},
+    kind: BillingNoticeKind,
+  ): {text: string; data: Record<string, unknown>} {
+    return {
+      text: billingNoticeText({
+        kind,
+        isTrial: s.isTrial,
+        daysLeft: s.daysLeft ?? 0,
+        endDate: s.endDate,
+        amountDue: s.amountDue,
+        planName: s.planName,
+      }),
+      data: {
+        kind,
+        isTrial: s.isTrial,
+        daysLeft: s.daysLeft,
+        amountDue: s.amountDue,
+        planName: s.planName,
+      },
+    };
+  }
+
+  // ─── Payment reminder by hand (platform console) ──────────────────────────
+
+  /**
+   * Whether the console may send this shop a payment reminder now, and what
+   * it would say: the same notice the daily run sends for the shop's stage.
+   */
+  async paymentReminderState(businessId: string): Promise<PaymentReminderState> {
+    const [s, chatIds] = await Promise.all([
+      this.noticeState(businessId),
+      this.telegram.listActiveChatIds(businessId),
+    ]);
+    const verdict = reminderVerdict({
+      stage: s.stage,
+      endDate: s.endDate,
+      botReady: this.telegram.canSend(),
+      chats: chatIds.length,
+    });
+    const kind = NOTICE_KIND[s.stage];
+    const due = kind != null && s.endDate != null;
+
+    // The last notice of the running period, the daily run's or a hand-sent one.
+    let last: {kind: string; createdAt: Date} | undefined;
+    if (s.endDate) {
+      [last] = await this.db
+        .select({kind: billingNotices.kind, createdAt: billingNotices.createdAt})
+        .from(billingNotices)
+        .where(
+          and(
+            eq(billingNotices.businessId, businessId),
+            eq(billingNotices.periodEnd, s.endDate),
+          ),
+        )
+        .orderBy(desc(billingNotices.createdAt))
+        .limit(1);
+    }
+
+    return {
+      verdict,
+      chats: chatIds.length,
+      text: due
+        ? this.noticePayload({...s, endDate: s.endDate as Date}, kind).text
+        : null,
+      lastSentAt: last?.createdAt ?? null,
+      lastSentBy: last ? (last.kind === MANUAL_NOTICE ? 'manual' : 'auto') : null,
+    };
+  }
+
+  /**
+   * Send the reminder now: Telegram + inbox/push, like the daily notice. One
+   * hand-sent reminder per period is kept in billing_notices (kind 'manual');
+   * its time is both "last sent" and the guard against a double click.
+   */
+  async sendPaymentReminder(businessId: string): Promise<PaymentReminderState> {
+    const [s, chatIds] = await Promise.all([
+      this.noticeState(businessId),
+      this.telegram.listActiveChatIds(businessId),
+    ]);
+    const verdict = reminderVerdict({
+      stage: s.stage,
+      endDate: s.endDate,
+      botReady: this.telegram.canSend(),
+      chats: chatIds.length,
+    });
+    if (verdict === 'not_due') {
+      throw new AppException(ErrorCode.BILLING_REMINDER_NOT_DUE);
+    }
+    if (verdict === 'no_bot') {
+      throw new AppException(ErrorCode.TELEGRAM_NOT_CONFIGURED);
+    }
+    if (verdict === 'no_chats') {
+      throw new AppException(ErrorCode.TELEGRAM_NO_TARGETS);
+    }
+    const endDate = s.endDate as Date;
+    const kind = NOTICE_KIND[s.stage] as BillingNoticeKind;
+
+    // Claim before sending, in one statement: two clicks cannot both pass.
+    const claimed = (await this.db.execute(sql`
+      INSERT INTO billing_notices (business_id, period_end, kind)
+      VALUES (${businessId}, ${endDate.toISOString()}::timestamptz, ${MANUAL_NOTICE})
+      ON CONFLICT (business_id, period_end, kind) DO UPDATE SET created_at = now()
+        WHERE billing_notices.created_at < now() - make_interval(mins => ${REMINDER_COOLDOWN_MINUTES})
+      RETURNING kind
+    `)) as unknown;
+    const rows =
+      (claimed as {rows?: unknown[]}).rows ?? (claimed as unknown[]);
+    if (!rows?.length) {
+      throw new AppException(ErrorCode.BILLING_REMINDER_TOO_SOON);
+    }
+
+    const notice = this.noticePayload({...s, endDate}, kind);
+    await this.telegram.dispatchBilling(businessId, notice.text, {
+      event: 'billing',
+      data: {...notice.data, url: SUBSCRIPTION_URL},
+    });
+    this.logger.log(`Payment reminder (${kind}) sent by hand to ${businessId}`);
+    return this.paymentReminderState(businessId);
+  }
+}
+
+/** What the notices are written from. */
+export interface BillingNoticeState {
+  stage: BillingStage;
+  endDate: Date | null;
+  daysLeft: number | null;
+  isTrial: boolean;
+  planName: string | null;
+  amountDue: number;
+}
+
+/** The platform console's "send a payment reminder" control. */
+export interface PaymentReminderState {
+  verdict: ReminderVerdict;
+  /** Active Telegram chats linked to the shop. */
+  chats: number;
+  /** The message that goes out now; null when nothing is due. */
+  text: string | null;
+  /** The last notice of the running period, automatic or by hand. */
+  lastSentAt: Date | null;
+  lastSentBy: 'auto' | 'manual' | null;
 }
 
 /** Postgres unique-violation SQLSTATE (23505), wrapped or not. */

@@ -161,6 +161,11 @@ export class TelegramNotifyService {
 
   // ── Delivery ───────────────────────────────────────────────────────────────
 
+  /** The platform bot has a token: a message handed to it can go out. */
+  canSend(): boolean {
+    return this.sender.isConfigured();
+  }
+
   /** Active chat ids linked to the business (login-gated bot links). */
   async listActiveChatIds(businessId: string): Promise<string[]> {
     const links = await this.db

@@ -7,9 +7,8 @@ import {
   REMINDER_DAYS,
   graceEndsAt,
   tashkentHour,
-  type BillingStage,
 } from './billing';
-import {billingNoticeText, type BillingNoticeKind} from './billing-text';
+import {NOTICE_KIND} from './billing-text';
 
 const DAY_MS = 86_400_000;
 
@@ -17,13 +16,6 @@ const DAY_MS = 86_400_000;
 // grace period makes a few hours' delay harmless.
 const RENEW_FROM_HOUR = 8;
 const RENEW_UNTIL_HOUR = 22;
-
-const NOTICE_KIND: Partial<Record<BillingStage, BillingNoticeKind>> = {
-  reminder: 'd7',
-  urgent: 'd3',
-  grace: 'expired',
-  restricted: 'restricted',
-};
 
 // "The day the plan was restricted" — a shop that went restricted long ago
 // (before this feature, or a churned one) gets no fresh notice for it.
@@ -112,23 +104,7 @@ export class BillingCronService {
       .returning({kind: billingNotices.kind});
     if (!claimed.length) return;
 
-    this.billing.sendBilling(
-      businessId,
-      billingNoticeText({
-        kind,
-        isTrial: s.isTrial,
-        daysLeft: s.daysLeft ?? 0,
-        endDate: s.endDate,
-        amountDue: s.amountDue,
-        planName: s.planName,
-      }),
-      {
-        kind,
-        isTrial: s.isTrial,
-        daysLeft: s.daysLeft,
-        amountDue: s.amountDue,
-        planName: s.planName,
-      },
-    );
+    const notice = this.billing.noticePayload({...s, endDate: s.endDate}, kind);
+    this.billing.sendBilling(businessId, notice.text, notice.data);
   }
 }
