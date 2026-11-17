@@ -14,7 +14,10 @@ import {
   CashMovement,
 } from '../database/schema';
 import {CacheKeys} from '../cache/cache.util';
-import {TelegramSenderService} from './telegram-sender.service';
+import {
+  TelegramSenderService,
+  type TelegramUrlButton,
+} from './telegram-sender.service';
 import {TELEGRAM_QUEUE, TelegramJobData} from './telegram.constants';
 import {
   DigestScheduleKey,
@@ -207,8 +210,9 @@ export class TelegramNotifyService {
     businessId: string,
     message: string,
     notice: Notice,
+    buttons?: TelegramUrlButton[][],
   ): Promise<void> {
-    await this.deliver(businessId, 'billing', message, notice);
+    await this.deliver(businessId, 'billing', message, notice, buttons);
   }
 
   private async deliver(
@@ -216,14 +220,20 @@ export class TelegramNotifyService {
     event: string,
     message: string,
     notice?: Notice,
+    buttons?: TelegramUrlButton[][],
   ): Promise<void> {
     if (notice) this.notifications.fire(businessId, notice);
     if (!this.sender.isConfigured()) return;
 
     if (this.queue) {
-      await this.queue.add(event, {businessId, event, message});
+      await this.queue.add(event, {
+        businessId,
+        event,
+        message,
+        ...(buttons?.length ? {buttons} : {}),
+      });
     } else {
-      await this.broadcast(businessId, message);
+      await this.broadcast(businessId, message, buttons);
     }
   }
 
@@ -252,11 +262,15 @@ export class TelegramNotifyService {
   }
 
   /** Best-effort direct send to every active chat (queue fallback). */
-  async broadcast(businessId: string, message: string): Promise<void> {
+  async broadcast(
+    businessId: string,
+    message: string,
+    buttons?: TelegramUrlButton[][],
+  ): Promise<void> {
     if (!this.sender.isConfigured()) return;
     for (const chatId of await this.listActiveChatIds(businessId)) {
       try {
-        await this.sender.sendMessage(chatId, message);
+        await this.sender.sendMessage(chatId, message, undefined, buttons);
       } catch (e) {
         this.logger.warn(
           `notify → chat ${chatId} failed: ${(e as Error).message}`,

@@ -105,6 +105,6 @@ export class BillingCronService {
     if (!claimed.length) return;
 
     const notice = this.billing.noticePayload({...s, endDate: s.endDate}, kind);
-    this.billing.sendBilling(businessId, notice.text, notice.data);
+    this.billing.sendBilling(businessId, notice.text, notice.data, notice.buttons);
   }
 }

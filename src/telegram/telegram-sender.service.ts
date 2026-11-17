@@ -24,6 +24,12 @@ export interface TelegramMessage {
   message_id: number;
 }
 
+/** A button under a message that opens a link (Bot API InlineKeyboardButton). */
+export interface TelegramUrlButton {
+  text: string;
+  url: string;
+}
+
 /**
  * Thin wrapper over the Telegram Bot API using the Node 18+ global `fetch`
  * (no telegram library). All calls target the bot identified by
@@ -58,12 +64,14 @@ export class TelegramSenderService {
 
   /**
    * Send a plain text message. Throws on failure so callers can react.
-   * Pass `token` to send as a shop's own store bot instead of the platform bot.
+   * Pass `token` to send as a shop's own store bot instead of the platform bot;
+   * `buttons` are rows of link buttons shown under the message.
    */
   async sendMessage(
     chatId: string,
     text: string,
     token?: string,
+    buttons?: TelegramUrlButton[][],
   ): Promise<TelegramMessage> {
     if (!token && !this.token) {
       throw new AppException(ErrorCode.TELEGRAM_NOT_CONFIGURED);
@@ -71,7 +79,11 @@ export class TelegramSenderService {
     const res = await fetch(this.url('sendMessage', token), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({chat_id: chatId, text}),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(buttons?.length ? {reply_markup: {inline_keyboard: buttons}} : {}),
+      }),
     });
     const data = (await res.json()) as TelegramApiResponse<TelegramMessage>;
     if (!res.ok || !data.ok) {

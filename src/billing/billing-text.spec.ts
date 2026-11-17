@@ -1,5 +1,6 @@
 import {
   NOTICE_KIND,
+  billingNoticeButton,
   billingNoticeText,
   billingRenewedText,
   reminderVerdict,
@@ -22,13 +23,51 @@ describe('billingNoticeText', () => {
     planName: 'Biznes',
   };
 
-  it('tells a paying shop how much is missing', () => {
+  it('tells a paying shop when it ends, how much is missing and where to pay', () => {
     expect(billingNoticeText({...base, kind: 'd3'})).toBe(
       [
-        '⚠️ Obuna (Biznes) 3 kundan keyin tugaydi (13.11.2026).',
-        "Keyingi oy uchun balansda 299 000 so'm yetishmayapti.",
-        "“Obuna boshqaruvi” bo'limida “To'lash” tugmasini bosing.",
+        "⚠️ Assalomu alaykum! KPOS'dagi “Biznes” obunangiz 3 kundan keyin, 13-noyabrda tugaydi.",
+        "Uzaytirish uchun balansda yana 299 000 so'm kerak. Balans to'ldirilsa, obuna o'z vaqtida avtomatik uzayadi.",
+        "To'lash uchun pastdagi tugmani bosing yoki ilovada “Obuna boshqaruvi” bo'limiga kiring.",
       ].join('\n'),
+    );
+  });
+
+  it('puts a button under the notice that opens the subscription page', () => {
+    expect(billingNoticeButton({isTrial: false, base: 'https://kpos.uz'})).toEqual({
+      text: "💳 To'lash",
+      url: 'https://kpos.uz/subscription-management',
+    });
+    expect(billingNoticeButton({isTrial: true, base: 'https://kpos.uz'}).text).toBe(
+      '✅ Tarifni tanlash',
+    );
+  });
+
+  it('reads the address from APP_URL, without a trailing slash', () => {
+    const before = process.env.APP_URL;
+    process.env.APP_URL = 'https://app.example.uz/ ';
+    try {
+      expect(billingNoticeButton({isTrial: false}).url).toBe(
+        'https://app.example.uz/subscription-management',
+      );
+    } finally {
+      if (before === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = before;
+    }
+  });
+
+  it('never says "next month": a yearly shop renews for a year', () => {
+    for (const kind of ['d7', 'd3', 'expired', 'restricted'] as const) {
+      expect(billingNoticeText({...base, kind})).not.toContain('oy uchun');
+    }
+  });
+
+  it('says today and tomorrow in words', () => {
+    expect(billingNoticeText({...base, kind: 'd3', daysLeft: 0})).toContain(
+      'obunangiz bugun, 13-noyabrda tugaydi',
+    );
+    expect(billingNoticeText({...base, kind: 'd3', daysLeft: 1})).toContain(
+      'obunangiz ertaga, 13-noyabrda tugaydi',
     );
   });
 
@@ -39,14 +78,32 @@ describe('billingNoticeText', () => {
       isTrial: true,
       daysLeft: 0,
     });
-    expect(text).toContain('Bepul sinov davri bugun tugaydi');
-    expect(text).not.toContain('yetishmayapti');
+    expect(text).toContain('bepul sinov davringiz bugun, 13-noyabrda tugaydi');
+    expect(text).toContain('“Davom ettirish”');
+    expect(text).toContain('pastdagi tugmani bosib');
+    expect(text).not.toContain("so'm");
   });
 
-  it('keeps the till working once restricted', () => {
-    expect(billingNoticeText({...base, kind: 'restricted'})).toContain(
-      'Kassa ishlashda davom etadi',
+  it('counts the days left before the sections close, not always three', () => {
+    expect(billingNoticeText({...base, kind: 'expired'})).toContain(
+      "3 kundan keyin bo'limlar cheklanadi",
     );
+    expect(
+      billingNoticeText({...base, kind: 'expired', graceDaysLeft: 1}),
+    ).toContain("ertaga bo'limlar cheklanadi");
+    expect(
+      billingNoticeText({...base, kind: 'expired', isTrial: true, graceDaysLeft: 0}),
+    ).toContain("bugun bo'limlar cheklanadi");
+  });
+
+  it('keeps the till working once restricted, and after the end', () => {
+    for (const kind of ['expired', 'restricted'] as const) {
+      for (const isTrial of [false, true]) {
+        expect(billingNoticeText({...base, kind, isTrial})).toContain(
+          'Kassa ishlashda davom etadi',
+        );
+      }
+    }
   });
 });
 

@@ -3,7 +3,7 @@
 // its own uz/ru lines from notification/push-text.ts (event 'billing').
 
 import {BUSINESS_OFFSET_MS} from '../common/business-time';
-import type {BillingStage} from './billing';
+import {GRACE_DAYS, type BillingStage} from './billing';
 
 export type BillingNoticeKind = 'd7' | 'd3' | 'expired' | 'restricted';
 
@@ -45,12 +45,66 @@ export function tashkentDate(date: Date | string): string {
   return `${d}.${m}.${y}`;
 }
 
+const MONTHS = [
+  'yanvar',
+  'fevral',
+  'mart',
+  'aprel',
+  'may',
+  'iyun',
+  'iyul',
+  'avgust',
+  'sentabr',
+  'oktabr',
+  'noyabr',
+  'dekabr',
+];
+
+/** "21-noyabr" on the Tashkent calendar — how the day is said aloud. */
+export function tashkentDayMonth(date: Date | string): string {
+  const iso = new Date(
+    new Date(date).getTime() + BUSINESS_OFFSET_MS,
+  ).toISOString();
+  return `${Number(iso.slice(8, 10))}-${MONTHS[Number(iso.slice(5, 7)) - 1]}`;
+}
+
 const when = (days: number) =>
   days <= 0 ? 'bugun' : days === 1 ? 'ertaga' : `${days} kundan keyin`;
 
-const WHERE_TO_PAY = "“Obuna boshqaruvi” bo'limida “To'lash” tugmasini bosing.";
+// The message carries a button that opens the subscription page (see
+// billingNoticeButton), so it points at that button and names the section too,
+// for whoever reads it in the app's inbox instead.
+const PAY =
+  "To'lash uchun pastdagi tugmani bosing yoki ilovada “Obuna boshqaruvi” bo'limiga kiring.";
+const CONTINUE =
+  "pastdagi tugmani bosib, o'zingizga mos tarifni tanlang va “Davom ettirish” tugmasini bosing.";
 
-/** A reminder: d7 / d3 before the end, expired (grace), restricted. */
+/** Where the subscription page is: the dashboard's own address. */
+export const SUBSCRIPTION_PATH = '/subscription-management';
+
+/** The public address of the dashboard; the button under a notice opens it. */
+export function appUrl(): string {
+  return (process.env.APP_URL || 'https://kpos.uz').trim().replace(/\/+$/, '');
+}
+
+/** The one button under a billing notice: straight to the subscription page. */
+export function billingNoticeButton(input: {
+  isTrial: boolean;
+  base?: string;
+}): {text: string; url: string} {
+  return {
+    text: input.isTrial ? '✅ Tarifni tanlash' : "💳 To'lash",
+    url: `${input.base ?? appUrl()}${SUBSCRIPTION_PATH}`,
+  };
+}
+
+/**
+ * A reminder: d7 / d3 before the end, expired (grace), restricted.
+ *
+ * Written the way a person would tell the owner: what happens and when, what
+ * it costs, where to press — and that the till keeps working, which is the
+ * first thing a shop fears. No "next month": a yearly shop renews for a year.
+ */
 export function billingNoticeText(input: {
   kind: BillingNoticeKind;
   isTrial: boolean;
@@ -58,49 +112,53 @@ export function billingNoticeText(input: {
   endDate: Date | string;
   amountDue: number;
   planName: string | null;
+  /** Days until the sections close, during grace; the whole grace period when not given. */
+  graceDaysLeft?: number | null;
 }): string {
-  const end = tashkentDate(input.endDate);
-  const plan = input.planName ? ` (${input.planName})` : '';
+  const day = tashkentDayMonth(input.endDate);
+  const sum = `${money(input.amountDue)} so'm`;
+  const closes = when(input.graceDaysLeft ?? GRACE_DAYS);
 
   if (input.isTrial) {
     switch (input.kind) {
       case 'expired':
         return [
-          `🔴 Bepul sinov davri tugadi (${end}).`,
-          "3 kun ichida obunani davom ettiring — keyin bo'limlar cheklanadi, kassa esa ishlashda davom etadi.",
-          "“Obuna boshqaruvi” bo'limida “Davom ettirish” tugmasini bosing.",
+          `🔴 Bepul sinov davringiz ${day}da tugadi.`,
+          `Hozircha hammasi ishlayapti, lekin ${closes} bo'limlar cheklanadi. Kassa ishlashda davom etadi.`,
+          `Davom ettirish uchun ${CONTINUE}`,
         ].join('\n');
       case 'restricted':
         return [
           "⛔ Sinov davri tugagani uchun bo'limlar cheklandi. Kassa ishlashda davom etadi.",
-          "Davom ettirish uchun “Obuna boshqaruvi” bo'limida tarifni tanlang.",
+          `Hammasini qayta ochish uchun ${CONTINUE}`,
         ].join('\n');
       default:
         return [
-          `⏳ Bepul sinov davri ${when(input.daysLeft)} tugaydi (${end}).`,
-          "KPOS bilan ishlashni davom ettirish uchun “Obuna boshqaruvi” bo'limida tarifni tanlang va “Davom ettirish” tugmasini bosing.",
+          `⏳ Assalomu alaykum! KPOS'dagi bepul sinov davringiz ${when(input.daysLeft)}, ${day}da tugaydi.`,
+          `KPOS bilan ishlashda davom etish uchun ${CONTINUE}`,
         ].join('\n');
     }
   }
 
+  const plan = input.planName ? `“${input.planName}” obunangiz` : 'obunangiz';
+
   switch (input.kind) {
     case 'expired':
       return [
-        `🔴 Obuna${plan} muddati tugadi (${end}).`,
-        `3 kundan keyin bo'limlar cheklanadi. To'lanishi kerak: ${money(input.amountDue)} so'm.`,
-        WHERE_TO_PAY,
+        `🔴 KPOS'dagi ${plan} ${day}da tugadi.`,
+        `Hozircha hammasi ishlayapti, lekin ${closes} bo'limlar cheklanadi. Kassa ishlashda davom etadi.`,
+        `Uzaytirish uchun balansda yana ${sum} kerak. ${PAY}`,
       ].join('\n');
     case 'restricted':
       return [
         "⛔ Obuna to'lanmagani uchun bo'limlar cheklandi. Kassa ishlashda davom etadi.",
-        `To'lov qilinishi bilan hammasi darhol tiklanadi. To'lanishi kerak: ${money(input.amountDue)} so'm.`,
-        WHERE_TO_PAY,
+        `Balansga yana ${sum} tushishi bilan hammasi shu zahoti ochiladi. ${PAY}`,
       ].join('\n');
     default:
       return [
-        `${input.kind === 'd3' ? '⚠️' : '⏳'} Obuna${plan} ${when(input.daysLeft)} tugaydi (${end}).`,
-        `Keyingi oy uchun balansda ${money(input.amountDue)} so'm yetishmayapti.`,
-        WHERE_TO_PAY,
+        `${input.kind === 'd3' ? '⚠️' : '⏳'} Assalomu alaykum! KPOS'dagi ${plan} ${when(input.daysLeft)}, ${day}da tugaydi.`,
+        `Uzaytirish uchun balansda yana ${sum} kerak. Balans to'ldirilsa, obuna o'z vaqtida avtomatik uzayadi.`,
+        PAY,
       ].join('\n');
   }
 }

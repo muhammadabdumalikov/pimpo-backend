@@ -33,7 +33,7 @@ export class TelegramNotificationsProcessor extends WorkerHost {
   }
 
   async process(job: Job<TelegramJobData>): Promise<void> {
-    const {businessId, message} = job.data;
+    const {businessId, message, buttons} = job.data;
     // Bot token may have been removed since enqueue — nothing to deliver.
     if (!this.sender.isConfigured()) return;
 
@@ -42,7 +42,7 @@ export class TelegramNotificationsProcessor extends WorkerHost {
 
     for (const chatId of chatIds) {
       if (sent.has(chatId)) continue; // already delivered on a previous attempt
-      await this.sender.sendMessage(chatId, message); // throws → job retried
+      await this.sender.sendMessage(chatId, message, undefined, buttons); // throws → job retried
       sent.add(chatId);
       // Persist progress so a later-chat failure doesn't re-send earlier chats.
       await job.updateData({...job.data, sentChatIds: [...sent]});

@@ -36,6 +36,7 @@ import {IAccount, IBusiness} from '../business/types';
 import {PermissionService} from '../permission/permission.service';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
+import type {TelegramUrlButton} from '../telegram/telegram-sender.service';
 import {generateId} from '../utils/uuid';
 import {isBusinessType} from '../common/business-type';
 import {sellsAiAddon} from '../subscription/tier';
@@ -74,6 +75,7 @@ import {
 } from './billing-ledger';
 import {
   NOTICE_KIND,
+  billingNoticeButton,
   billingNoticeText,
   billingRenewedText,
   paymentRequestedText,
@@ -874,12 +876,15 @@ export class BillingService {
     businessId: string,
     message: string,
     data: Record<string, unknown>,
+    buttons?: TelegramUrlButton[][],
   ): void {
     void this.telegram
-      .dispatchBilling(businessId, message, {
-        event: 'billing',
-        data: {...data, url: SUBSCRIPTION_URL},
-      })
+      .dispatchBilling(
+        businessId,
+        message,
+        {event: 'billing', data: {...data, url: SUBSCRIPTION_URL}},
+        buttons,
+      )
       .catch((e) =>
         this.logger.warn(
           `billing notice for ${businessId} failed: ${(e as Error).message}`,
@@ -1762,6 +1767,7 @@ export class BillingService {
       isTrial: sub?.isTrial ?? false,
       planName: sub?.plan.name ?? null,
       amountDue: core.q.amountDue,
+      graceDaysLeft: core.graceDaysLeft,
     };
   }
 
@@ -1769,8 +1775,13 @@ export class BillingService {
   noticePayload(
     s: BillingNoticeState & {endDate: Date},
     kind: BillingNoticeKind,
-  ): {text: string; data: Record<string, unknown>} {
+  ): {
+    text: string;
+    data: Record<string, unknown>;
+    buttons: TelegramUrlButton[][];
+  } {
     return {
+      buttons: [[billingNoticeButton({isTrial: s.isTrial})]],
       text: billingNoticeText({
         kind,
         isTrial: s.isTrial,
@@ -1778,6 +1789,7 @@ export class BillingService {
         endDate: s.endDate,
         amountDue: s.amountDue,
         planName: s.planName,
+        graceDaysLeft: s.graceDaysLeft,
       }),
       data: {
         kind,
@@ -1808,6 +1820,9 @@ export class BillingService {
     });
     const kind = NOTICE_KIND[s.stage];
     const due = kind != null && s.endDate != null;
+    const payload = due
+      ? this.noticePayload({...s, endDate: s.endDate as Date}, kind)
+      : null;
 
     // The last notice of the running period, the daily run's or a hand-sent one.
     let last: {kind: string; createdAt: Date} | undefined;
@@ -1828,9 +1843,8 @@ export class BillingService {
     return {
       verdict,
       chats: chatIds.length,
-      text: due
-        ? this.noticePayload({...s, endDate: s.endDate as Date}, kind).text
-        : null,
+      text: payload?.text ?? null,
+      button: payload?.buttons[0]?.[0] ?? null,
       lastSentAt: last?.createdAt ?? null,
       lastSentBy: last ? (last.kind === MANUAL_NOTICE ? 'manual' : 'auto') : null,
     };
@@ -1879,10 +1893,12 @@ export class BillingService {
     }
 
     const notice = this.noticePayload({...s, endDate}, kind);
-    await this.telegram.dispatchBilling(businessId, notice.text, {
-      event: 'billing',
-      data: {...notice.data, url: SUBSCRIPTION_URL},
-    });
+    await this.telegram.dispatchBilling(
+      businessId,
+      notice.text,
+      {event: 'billing', data: {...notice.data, url: SUBSCRIPTION_URL}},
+      notice.buttons,
+    );
     this.logger.log(`Payment reminder (${kind}) sent by hand to ${businessId}`);
     return this.paymentReminderState(businessId);
   }
@@ -1896,6 +1912,8 @@ export interface BillingNoticeState {
   isTrial: boolean;
   planName: string | null;
   amountDue: number;
+  /** Days until the sections close; null outside the grace period. */
+  graceDaysLeft: number | null;
 }
 
 /** The platform console's "send a payment reminder" control. */
@@ -1905,6 +1923,8 @@ export interface PaymentReminderState {
   chats: number;
   /** The message that goes out now; null when nothing is due. */
   text: string | null;
+  /** The button under it, opening the subscription page; null when nothing is due. */
+  button: {text: string; url: string} | null;
   /** The last notice of the running period, automatic or by hand. */
   lastSentAt: Date | null;
   lastSentBy: 'auto' | 'manual' | null;

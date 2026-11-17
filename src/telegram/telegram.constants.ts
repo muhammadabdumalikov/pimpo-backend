@@ -1,3 +1,4 @@
+import type {TelegramUrlButton} from './telegram-sender.service';
 /** BullMQ queue name for outbound Telegram notifications. Shared by the module
  *  (registerQueue), the producer (TelegramNotifyService) and the processor. */
 export const TELEGRAM_QUEUE = 'telegram-notifications';
@@ -7,6 +8,8 @@ export interface TelegramJobData {
   businessId: string;
   event: string;
   message: string;
+  // Link buttons under the message (rows), when the notice has any.
+  buttons?: TelegramUrlButton[][];
   // Chat ids already delivered — appended as the worker progresses so a retry
   // never re-sends to a chat that already succeeded.
   sentChatIds?: string[];
