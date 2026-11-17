@@ -70,6 +70,7 @@ export function tashkentDayMonth(date: Date | string): string {
 
 const when = (days: number) =>
   days <= 0 ? 'bugun' : days === 1 ? 'ertaga' : `${days} kundan keyin`;
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // The message carries a button that opens the subscription page (see
 // billingNoticeButton), so it points at that button and names the section too,
@@ -80,7 +81,7 @@ const CONTINUE =
   "pastdagi tugmani bosib, o'zingizga mos tarifni tanlang va “Davom ettirish” tugmasini bosing.";
 
 // The last warning before the end: what happens if nobody pays.
-const LOCK_WARNING = `To'lanmasa, tugaganidan ${GRACE_DAYS} kun o'tib KPOS to'liq yopiladi, kassa ham.`;
+const LOCK_WARNING = `To'lanmasa, tugaganidan ${GRACE_DAYS} kun o'tib KPOS va kassa yopiladi.`;
 
 /** Where the subscription page is: the dashboard's own address. */
 export const SUBSCRIPTION_PATH = '/subscription-management';
@@ -121,19 +122,18 @@ export function billingNoticeText(input: {
 }): string {
   const day = tashkentDayMonth(input.endDate);
   const sum = `${money(input.amountDue)} so'm`;
-  const closes = when(input.graceDaysLeft ?? GRACE_DAYS);
+  const closes = `${capital(when(input.graceDaysLeft ?? GRACE_DAYS))} KPOS va kassa yopiladi.`;
 
   if (input.isTrial) {
     switch (input.kind) {
       case 'expired':
         return [
           `🔴 Bepul sinov davringiz ${day}da tugadi.`,
-          `Hozircha hammasi ishlayapti, lekin ${closes} KPOS to'liq yopiladi, kassa ham.`,
-          `Davom ettirish uchun ${CONTINUE}`,
+          `${closes} Davom ettirish uchun ${CONTINUE}`,
         ].join('\n');
       case 'restricted':
         return [
-          "⛔ Sinov davri tugagani uchun KPOS yopildi: kassa ham, boshqa bo'limlar ham ishlamaydi. Ma'lumotlaringiz saqlanib turibdi.",
+          "⛔ Sinov davri tugagani uchun KPOS vaqtincha yopildi. Ma'lumotlaringiz saqlangan.",
           `Qayta ochish uchun ${CONTINUE}`,
         ].join('\n');
       default:
@@ -151,13 +151,13 @@ export function billingNoticeText(input: {
     case 'expired':
       return [
         `🔴 KPOS'dagi ${plan} ${day}da tugadi.`,
-        `Hozircha hammasi ishlayapti, lekin ${closes} KPOS to'liq yopiladi, kassa ham.`,
-        `Uzaytirish uchun balansda yana ${sum} kerak. ${PAY}`,
+        `${closes} Uzaytirish uchun yana ${sum} kerak.`,
       ].join('\n');
     case 'restricted':
       return [
-        "⛔ Obuna to'lanmagani uchun KPOS yopildi: kassa ham, boshqa bo'limlar ham ishlamaydi. Ma'lumotlaringiz saqlanib turibdi.",
-        `Balansga yana ${sum} tushishi bilan hammasi shu zahoti ochiladi. ${PAY}`,
+        "⛔ Obuna to'lanmagani uchun KPOS vaqtincha yopildi. Ma'lumotlaringiz saqlangan.",
+        // The payment is approved by hand, so it opens on confirmation, not on transfer.
+        `Yana ${sum} to'lang, tasdiqlangach KPOS o'zi ochiladi.`,
       ].join('\n');
     default:
       return [

@@ -29,7 +29,7 @@ describe('billingNoticeText', () => {
         "⚠️ Assalomu alaykum! KPOS'dagi “Biznes” obunangiz 3 kundan keyin, 13-noyabrda tugaydi.",
         "Uzaytirish uchun balansda yana 299 000 so'm kerak. Balans to'ldirilsa, obuna o'z vaqtida avtomatik uzayadi.",
         "To'lash uchun pastdagi tugmani bosing yoki ilovada “Obuna boshqaruvi” bo'limiga kiring.",
-        "To'lanmasa, tugaganidan 3 kun o'tib KPOS to'liq yopiladi, kassa ham.",
+        "To'lanmasa, tugaganidan 3 kun o'tib KPOS va kassa yopiladi.",
       ].join('\n'),
     );
   });
@@ -87,30 +87,45 @@ describe('billingNoticeText', () => {
 
   it('counts the days left before KPOS closes, not always three', () => {
     expect(billingNoticeText({...base, kind: 'expired'})).toContain(
-      "3 kundan keyin KPOS to'liq yopiladi",
+      "3 kundan keyin KPOS va kassa yopiladi",
     );
     expect(
       billingNoticeText({...base, kind: 'expired', graceDaysLeft: 1}),
-    ).toContain("ertaga KPOS to'liq yopiladi");
+    ).toContain('Ertaga KPOS va kassa yopiladi');
     expect(
       billingNoticeText({...base, kind: 'expired', isTrial: true, graceDaysLeft: 0}),
-    ).toContain("bugun KPOS to'liq yopiladi");
+    ).toContain('Bugun KPOS va kassa yopiladi');
   });
 
   it('says plainly that the till closes too, and the data stays', () => {
     for (const isTrial of [false, true]) {
-      expect(billingNoticeText({...base, kind: 'expired', isTrial})).toContain('kassa ham');
+      expect(billingNoticeText({...base, kind: 'expired', isTrial})).toContain('KPOS va kassa yopiladi');
       const closed = billingNoticeText({...base, kind: 'restricted', isTrial});
-      expect(closed).toContain('KPOS yopildi: kassa ham');
-      expect(closed).toContain("Ma'lumotlaringiz saqlanib turibdi");
+      expect(closed).toContain('KPOS vaqtincha yopildi');
+      expect(closed).toContain("Ma'lumotlaringiz saqlangan");
       expect(closed).not.toContain('Kassa ishlashda davom etadi');
     }
+  });
+
+  it('promises the reopening on confirmation, not on the transfer', () => {
+    expect(billingNoticeText({...base, kind: 'restricted'})).toBe(
+      [
+        "⛔ Obuna to'lanmagani uchun KPOS vaqtincha yopildi. Ma'lumotlaringiz saqlangan.",
+        "Yana 299 000 so'm to'lang, tasdiqlangach KPOS o'zi ochiladi.",
+      ].join('\n'),
+    );
+    expect(billingNoticeText({...base, kind: 'expired'})).toBe(
+      [
+        "🔴 KPOS'dagi “Biznes” obunangiz 13-noyabrda tugadi.",
+        "3 kundan keyin KPOS va kassa yopiladi. Uzaytirish uchun yana 299 000 so'm kerak.",
+      ].join('\n'),
+    );
   });
 
   it('warns of the closing only in the last reminder', () => {
     expect(billingNoticeText({...base, kind: 'd7'})).not.toContain('yopiladi');
     expect(billingNoticeText({...base, kind: 'd3', isTrial: true})).toContain(
-      "KPOS to'liq yopiladi, kassa ham",
+      "KPOS va kassa yopiladi",
     );
   });
 });
