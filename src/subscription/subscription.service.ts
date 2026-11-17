@@ -397,6 +397,9 @@ export class SubscriptionService implements OnModuleInit {
       return {
         plan: freePlan,
         tier: 'free',
+        // The plan that lapsed, for the label only ("Standard · Tugagan");
+        // gating still reads `tier`.
+        planTier: subscription?.plan.tier ?? null,
         aiAddon: await this.aiAddonView(businessId),
         isActive: true,
         isExpired: !!subscription,
