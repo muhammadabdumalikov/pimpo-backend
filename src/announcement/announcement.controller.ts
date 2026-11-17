@@ -13,6 +13,7 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {CurrentAccount} from '../business/decorators/current-account.decorator';
 import {IAccount, IBusiness} from '../business/types';
 import {AnnouncementService} from './announcement.service';
+import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
 /**
  * The in-app "Yangiliklar" bell. Open to every signed-in account — cashiers
@@ -23,6 +24,8 @@ import {AnnouncementService} from './announcement.service';
 @Controller('announcements')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
+// Open while the shop is locked: the lock screen reads and pays here.
+@AllowWhenLocked()
 export class AnnouncementController {
   constructor(private readonly announcementService: AnnouncementService) {}
 

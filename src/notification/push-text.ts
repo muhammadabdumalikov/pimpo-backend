@@ -59,12 +59,12 @@ function billingUz(d: D): PushText {
       };
     case 'expired':
       return trial
-        ? {title: '🔴 Bepul sinov davri tugadi', body: "3 kun ichida obunani davom ettiring, keyin bo'limlar cheklanadi"}
-        : {title: '🔴 Obuna muddati tugadi', body: `3 kundan keyin bo'limlar cheklanadi · ${money(d.amountDue)} so'm to'lang`};
+        ? {title: '🔴 Bepul sinov davri tugadi', body: "3 kun ichida obunani davom ettiring, keyin KPOS to'liq yopiladi"}
+        : {title: '🔴 Obuna muddati tugadi', body: `3 kundan keyin KPOS to'liq yopiladi · ${money(d.amountDue)} so'm to'lang`};
     case 'restricted':
       return trial
-        ? {title: "⛔ Sinov tugadi — bo'limlar cheklandi", body: 'Kassa ishlayapti. Davom ettirish uchun obunani faollashtiring'}
-        : {title: "⛔ Obuna to'lanmadi — bo'limlar cheklandi", body: "Kassa ishlayapti. To'lovdan so'ng hammasi darhol tiklanadi"};
+        ? {title: '⛔ Sinov tugadi, KPOS yopildi', body: 'Kassa ham ishlamaydi. Davom ettirish uchun tarifni tanlang'}
+        : {title: "⛔ Obuna to'lanmadi, KPOS yopildi", body: "Kassa ham ishlamaydi. To'lovdan so'ng hammasi darhol ochiladi"};
     default:
       return trial
         ? {

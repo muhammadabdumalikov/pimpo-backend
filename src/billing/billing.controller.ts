@@ -34,6 +34,7 @@ import {
   SetAiAddonDto,
   SetBillingCycleDto,
 } from './dto/billing.dto';
+import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
 /**
  * The shop's side of subscription billing (OBUNA-TOLOV.md §6.1), mounted on
@@ -42,6 +43,8 @@ import {
  */
 @ApiTags('subscriptions')
 @Controller('subscriptions')
+// Open while the shop is locked: the lock screen reads and pays here.
+@AllowWhenLocked()
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 

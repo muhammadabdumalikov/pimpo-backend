@@ -22,6 +22,7 @@ import {
   SubscribePushDto,
   UnsubscribePushDto,
 } from './dto/push-subscription.dto';
+import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
 // Owner-only (MOBILE.md Q10): the inbox and push go to the business account,
 // never to staff, so every route checks the account type itself.
@@ -33,6 +34,8 @@ function assertOwner(account: IAccount): void {
 @Controller('notifications')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
+// Open while the shop is locked: the lock screen reads and pays here.
+@AllowWhenLocked()
 export class NotificationController {
   constructor(private readonly notifications: NotificationService) {}
 

@@ -173,6 +173,17 @@ export class SubscriptionService implements OnModuleInit {
   }
 
   /**
+   * True while the shop is closed for non-payment: its active subscription has
+   * a dated end and the grace period after it is over. A shop with no active
+   * subscription or an open-ended (admin-granted) one is never locked. Read
+   * from the same cached row as the tier, so the per-request check is cheap.
+   */
+  async isLocked(businessId: string): Promise<boolean> {
+    const subscription = await this.getBusinessSubscription(businessId);
+    return !!subscription && subscription.isActive && this.isExpired(subscription);
+  }
+
+  /**
    * The tier gating should treat this business as: the plan's tier while the
    * subscription is active and not past its grace period, otherwise the `free`
    * floor. This is the single source of truth the PlanTierGuard consults.

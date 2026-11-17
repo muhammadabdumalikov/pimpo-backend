@@ -79,6 +79,9 @@ const PAY =
 const CONTINUE =
   "pastdagi tugmani bosib, o'zingizga mos tarifni tanlang va “Davom ettirish” tugmasini bosing.";
 
+// The last warning before the end: what happens if nobody pays.
+const LOCK_WARNING = `To'lanmasa, tugaganidan ${GRACE_DAYS} kun o'tib KPOS to'liq yopiladi, kassa ham.`;
+
 /** Where the subscription page is: the dashboard's own address. */
 export const SUBSCRIPTION_PATH = '/subscription-management';
 
@@ -102,8 +105,9 @@ export function billingNoticeButton(input: {
  * A reminder: d7 / d3 before the end, expired (grace), restricted.
  *
  * Written the way a person would tell the owner: what happens and when, what
- * it costs, where to press — and that the till keeps working, which is the
- * first thing a shop fears. No "next month": a yearly shop renews for a year.
+ * it costs, where to press — and, plainly, that once the grace period is over
+ * the whole of KPOS closes, the till included, while the data stays. No "next
+ * month": a yearly shop renews for a year.
  */
 export function billingNoticeText(input: {
   kind: BillingNoticeKind;
@@ -112,7 +116,7 @@ export function billingNoticeText(input: {
   endDate: Date | string;
   amountDue: number;
   planName: string | null;
-  /** Days until the sections close, during grace; the whole grace period when not given. */
+  /** Days until KPOS closes, during grace; the whole grace period when not given. */
   graceDaysLeft?: number | null;
 }): string {
   const day = tashkentDayMonth(input.endDate);
@@ -124,18 +128,19 @@ export function billingNoticeText(input: {
       case 'expired':
         return [
           `🔴 Bepul sinov davringiz ${day}da tugadi.`,
-          `Hozircha hammasi ishlayapti, lekin ${closes} bo'limlar cheklanadi. Kassa ishlashda davom etadi.`,
+          `Hozircha hammasi ishlayapti, lekin ${closes} KPOS to'liq yopiladi, kassa ham.`,
           `Davom ettirish uchun ${CONTINUE}`,
         ].join('\n');
       case 'restricted':
         return [
-          "⛔ Sinov davri tugagani uchun bo'limlar cheklandi. Kassa ishlashda davom etadi.",
-          `Hammasini qayta ochish uchun ${CONTINUE}`,
+          "⛔ Sinov davri tugagani uchun KPOS yopildi: kassa ham, boshqa bo'limlar ham ishlamaydi. Ma'lumotlaringiz saqlanib turibdi.",
+          `Qayta ochish uchun ${CONTINUE}`,
         ].join('\n');
       default:
         return [
           `⏳ Assalomu alaykum! KPOS'dagi bepul sinov davringiz ${when(input.daysLeft)}, ${day}da tugaydi.`,
           `KPOS bilan ishlashda davom etish uchun ${CONTINUE}`,
+          ...(input.kind === 'd3' ? [LOCK_WARNING] : []),
         ].join('\n');
     }
   }
@@ -146,12 +151,12 @@ export function billingNoticeText(input: {
     case 'expired':
       return [
         `🔴 KPOS'dagi ${plan} ${day}da tugadi.`,
-        `Hozircha hammasi ishlayapti, lekin ${closes} bo'limlar cheklanadi. Kassa ishlashda davom etadi.`,
+        `Hozircha hammasi ishlayapti, lekin ${closes} KPOS to'liq yopiladi, kassa ham.`,
         `Uzaytirish uchun balansda yana ${sum} kerak. ${PAY}`,
       ].join('\n');
     case 'restricted':
       return [
-        "⛔ Obuna to'lanmagani uchun bo'limlar cheklandi. Kassa ishlashda davom etadi.",
+        "⛔ Obuna to'lanmagani uchun KPOS yopildi: kassa ham, boshqa bo'limlar ham ishlamaydi. Ma'lumotlaringiz saqlanib turibdi.",
         `Balansga yana ${sum} tushishi bilan hammasi shu zahoti ochiladi. ${PAY}`,
       ].join('\n');
     default:
@@ -159,6 +164,7 @@ export function billingNoticeText(input: {
         `${input.kind === 'd3' ? '⚠️' : '⏳'} Assalomu alaykum! KPOS'dagi ${plan} ${when(input.daysLeft)}, ${day}da tugaydi.`,
         `Uzaytirish uchun balansda yana ${sum} kerak. Balans to'ldirilsa, obuna o'z vaqtida avtomatik uzayadi.`,
         PAY,
+        ...(input.kind === 'd3' ? [LOCK_WARNING] : []),
       ].join('\n');
   }
 }

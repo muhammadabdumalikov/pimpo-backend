@@ -40,6 +40,11 @@ export class PlanTierGuard implements CanActivate {
       throw new AppException(ErrorCode.NO_TOKEN);
     }
 
+    // A locked shop gets the lock, not an upgrade prompt: guards run before
+    // SubscriptionLockInterceptor, so the tier check would answer first.
+    if (await this.subscriptionService.isLocked(business.id)) {
+      throw new AppException(ErrorCode.SUBSCRIPTION_LOCKED);
+    }
     const tier = await this.subscriptionService.getEffectiveTier(business.id);
     if (TIER_RANK[tier] < TIER_RANK[minTier]) {
       const addonStandsIn = this.reflector.getAllAndOverride<boolean | undefined>(

@@ -310,6 +310,10 @@ export enum ErrorCode {
   // An open-ended paid subscription was granted by the platform admin; only
   // the admin may change it (OBUNA-TOLOV.md §5).
   SUBSCRIPTION_MANAGED_BY_ADMIN = 'SUBSCRIPTION_MANAGED_BY_ADMIN',
+  // The subscription ended and its grace period is over: the whole shop is
+  // closed until it pays, the till included (OBUNA-TOLOV.md Q3, revised
+  // 2026-11-17). Only sign-in and the billing routes stay open.
+  SUBSCRIPTION_LOCKED = 'SUBSCRIPTION_LOCKED',
   // The AI bot add-on is sold on the online seller plan only
   // (ONLAYN-SOTUVCHI.md D10, E4).
   AI_ADDON_NOT_AVAILABLE = 'AI_ADDON_NOT_AVAILABLE',
@@ -1438,6 +1442,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SUBSCRIPTION_MANAGED_BY_ADMIN]: {
     status: HttpStatus.FORBIDDEN,
     message: 'This subscription is managed by the platform administrator',
+  },
+  [ErrorCode.SUBSCRIPTION_LOCKED]: {
+    status: HttpStatus.PAYMENT_REQUIRED,
+    message: 'The subscription has ended. Pay to continue using KPOS',
   },
   [ErrorCode.AI_ADDON_NOT_AVAILABLE]: {
     status: HttpStatus.FORBIDDEN,

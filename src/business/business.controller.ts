@@ -37,6 +37,7 @@ import { BusinessResponseDto } from './dto/business-response.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
 import { CurrentUserResponseDto } from './dto/current-user-response.dto';
 import { BranchScopeService } from '../permission/branch-scope.service';
+import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
 @ApiTags('businesses')
 @Controller('businesses')
@@ -96,6 +97,7 @@ export class BusinessController {
   }
 
   @Get('me')
+  @AllowWhenLocked()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get current authenticated business profile' })
@@ -110,6 +112,7 @@ export class BusinessController {
   }
 
   @Get('me/account')
+  @AllowWhenLocked()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
@@ -173,6 +176,7 @@ export class BusinessController {
   }
 
   @Put('me/password')
+  @AllowWhenLocked()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)

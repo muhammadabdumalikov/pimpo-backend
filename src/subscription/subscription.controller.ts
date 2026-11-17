@@ -35,9 +35,12 @@ import {
 } from './dto/billing.dto';
 import { PermissionsGuard } from '../permission/permissions.guard';
 import { RequirePermission } from '../permission/permission.decorator';
+import {AllowWhenLocked} from './allow-when-locked.decorator';
 
 @ApiTags('subscriptions')
 @Controller('subscriptions')
+// Open while the shop is locked: the lock screen reads and pays here.
+@AllowWhenLocked()
 export class SubscriptionController {
   constructor(private readonly subscriptionService: SubscriptionService) {}
 
@@ -119,22 +122,9 @@ export class SubscriptionController {
   // POST /subscriptions/subscribe and PUT /subscriptions/current (self-serve
   // plan change) live in BillingController: they charge the balance.
 
-  @Delete('current')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermission('settings:manage')
-  @ApiBearerAuth('JWT-auth')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancel current subscription (business)' })
-  @ApiResponse({
-    status: 200,
-    description: 'Subscription cancelled successfully',
-  })
-  async cancelSubscription(@CurrentBusiness() business: IBusiness) {
-    await this.subscriptionService.cancelBusinessSubscription(business.id);
-    return {
-      message: 'Subscription cancelled successfully',
-    };
-  }
+  // No self-serve cancel: a shop that could drop its own subscription would
+  // slip out of the non-payment lock (SubscriptionLockInterceptor). The
+  // platform console still deactivates one.
 
   // ============================================
   // ADMIN ENDPOINTS - Manage Subscription Plans

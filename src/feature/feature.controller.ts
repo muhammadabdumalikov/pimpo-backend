@@ -4,6 +4,7 @@ import {JwtAuthGuard} from '../business/jwt-auth.guard';
 import {CurrentBusiness} from '../business/decorators/current-business.decorator';
 import {IBusiness} from '../business/types';
 import {FeatureService} from './feature.service';
+import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
 /**
  * Tenant side of feature flags: which rolling-out features this shop sees.
@@ -14,6 +15,8 @@ import {FeatureService} from './feature.service';
 @Controller('features')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth('JWT-auth')
+// Open while the shop is locked: the lock screen reads and pays here.
+@AllowWhenLocked()
 export class FeatureController {
   constructor(private readonly featureService: FeatureService) {}
 
