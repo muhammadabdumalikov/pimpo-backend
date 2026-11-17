@@ -1,3 +1,4 @@
+import {renewalQuote} from './billing.service';
 import {
   addCalendarMonth,
   classifyPlanChange,
@@ -649,5 +650,24 @@ describe('yearly billing (OBUNA-TOLOV.md §9)', () => {
     });
     expect(charge).toBe(718_000); // 1 440 000 × 182 / 365 ≈ 718 027
     expect(periodAmount(150_000, 'month')).toBe(150_000);
+  });
+});
+
+describe('renewalQuote', () => {
+  it('renews a wanted year when the balance covers it', () => {
+    expect(renewalQuote(119000, 'year', 2_000_000)).toEqual({
+      cycle: 'year',
+      amount: 1_142_000,
+      yearAmount: 1_142_000,
+    });
+  });
+
+  it('falls back to a month when the year is out of reach, or not wanted', () => {
+    expect(renewalQuote(119000, 'year', 500_000)).toEqual({
+      cycle: 'month',
+      amount: 119000,
+      yearAmount: 1_142_000,
+    });
+    expect(renewalQuote(119000, 'month', 2_000_000).cycle).toBe('month');
   });
 });

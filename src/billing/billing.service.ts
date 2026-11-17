@@ -189,6 +189,28 @@ export interface PlanChangePreview {
   shortfall: number;
   effectiveAt: string | null;
   newMonthlyTotal: number;
+  /**
+   * What renewing on the target plan would charge from today's balance, the
+   * way tryRenew decides it: a wanted year when the balance covers it, else a
+   * month (OBUNA-TOLOV.md §9). The expired path's dialog names this period.
+   */
+  renewal: {cycle: BillingCycle; amount: number; yearAmount: number};
+}
+
+/**
+ * The renewal tryRenew would make: the wanted year when the balance covers
+ * it, otherwise a month (OBUNA-TOLOV.md §9). `yearAmount` is the year's price
+ * either way, so the dialog can say what a year would need.
+ */
+export function renewalQuote(
+  monthlyTotal: number,
+  wanted: BillingCycle,
+  balance: number,
+): PlanChangePreview['renewal'] {
+  const yearAmount = cycleTotal(monthlyTotal, 'year');
+  const cycle: BillingCycle =
+    wanted === 'year' && balance >= yearAmount ? 'year' : 'month';
+  return {cycle, amount: cycle === 'year' ? yearAmount : monthlyTotal, yearAmount};
 }
 
 export interface BranchBillingPreview {
@@ -974,6 +996,7 @@ export class BillingService {
           ? asDate(sub.endDate).toISOString()
           : null,
       newMonthlyTotal: targetMonthly.total,
+      renewal: renewalQuote(targetMonthly.total, ctx.cycleWanted, ctx.balance),
     };
   }
 
@@ -995,6 +1018,7 @@ export class BillingService {
       shortfall: q.shortfall,
       effectiveAt: q.effectiveAt,
       newMonthlyTotal: q.newMonthlyTotal,
+      renewal: q.renewal,
     };
   }
 
