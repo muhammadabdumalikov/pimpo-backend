@@ -41,6 +41,26 @@ const MSG_LOGOUT =
   'Chiqdingiz. Hisobotlar endi bu chatga kelmaydi. Qayta ulanish uchun /start.';
 
 /**
+ * The platform's own chats (sign-up and budget alerts, payment pings). The bot
+ * posts there; it must never treat a message there as the start of a login.
+ */
+export function isPlatformChat(
+  chatId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return [env.PLATFORM_ALERT_CHAT_ID, env.PLATFORM_ADMIN_CHAT_ID]
+    .flatMap((v) => (v ?? '').split(','))
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .includes(chatId);
+}
+
+/** "/start@kpos_bot" → "/start": in a group Telegram names the bot. */
+export function commandOf(text: string): string {
+  return text.startsWith('/') ? text.split('@')[0] : text;
+}
+
+/**
  * Login-gated Telegram bot. Runs via long polling (getUpdates). A user sends
  * their dashboard login + password to the bot; on success the chat is linked
  * to their account+business (telegram_links) and reports are later forwarded
@@ -136,16 +156,17 @@ export class TelegramBotService implements OnModuleInit {
     }
     const chatId = String(message.chat.id);
     const text = (message.text ?? '').trim();
-    if (!text) {
+    if (!text || isPlatformChat(chatId)) {
       return;
     }
+    const command = commandOf(text);
 
-    if (text === '/logout') {
+    if (command === '/logout') {
       await this.handleLogout(chatId);
       return;
     }
 
-    if (text === '/start') {
+    if (command === '/start') {
       this.conversations.set(chatId, {step: 'login', attempts: 0});
       await this.reply(chatId, PROMPT_LOGIN);
       return;
@@ -153,7 +174,9 @@ export class TelegramBotService implements OnModuleInit {
 
     const state = this.conversations.get(chatId);
     if (!state) {
-      // Any first message with no conversation → begin the login flow.
+      // In a group the bot hears every member, so only an explicit /start
+      // begins a login there; in a private chat any first message does.
+      if (message.chat.type !== 'private') return;
       this.conversations.set(chatId, {step: 'login', attempts: 0});
       await this.reply(chatId, PROMPT_LOGIN);
       return;
