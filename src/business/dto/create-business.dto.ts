@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsEmail, IsIn, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsEmail, IsIn, IsOptional, Matches, MinLength } from 'class-validator';
 import {BUSINESS_TYPES, type BusinessType} from '../../common/business-type';
+import {PHONE_INPUT_RE} from '../../common/phone';
 
 export class CreateBusinessDto {
   @ApiProperty({
@@ -10,12 +11,25 @@ export class CreateBusinessDto {
   @IsString()
   name: string;
 
-  @ApiProperty({
+  // Optional: the phone is the contact that matters at sign-up.
+  @ApiPropertyOptional({
     description: 'Business email address',
     example: 'contact@acme.com',
   })
+  @IsOptional()
   @IsEmail()
-  email: string;
+  email?: string;
+
+  // The sign-up form requires it. Optional here only so a form that was loaded
+  // before this field existed can still register.
+  @ApiPropertyOptional({
+    description: "Owner's contact phone (Uzbek number)",
+    example: '+998901234567',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(PHONE_INPUT_RE, {message: 'phone must be a valid phone number'})
+  phone?: string;
 
   @ApiProperty({
     description: 'Login username',

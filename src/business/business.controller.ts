@@ -22,6 +22,7 @@ import {
 import { BusinessService } from './business.service';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { OwnerGuard } from './owner.guard';
 import { CurrentBusiness } from './decorators/current-business.decorator';
 import { CurrentAccount } from './decorators/current-account.decorator';
 import { PermissionsGuard } from '../permission/permissions.guard';
@@ -56,7 +57,7 @@ export class BusinessController {
   })
   @ApiResponse({ status: 409, description: 'Email or login already exists' })
   async create(@Body() createBusinessDto: CreateBusinessDto) {
-    const business = await this.businessService.create(createBusinessDto);
+    const business = await this.businessService.register(createBusinessDto);
     // Remove password from response
     const { password: _, ...businessWithoutPassword } = business;
     return {
@@ -81,17 +82,17 @@ export class BusinessController {
   @Get()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({ summary: 'Get all businesses' })
+  @ApiOperation({ summary: "The caller's own business, as a one-item list" })
   @ApiResponse({
     status: 200,
-    description: 'List of all businesses',
+    description: "The caller's own business",
     type: [BusinessResponseDto],
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
-  async findAll() {
-    const businesses = await this.businessService.findAll();
-    // Remove passwords from response
-    return businesses.map(({ password: _, ...business }) => business);
+  async findAll(@CurrentBusiness() business: IBusiness) {
+    // A tenant token never sees another tenant. The list of every business is
+    // the platform console's (GET /platform/businesses).
+    return [business];
   }
 
   @Get('me')
@@ -204,18 +205,13 @@ export class BusinessController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'Business not found' })
-  async findOne(@Param('id') id: string) {
-    const business = await this.businessService.findById(id);
-    if (!business) {
-      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
-    }
-    // Remove password from response
-    const { password: _, ...businessWithoutPassword } = business;
-    return businessWithoutPassword;
+  async findOne(@Param('id') id: string, @CurrentBusiness() business: IBusiness) {
+    this.assertOwnBusiness(id, business);
+    return business;
   }
 
   @Put(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, OwnerGuard)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Update business' })
   @ApiParam({ name: 'id', description: 'Business ID' })
@@ -229,7 +225,9 @@ export class BusinessController {
   async update(
     @Param('id') id: string,
     @Body() updateBusinessDto: UpdateBusinessDto,
+    @CurrentBusiness() own: IBusiness,
   ) {
+    this.assertOwnBusiness(id, own);
     const business = await this.businessService.update(id, updateBusinessDto);
     // Remove password from response
     const { password: _, ...businessWithoutPassword } = business;
@@ -240,7 +238,7 @@ export class BusinessController {
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, OwnerGuard)
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete business' })
@@ -248,7 +246,19 @@ export class BusinessController {
   @ApiResponse({ status: 204, description: 'Business deleted successfully' })
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'Business not found' })
-  async remove(@Param('id') id: string) {
+  async remove(@Param('id') id: string, @CurrentBusiness() own: IBusiness) {
+    this.assertOwnBusiness(id, own);
     await this.businessService.delete(id);
+  }
+
+  /**
+   * The `:id` routes act on the caller's own business only. Another tenant's
+   * id answers "not found", the same as an id that does not exist, so the
+   * routes cannot be used to probe which businesses exist.
+   */
+  private assertOwnBusiness(id: string, own: IBusiness): void {
+    if (id !== own.id) {
+      throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
+    }
   }
 }

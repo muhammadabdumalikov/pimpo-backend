@@ -49,6 +49,11 @@ import {
   tierAtLeast,
   type PlanTier,
 } from '../subscription/tier';
+import {
+  requiredFactColumns,
+  requiredFactsFromRow,
+} from '../onboarding/onboarding.conditions';
+import {onboardingSetup, type OnboardingSetup} from '../onboarding/onboarding.steps';
 
 /** One row in the platform businesses overview table. */
 export interface PlatformBusinessRow {
@@ -56,6 +61,8 @@ export interface PlatformBusinessRow {
   name: string;
   login: string;
   email: string | null;
+  /** Owner's contact phone ("+998…"); null for shops registered before 0111. */
+  phone: string | null;
   isActive: boolean;
   businessType: BusinessType;
   createdAt: Date;
@@ -71,6 +78,12 @@ export interface PlatformBusinessRow {
   productCount: number;
   branchCount: number;
   staffCount: number;
+  /**
+   * Getting-started stage, the same required steps and conditions as the
+   * shop's own "Boshlash" card (GET /onboarding). Dismissing the card does
+   * not change it.
+   */
+  setup: OnboardingSetup;
 }
 
 /**
@@ -199,11 +212,15 @@ export class PlatformService {
    */
   async listBusinesses(search?: string): Promise<PlatformBusinessRow[]> {
     const term = search?.trim();
+    // Phones are stored as bare "+998901234567", so a number typed with spaces
+    // or dashes is matched by its digits.
+    const digits = term?.replace(/\D/g, '') ?? '';
     const where = term
       ? or(
           ilike(businesses.name, `%${term}%`),
           ilike(businesses.login, `%${term}%`),
           ilike(businesses.email, `%${term}%`),
+          ...(digits.length >= 3 ? [ilike(businesses.phone, `%${digits}%`)] : []),
         )
       : undefined;
 
@@ -215,9 +232,16 @@ export class PlatformService {
             name: businesses.name,
             login: businesses.login,
             email: businesses.email,
+            phone: businesses.phone,
             isActive: businesses.isActive,
             businessType: businesses.businessType,
             createdAt: businesses.createdAt,
+            // Setup stage: the card's required-step conditions as correlated
+            // EXISTS on this row — index probes for the listed shops only,
+            // no extra round trip (onboarding.conditions.ts).
+            storeEnabled: businesses.storeEnabled,
+            storeSlug: businesses.storeSlug,
+            ...requiredFactColumns(),
           })
           .from(businesses)
           .where(where)
@@ -271,7 +295,7 @@ export class PlatformService {
       profiles.map((r) => [r.businessId, Number(r.balance)]),
     );
 
-    return rows.map((b) => {
+    return rows.map(({storeEnabled, storeSlug, product, stock, sale, ...b}) => {
       const sub = subMap.get(b.id);
       const planTier = sub?.planTier ?? null;
       const endDate = sub?.endDate ?? null;
@@ -292,6 +316,10 @@ export class PlatformService {
         productCount: productMap.get(b.id) ?? 0,
         branchCount: branchMap.get(b.id) ?? 0,
         staffCount: staffMap.get(b.id) ?? 0,
+        setup: onboardingSetup(
+          b.businessType,
+          requiredFactsFromRow({storeEnabled, storeSlug, product, stock, sale}),
+        ),
       };
     });
   }
@@ -687,6 +715,7 @@ export class PlatformService {
   async createBusiness(data: {
     name: string;
     email?: string;
+    phone?: string;
     login: string;
     password: string;
     businessType?: BusinessType;
@@ -702,6 +731,7 @@ export class PlatformService {
     data: {
       name?: string;
       email?: string;
+      phone?: string | null;
       login?: string;
       password?: string;
       isActive?: boolean;

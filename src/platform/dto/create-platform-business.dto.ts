@@ -1,12 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsEmail, IsIn, IsOptional, MinLength } from 'class-validator';
+import { IsString, IsEmail, IsIn, IsOptional, Matches, MinLength, ValidateIf } from 'class-validator';
 import { BUSINESS_TYPES, type BusinessType } from '../../common/business-type';
+import { PHONE_INPUT_RE } from '../../common/phone';
 import { UpdateBusinessDto } from '../../business/dto/update-business.dto';
 
 /**
- * Platform admin: create a business. Unlike self-service signup
- * (CreateBusinessDto), email is OPTIONAL here — an admin can register a shop
- * that has no email on file.
+ * Platform admin: create a business. Email and phone are both optional — an
+ * admin can register a shop that has neither on file.
  */
 export class CreatePlatformBusinessDto {
   @ApiProperty({ description: 'Business name', example: 'Salom Market' })
@@ -17,6 +17,12 @@ export class CreatePlatformBusinessDto {
   @IsOptional()
   @IsEmail()
   email?: string;
+
+  @ApiPropertyOptional({ description: "Owner's contact phone (optional)", example: '+998901234567' })
+  @IsOptional()
+  @IsString()
+  @Matches(PHONE_INPUT_RE, { message: 'phone must be a valid phone number' })
+  phone?: string;
 
   @ApiProperty({ description: 'Login username', example: 'salom_market', minLength: 3 })
   @IsString()
@@ -49,4 +55,15 @@ export class UpdatePlatformBusinessDto extends UpdateBusinessDto {
   @IsOptional()
   @IsIn(BUSINESS_TYPES)
   businessType?: BusinessType;
+
+  @ApiPropertyOptional({
+    description: "Owner's contact phone; null or an empty string clears it",
+    example: '+998901234567',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== '')
+  @IsString()
+  @Matches(PHONE_INPUT_RE, { message: 'phone must be a valid phone number' })
+  phone?: string | null;
 }

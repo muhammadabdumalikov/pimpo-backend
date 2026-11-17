@@ -49,6 +49,7 @@ import {FeatureModule} from './feature/feature.module';
 import {AnnouncementModule} from './announcement/announcement.module';
 import {ScheduleModule} from '@nestjs/schedule';
 import {AssistantModule} from './assistant/assistant.module';
+import {OnboardingModule} from './onboarding/onboarding.module';
 import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
 import {buildCacheOptions} from './cache/cache.store';
@@ -141,6 +142,7 @@ class JwtGlobalModule {}
     AnnouncementModule,
     DeviceModule,
     AssistantModule,
+    OnboardingModule,
   ],
   controllers: [AppController],
   providers: [AppService],

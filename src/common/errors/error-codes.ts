@@ -25,6 +25,7 @@ export enum ErrorCode {
   STAFF_ROLE_INACTIVE = 'STAFF_ROLE_INACTIVE',
   BUSINESS_NOT_FOUND = 'BUSINESS_NOT_FOUND',
   EMAIL_OR_LOGIN_EXISTS = 'EMAIL_OR_LOGIN_EXISTS',
+  PHONE_INVALID = 'PHONE_INVALID',
   NO_TOKEN = 'NO_TOKEN',
   AUTH_BUSINESS_INVALID = 'AUTH_BUSINESS_INVALID',
   INVALID_TOKEN = 'INVALID_TOKEN',
@@ -458,6 +459,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.EMAIL_OR_LOGIN_EXISTS]: {
     status: HttpStatus.CONFLICT,
     message: 'Email or login already exists',
+  },
+  [ErrorCode.PHONE_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Phone must be an Uzbek number: +998 and nine digits',
   },
   [ErrorCode.NO_TOKEN]: {
     status: HttpStatus.UNAUTHORIZED,

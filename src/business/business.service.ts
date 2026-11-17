@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -14,7 +14,10 @@ import { and, eq, or } from 'drizzle-orm';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/uuid';
 import type {BusinessType} from '../common/business-type';
+import {normalizeUzPhone} from '../common/phone';
 import { FeatureService } from '../feature/feature.service';
+import { TelegramSenderService } from '../telegram/telegram-sender.service';
+import { signupAlertText } from './signup-alert';
 
 // New businesses start on a 1-month free trial of the Standart (basic) plan.
 const TRIAL_TIER = 'basic';
@@ -22,19 +25,59 @@ const TRIAL_DAYS = 30;
 
 @Injectable()
 export class BusinessService {
+  private readonly logger = new Logger(BusinessService.name);
+
   constructor(
     private readonly dbService: DatabaseService,
     private readonly moduleRef: ModuleRef,
   ) {}
 
+  /**
+   * Public sign-up (POST /businesses/register): create() plus a note to the
+   * team's Telegram chat so someone can call the new shop. Shops the team
+   * makes from the platform console call create() directly and stay quiet.
+   */
+  async register(data: Parameters<BusinessService['create']>[0]): Promise<Business> {
+    const business = await this.create(data);
+    // Fire-and-forget: the row is already written, and a slow or broken
+    // Telegram must never hold up or fail the sign-up.
+    void this.announceSignup(business);
+    return business;
+  }
+
+  /**
+   * One message to the platform alert chat (PLATFORM_ALERT_CHAT_ID, the chat
+   * that gets the AI-budget alerts) from the platform bot. No-op without the
+   * chat id or the bot token; never throws. The sender is resolved lazily
+   * because TelegramModule imports BusinessModule.
+   */
+  private async announceSignup(business: Business): Promise<void> {
+    try {
+      const chatId = process.env.PLATFORM_ALERT_CHAT_ID?.trim();
+      if (!chatId) return;
+      const telegram = this.moduleRef.get(TelegramSenderService, { strict: false });
+      if (!telegram.isConfigured()) return;
+      await telegram.sendMessage(chatId, signupAlertText(business));
+    } catch (err) {
+      this.logger.warn(
+        `Sign-up alert for ${business.id} failed: ${(err as Error)?.message ?? err}`,
+      );
+    }
+  }
+
   async create(data: {
     name: string;
     email?: string | null;
+    // The owner's contact phone. The sign-up form requires it; the platform
+    // console may leave it out.
+    phone?: string | null;
     login: string;
     password: string;
     // 'food' and 'online' are picked at sign-up or from the platform console.
     businessType?: BusinessType;
   }): Promise<Business> {
+    const phone = this.readPhone(data.phone);
+
     // Check if login (or email, when provided) already exists. Email is
     // optional, so only include it in the collision check when supplied.
     const clashConditions = [eq(businesses.login, data.login)];
@@ -58,6 +101,7 @@ export class BusinessService {
       id: generateId(),
       name: data.name,
       email: data.email ?? null,
+      phone,
       login: data.login,
       password: hashedPassword,
       businessType: data.businessType ?? 'retail',
@@ -80,6 +124,14 @@ export class BusinessService {
     }
 
     return business;
+  }
+
+  /** Canonical "+998…" form of a typed phone; null when none was given. */
+  private readPhone(raw: string | null | undefined): string | null {
+    if (!raw?.trim()) return null;
+    const phone = normalizeUzPhone(raw);
+    if (!phone) throw new AppException(ErrorCode.PHONE_INVALID);
+    return phone;
   }
 
   /**
@@ -193,6 +245,10 @@ export class BusinessService {
     // If password is being updated, hash it
     if (data.password) {
       data.password = hashPassword(data.password);
+    }
+    // An empty phone clears it; anything else must be a real number.
+    if (data.phone !== undefined) {
+      data.phone = this.readPhone(data.phone);
     }
 
     const updateData = {

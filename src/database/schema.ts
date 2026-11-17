@@ -25,6 +25,10 @@ export const businesses = pgTable('businesses', {
   // email. Still unique when set — Postgres treats NULLs as distinct, so many
   // businesses may have no email.
   email: varchar('email', {length: 255}).unique(),
+  // The owner's contact phone, asked at sign-up so the team can call a shop
+  // that started its trial and never set anything up (0111). "+998" and nine
+  // digits (common/phone.ts). Null for shops registered before it; not unique.
+  phone: varchar('phone', {length: 32}),
   login: varchar('login', {length: 100}).notNull().unique(),
   password: varchar('password', {length: 255}).notNull(),
   // Profile avatar (S3 URL, uploaded via /storage/upload with prefix=avatars).
@@ -44,6 +48,10 @@ export const businesses = pgTable('businesses', {
   businessType: varchar('business_type', {length: 10})
     .default('retail')
     .notNull(),
+  // When the owner closed the "Boshlash" checklist on the dashboard (0112).
+  // Shops that had already sold when it shipped were set by the migration so
+  // they never see it. Null = the card still shows until every step is done.
+  onboardingDismissedAt: timestamp('onboarding_dismissed_at'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
