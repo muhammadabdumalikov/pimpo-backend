@@ -28,6 +28,10 @@ import { productGallery } from '../common/product-images';
 import { visibleOldPrice } from '../product/old-price';
 import { readStoreAccent, type StoreAccent } from '../common/store-accent';
 import {
+  readStorePhotoShape,
+  type StorePhotoShape,
+} from '../common/store-photo-shape';
+import {
   storeBadgeRules as BADGES,
   popularSlots,
   newBadgesOn,
@@ -129,6 +133,8 @@ export type StoreInfo = {
   tagline: string | null;
   /** Palette key (common/store-accent.ts); null = the default colour. */
   accent: StoreAccent | null;
+  /** Product card shape (common/store-photo-shape.ts); never null. */
+  photoShape: StorePhotoShape;
   /** Bare usernames (no "@", no URL) and a "+998…" phone. */
   contacts: {
     instagram: string | null;
@@ -241,6 +247,7 @@ export class StoreService {
         cover: null,
         tagline: null,
         accent: null,
+        photoShape: 'square',
         contacts: { instagram: null, telegram: null, phone: null },
         fulfilment: {
           pickupEnabled: true,
@@ -262,6 +269,7 @@ export class StoreService {
           cover: businesses.storeCover,
           tagline: businesses.storeTagline,
           accent: businesses.storeAccent,
+          photoShape: businesses.storePhotoShape,
           instagram: businesses.storeInstagram,
           telegram: businesses.storeTelegram,
           phone: businesses.storePhone,
@@ -280,6 +288,8 @@ export class StoreService {
       tagline: biz?.tagline ?? null,
       // A key dropped from the palette later reads as the default.
       accent: readStoreAccent(biz?.accent) ?? null,
+      // Null (and anything unknown) reads as the default square.
+      photoShape: readStorePhotoShape(biz?.photoShape) ?? 'square',
       contacts: {
         instagram: biz?.instagram ?? null,
         telegram: biz?.telegram ?? null,

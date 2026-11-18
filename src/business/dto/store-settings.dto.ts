@@ -7,6 +7,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import {STORE_ACCENTS} from '../../common/store-accent';
+import {STORE_PHOTO_SHAPES} from '../../common/store-photo-shape';
 
 /**
  * Owner-facing settings for the online storefront: subdomain + on/off, and its
@@ -117,4 +118,18 @@ export class UpdateStoreSettingsDto {
   @IsString()
   @MaxLength(16)
   storeAccent?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Storefront product photo shape, one of: ' +
+      STORE_PHOTO_SHAPES.join(', ') +
+      ' (4:5 cards). null or "" goes back to square, the default.',
+    example: 'portrait',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(16)
+  storePhotoShape?: string | null;
 }

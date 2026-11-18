@@ -1,6 +1,7 @@
 import { newBadgesOn, popularSlots } from './store-badges';
 import { normalizeOldPrice, visibleOldPrice } from '../product/old-price';
 import { readStoreAccent } from '../common/store-accent';
+import { readStorePhotoShape } from '../common/store-photo-shape';
 
 describe('storefront badges', () => {
   it('gives "Ommabop" to at most one card in five, never more than 8', () => {
@@ -38,5 +39,16 @@ describe('store accent', () => {
     expect(readStoreAccent('')).toBeNull();
     expect(readStoreAccent(null)).toBeNull();
     expect(readStoreAccent('#ff0000')).toBeUndefined();
+  });
+});
+
+describe('store photo shape', () => {
+  it('keeps portrait, stores square and blanks as null, rejects the rest', () => {
+    expect(readStorePhotoShape('portrait')).toBe('portrait');
+    expect(readStorePhotoShape(' Portrait ')).toBe('portrait');
+    expect(readStorePhotoShape('square')).toBeNull();
+    expect(readStorePhotoShape('')).toBeNull();
+    expect(readStorePhotoShape(null)).toBeNull();
+    expect(readStorePhotoShape('landscape')).toBeUndefined();
   });
 });

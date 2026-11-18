@@ -101,6 +101,14 @@ export class BusinessResponseDto {
   storeAccent?: string | null;
 
   @ApiProperty({
+    description: "Storefront product photo shape: 'portrait' (4:5 cards), null = square (default)",
+    nullable: true,
+    required: false,
+    example: 'portrait',
+  })
+  storePhotoShape?: string | null;
+
+  @ApiProperty({
     description: 'Account creation timestamp',
     example: '2024-01-01T00:00:00.000Z',
   })

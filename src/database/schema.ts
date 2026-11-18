@@ -53,6 +53,9 @@ export const businesses = pgTable('businesses', {
   // Storefront accent colour (0115): a key from the fixed palette in
   // common/store-accent.ts, never a free colour. null = the default.
   storeAccent: varchar('store_accent', {length: 16}),
+  // Storefront product photo shape (0116): 'portrait' = 4:5 cards, null =
+  // square (the default). See common/store-photo-shape.ts.
+  storePhotoShape: varchar('store_photo_shape', {length: 8}),
   // What kind of business this is: 'retail' (a shop — the default, and every
   // business before FASTFOOD.md) or 'food' (a fast-food kitchen: dishes with
   // recipes, a daily queue number, the kitchen ticket) or 'online' (a seller

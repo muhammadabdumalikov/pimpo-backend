@@ -17,6 +17,7 @@ import type {BusinessType} from '../common/business-type';
 import {normalizeUzPhone} from '../common/phone';
 import {normalizeInstagram, normalizeTelegram} from '../common/social-handles';
 import {readStoreAccent} from '../common/store-accent';
+import {readStorePhotoShape} from '../common/store-photo-shape';
 import {StorageService} from '../storage/storage.service';
 import {isOwnStoreImage} from '../store/store-images';
 import { FeatureService } from '../feature/feature.service';
@@ -48,6 +49,7 @@ export interface StoreSettingsPatch {
   storeLogo?: string | null;
   storeCover?: string | null;
   storeAccent?: string | null;
+  storePhotoShape?: string | null;
 }
 
 @Injectable()
@@ -418,6 +420,13 @@ export class BusinessService {
         throw new AppException(ErrorCode.STORE_ACCENT_INVALID);
       }
       patch.storeAccent = accent;
+    }
+    if (dto.storePhotoShape !== undefined) {
+      const shape = readStorePhotoShape(dto.storePhotoShape);
+      if (shape === undefined) {
+        throw new AppException(ErrorCode.STORE_PHOTO_SHAPE_INVALID);
+      }
+      patch.storePhotoShape = shape;
     }
 
     const [updated] = await this.dbService.db

@@ -49,6 +49,7 @@ describe('StoreService.getInfo — branding', () => {
           cover: 'https://s3/KPOS/banners/b-1/cover-1.webp',
           tagline: 'Ayollar kiyimi',
           accent: 'rose',
+          photoShape: 'portrait',
           instagram: 'zarastyle',
           telegram: 'zara_style',
           phone: '+998901234567',
@@ -62,6 +63,7 @@ describe('StoreService.getInfo — branding', () => {
       cover: 'https://s3/KPOS/banners/b-1/cover-1.webp',
       tagline: 'Ayollar kiyimi',
       accent: 'rose',
+      photoShape: 'portrait',
       contacts: {
         instagram: 'zarastyle',
         telegram: 'zara_style',
@@ -88,6 +90,7 @@ describe('StoreService.getInfo — branding', () => {
           logo: null,
           cover: null,
           tagline: null,
+          photoShape: null,
           instagram: null,
           telegram: null,
           phone: null,
@@ -98,6 +101,8 @@ describe('StoreService.getInfo — branding', () => {
       logo: null,
       cover: null,
       tagline: null,
+      accent: null,
+      photoShape: 'square',
       contacts: {instagram: null, telegram: null, phone: null},
     });
   });
@@ -110,6 +115,7 @@ describe('StoreService.getInfo — branding', () => {
       logo: null,
       cover: null,
       tagline: null,
+      photoShape: 'square',
       contacts: {instagram: null, telegram: null, phone: null},
     });
   });
