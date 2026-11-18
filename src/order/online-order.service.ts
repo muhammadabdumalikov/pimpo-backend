@@ -7,6 +7,7 @@ import {
   eq,
   ilike,
   inArray,
+  ne,
   or,
   sql,
   type SQL,
@@ -31,6 +32,7 @@ import {StoreSettingsService} from './store-settings.service';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {itemCountOf} from '../common/item-count';
+import {businessDay, businessDayStart} from '../common/business-time';
 import {IAccount} from '../business/types';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import type {StoreOrderMessageKind} from '../telegram/store-order-messages';
@@ -91,6 +93,21 @@ export interface OnlineOrderView {
   stockReady: boolean;
 }
 
+/** What a list card shows of the goods without opening the order. */
+export interface OnlineOrderPreview {
+  // Line product names in line order, at most PREVIEW_NAMES.
+  names: string[];
+  // products.image of the first line (in line order) that has one, as stored.
+  image: string | null;
+}
+
+/** One row of the list: the view plus the card preview. */
+export interface OnlineOrderListRow extends OnlineOrderView {
+  preview: OnlineOrderPreview;
+}
+
+const PREVIEW_NAMES = 4;
+
 export interface OrderPaymentView {
   id: string;
   kind: string;
@@ -115,6 +132,8 @@ export interface OnlineOrderDetail extends OnlineOrderView {
     stockTaken: boolean;
     options: {name: string; value: string}[] | null;
     available: number | null;
+    // products.image as stored; null when the product is gone or has none.
+    image: string | null;
   }[];
   orderPayments: OrderPaymentView[];
   depositOutcome: 'refunded' | 'kept' | null;
@@ -243,7 +262,7 @@ export class OnlineOrderService {
       limit?: number;
     },
   ): Promise<{
-    orders: OnlineOrderView[];
+    orders: OnlineOrderListRow[];
     total: number;
     page: number;
     limit: number;
@@ -298,17 +317,59 @@ export class OnlineOrderService {
       .limit(limit)
       .offset((page - 1) * limit);
 
+    const previews = await this.previewsOf(
+      businessId,
+      rows.map((r) => r.order.id),
+    );
+
     return {
-      orders: rows.map((r) =>
-        this.view(r.order, r.movedAt, {
+      orders: rows.map((r) => ({
+        ...this.view(r.order, r.movedAt, {
           pendingLines: Number(r.pendingLines) || 0,
           stockReady: !!r.stockReady,
         }),
-      ),
+        preview: previews.get(r.order.id) ?? {names: [], image: null},
+      })),
       total,
       page,
       limit,
     };
+  }
+
+  /**
+   * The card preview of every order on a page, in one query. `orderIds` come
+   * from the business-scoped list; the product join is scoped too, so a line
+   * can never surface another shop's photo.
+   */
+  private async previewsOf(
+    businessId: string,
+    orderIds: string[],
+  ): Promise<Map<string, OnlineOrderPreview>> {
+    const out = new Map<string, OnlineOrderPreview>();
+    if (!orderIds.length) return out;
+    const lines = await this.dbService.db
+      .select({
+        orderId: orderItems.orderId,
+        productName: orderItems.productName,
+        image: products.image,
+      })
+      .from(orderItems)
+      .leftJoin(
+        products,
+        and(
+          eq(products.id, orderItems.productId),
+          eq(products.businessId, businessId),
+        ),
+      )
+      .where(inArray(orderItems.orderId, orderIds))
+      .orderBy(asc(orderItems.createdAt), asc(orderItems.id));
+    for (const l of lines) {
+      let p = out.get(l.orderId);
+      if (!p) out.set(l.orderId, (p = {names: [], image: null}));
+      if (p.names.length < PREVIEW_NAMES) p.names.push(l.productName);
+      if (!p.image && l.image) p.image = l.image;
+    }
+    return out;
   }
 
   async counts(businessId: string): Promise<{
@@ -317,6 +378,8 @@ export class OnlineOrderService {
     awaiting: number;
     inwork: number;
     stockReady: number;
+    placedToday: number;
+    placedTodayAmount: string;
   }> {
     const rows = await this.dbService.db
       .select({status: orders.status, n: count()})
@@ -343,12 +406,34 @@ export class OnlineOrderService {
           stockReadySql,
         ),
       );
+    // Placed today (business day, +05:00), anything but cancelled. Bounds go
+    // in as ISO strings: a JS Date bound inside raw sql throws at runtime.
+    const dayStart = businessDayStart(businessDay());
+    const dayEnd = new Date(dayStart.getTime() + 86_400_000);
+    const placedAtSql = sql`coalesce(${orders.placedAt}, ${orders.createdAt})`;
+    const [today] = await this.dbService.db
+      .select({
+        n: count(),
+        amount: sql<string | null>`sum(${orders.totalAmount} + ${orders.deliveryFee})`,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.businessId, businessId),
+          eq(orders.source, 'store'),
+          ne(orders.status, 'Cancelled'),
+          sql`${placedAtSql} >= (${dayStart.toISOString()}::timestamptz at time zone 'UTC')`,
+          sql`${placedAtSql} < (${dayEnd.toISOString()}::timestamptz at time zone 'UTC')`,
+        ),
+      );
     return {
       new: by.get('Pending') ?? 0,
       active: sum(ONLINE_GROUPS.active),
       awaiting: sum(ONLINE_GROUPS.awaiting),
       inwork: sum(ONLINE_GROUPS.inwork),
       stockReady: ready,
+      placedToday: Number(today?.n) || 0,
+      placedTodayAmount: money(Number(today?.amount ?? 0) || 0),
     };
   }
 
@@ -366,6 +451,7 @@ export class OnlineOrderService {
           quantityType: products.quantityType,
           stockPending: orderItems.stockPending,
           options: orderItems.options,
+          image: products.image,
         })
         .from(orderItems)
         .leftJoin(products, eq(products.id, orderItems.productId))

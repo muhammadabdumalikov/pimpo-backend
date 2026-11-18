@@ -50,7 +50,11 @@ export class OnlineOrderController {
   constructor(private readonly online: OnlineOrderService) {}
 
   @Get()
-  @ApiOperation({summary: 'List storefront orders by work group'})
+  @ApiOperation({
+    summary: 'List storefront orders by work group',
+    description:
+      'Each row carries preview: {names: string[] (line product names in line order, max 4), image: string | null (products.image of the first line that has one)}.',
+  })
   @ApiQuery({
     name: 'group',
     required: false,
@@ -77,6 +81,8 @@ export class OnlineOrderController {
   @Get('counts')
   @ApiOperation({
     summary: 'How many storefront orders wait (new) or are in progress',
+    description:
+      'Also placedToday (orders placed today in the business day, not cancelled) and placedTodayAmount (their goods + delivery fee, numeric string).',
   })
   counts(@CurrentBusiness() business: IBusiness) {
     return this.online.counts(business.id);
@@ -115,7 +121,11 @@ export class OnlineOrderController {
 
   @Get(':id')
   @ApiParam({name: 'id'})
-  @ApiOperation({summary: 'One storefront order with lines and status history'})
+  @ApiOperation({
+    summary: 'One storefront order with lines and status history',
+    description:
+      'Each item carries image: string | null (the product photo; null when the product is gone or has none).',
+  })
   detail(@CurrentBusiness() business: IBusiness, @Param('id') id: string) {
     return this.online.detail(business.id, id);
   }
