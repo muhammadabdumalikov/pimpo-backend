@@ -153,8 +153,11 @@ export class BusinessController {
     return this.authService.updateMyProfile(account, dto);
   }
 
+  // The storefront's address, switch and look are shop settings: the owner,
+  // or staff trusted with settings:manage (the dashboard already asks for it).
   @Put('me/store')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
