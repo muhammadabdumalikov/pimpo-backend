@@ -93,6 +93,14 @@ export class BusinessResponseDto {
   storeCover?: string | null;
 
   @ApiProperty({
+    description: 'Storefront accent colour: a palette key (common/store-accent.ts), null = default',
+    nullable: true,
+    required: false,
+    example: 'rose',
+  })
+  storeAccent?: string | null;
+
+  @ApiProperty({
     description: 'Account creation timestamp',
     example: '2024-01-01T00:00:00.000Z',
   })

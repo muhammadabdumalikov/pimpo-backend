@@ -1,3 +1,4 @@
+import {normalizeOldPrice} from './old-price';
 import {Injectable, Inject, Logger} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {isSharedBarcode} from '../common/shared-barcode';
@@ -200,6 +201,8 @@ export class ProductService {
       categoryId?: string;
       priceBundle?: string;
       priceWholesale?: string;
+      /** Storefront "old price" (product/old-price.ts); blank clears it. */
+      oldPrice?: string | null;
       lowStockThreshold?: number;
       brandId?: string;
       supplierId?: string;
@@ -300,6 +303,7 @@ export class ProductService {
       categoryId: data.categoryId || null,
       priceBundle: data.priceBundle || null,
       priceWholesale: data.priceWholesale || null,
+      oldPrice: normalizeOldPrice(data.oldPrice),
       lowStockThreshold: data.lowStockThreshold ?? null,
       brandId: data.brandId || null,
       supplierId: data.supplierId || null,
@@ -1291,6 +1295,7 @@ export class ProductService {
     if (data.leadTime !== undefined) data.leadTime = data.leadTime?.trim() || null;
     if (data.description !== undefined)
       data.description = data.description?.trim() || null;
+    if (data.oldPrice !== undefined) data.oldPrice = normalizeOldPrice(data.oldPrice);
     // The extra photos are replaced as a whole list; a copy of the main photo
     // (the new one when this request changes it) is dropped. Left out = kept.
     if (data.extraImages !== undefined) {

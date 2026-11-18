@@ -5,11 +5,12 @@ import { DatabaseService } from '../database/database.service';
 import {
   products,
   orders,
+  orderItems,
   businesses,
   storeBots,
   branchStock,
 } from '../database/schema';
-import { eq, and, asc, desc, count, inArray, ilike, sql } from 'drizzle-orm';
+import { eq, and, asc, desc, count, countDistinct, gte, inArray, ilike, isNotNull, sql } from 'drizzle-orm';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { tierAtLeast } from '../subscription/tier';
 import {
@@ -24,6 +25,14 @@ import type { StoreFulfilment } from '../order/order.service';
 import { deliveryFeeFor } from '../order/online-order.rules';
 import type { StoreCheckoutDto } from './dto/store-checkout.dto';
 import { productGallery } from '../common/product-images';
+import { visibleOldPrice } from '../product/old-price';
+import { readStoreAccent, type StoreAccent } from '../common/store-accent';
+import {
+  storeBadgeRules as BADGES,
+  popularSlots,
+  newBadgesOn,
+  type StoreBadgeContext,
+} from './store-badges';
 
 // The online storefront is a Business-plan (`pro`) feature. Unlike the admin
 // API there is no JWT here to hang PlanTierGuard off, so the tier is checked
@@ -47,6 +56,19 @@ const publicProductColumns = {
   options: products.options,
   leadTime: products.leadTime,
   description: products.description,
+  // Raw inputs for the shopper-facing oldPrice / badges (toPublic); never
+  // returned as they are.
+  rawOldPrice: products.oldPrice,
+  createdAt: products.createdAt,
+};
+
+type PublicRow = {
+  [K in keyof typeof publicProductColumns]: unknown;
+} & {
+  id: string;
+  priceOut: string;
+  rawOldPrice: string | null;
+  createdAt: Date;
 };
 
 // On hand at the branch online orders are served from (YETKAZISH.md Q14);
@@ -79,6 +101,12 @@ export type StorePublicProduct = {
   options: {name: string; values: string[]}[] | null;
   leadTime: string | null;
   description: string | null;
+  /** Price before a markdown; only ever above priceOut, else null. */
+  oldPrice: string | null;
+  /** Added recently (store-badges.ts) — false while the whole shop is new. */
+  isNew: boolean;
+  /** Among the shop's most ordered in the last 30 days (store-badges.ts). */
+  popular: boolean;
 };
 
 /**
@@ -99,6 +127,8 @@ export type StoreInfo = {
   cover: string | null;
   /** One line, at most 140 characters. */
   tagline: string | null;
+  /** Palette key (common/store-accent.ts); null = the default colour. */
+  accent: StoreAccent | null;
   /** Bare usernames (no "@", no URL) and a "+998…" phone. */
   contacts: {
     instagram: string | null;
@@ -210,6 +240,7 @@ export class StoreService {
         logo: null,
         cover: null,
         tagline: null,
+        accent: null,
         contacts: { instagram: null, telegram: null, phone: null },
         fulfilment: {
           pickupEnabled: true,
@@ -230,6 +261,7 @@ export class StoreService {
           logo: businesses.storeLogo,
           cover: businesses.storeCover,
           tagline: businesses.storeTagline,
+          accent: businesses.storeAccent,
           instagram: businesses.storeInstagram,
           telegram: businesses.storeTelegram,
           phone: businesses.storePhone,
@@ -246,6 +278,8 @@ export class StoreService {
       logo: biz?.logo ?? null,
       cover: biz?.cover ?? null,
       tagline: biz?.tagline ?? null,
+      // A key dropped from the palette later reads as the default.
+      accent: readStoreAccent(biz?.accent) ?? null,
       contacts: {
         instagram: biz?.instagram ?? null,
         telegram: biz?.telegram ?? null,
@@ -260,6 +294,81 @@ export class StoreService {
         pickupBranchName: branch.name,
         pickupAddress: branch.address,
       },
+    };
+  }
+
+  // Badge inputs per shop, kept for a few minutes: they move slowly and the
+  // storefront reads them on every list page.
+  private readonly badgeCache = new Map<
+    string,
+    { at: number; ctx: StoreBadgeContext }
+  >();
+
+  /** Which products wear "Ommabop" and whether "Yangi" is shown at all. */
+  async badgeContext(businessId: string | null): Promise<StoreBadgeContext> {
+    if (!businessId) return { popular: new Set(), newOn: false };
+    const hit = this.badgeCache.get(businessId);
+    if (hit && Date.now() - hit.at < BADGES.cacheMs) return hit.ctx;
+
+    const now = Date.now();
+    const salesSince = new Date(now - BADGES.popularDays * 86_400_000);
+    const [[catalog], ranked] = await Promise.all([
+      this.dbService.db
+        .select({
+          total: count(),
+          // Interval in SQL: a Date bound inside raw sql breaks the driver.
+          recent: sql<number>`count(*) filter (where ${products.createdAt} >= (now() at time zone 'utc') - make_interval(days => ${BADGES.newDays}))::int`,
+        })
+        .from(products)
+        .where(and(...this.scopeConditions(businessId))),
+      // Ranked by how many orders carried the product, not by quantity, so
+      // kilograms and pieces compare fairly.
+      this.dbService.db
+        .select({
+          productId: orderItems.productId,
+          orders: countDistinct(orderItems.orderId),
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orders.id, orderItems.orderId))
+        .innerJoin(
+          products,
+          and(eq(products.id, orderItems.productId), eq(products.isActive, true)),
+        )
+        .where(
+          and(
+            eq(orderItems.businessId, businessId),
+            isNotNull(orderItems.productId),
+            eq(orders.status, 'Completed'),
+            gte(orders.createdAt, salesSince),
+          ),
+        )
+        .groupBy(orderItems.productId)
+        .having(sql`count(distinct ${orderItems.orderId}) >= ${BADGES.popularMinOrders}`)
+        .orderBy(desc(countDistinct(orderItems.orderId)), asc(orderItems.productId))
+        .limit(BADGES.popularMax),
+    ]);
+    const total = Number(catalog?.total ?? 0);
+    const slots = popularSlots(total);
+    const ctx: StoreBadgeContext = {
+      popular: new Set(
+        ranked.slice(0, slots).map((r) => r.productId as string),
+      ),
+      newOn: newBadgesOn(total, Number(catalog?.recent ?? 0)),
+    };
+    this.badgeCache.set(businessId, { at: now, ctx });
+    return ctx;
+  }
+
+  /** The shopper-facing product: raw inputs folded into oldPrice + badges. */
+  private toPublic<T extends PublicRow>(row: T, ctx: StoreBadgeContext) {
+    const { rawOldPrice, createdAt, ...rest } = row;
+    return {
+      ...rest,
+      oldPrice: visibleOldPrice(rawOldPrice, row.priceOut),
+      isNew:
+        ctx.newOn &&
+        createdAt.getTime() >= Date.now() - BADGES.newDays * 86_400_000,
+      popular: ctx.popular.has(row.id),
     };
   }
 
@@ -309,7 +418,10 @@ export class StoreService {
       .where(and(...conditions));
     const total = totalResult[0]?.count ?? 0;
 
-    const branchId = await this.stockBranchId(businessId);
+    const [branchId, badges] = await Promise.all([
+      this.stockBranchId(businessId),
+      this.badgeContext(businessId),
+    ]);
     const quantity = onHand(branchId);
     const list = await this.dbService.db
       .select({ ...publicProductColumns, quantity })
@@ -335,7 +447,9 @@ export class StoreService {
       .offset(offset);
 
     return {
-      products: list,
+      products: list.map(
+        (row) => this.toPublic(row, badges) as StorePublicProduct,
+      ),
       total,
       page,
       limit,
@@ -346,7 +460,10 @@ export class StoreService {
     businessId: string | null,
     id: string,
   ): Promise<StorePublicProductDetail> {
-    const branchId = await this.stockBranchId(businessId);
+    const [branchId, badges] = await Promise.all([
+      this.stockBranchId(businessId),
+      this.badgeContext(businessId),
+    ]);
     const [row] = await this.dbService.db
       .select({
         ...publicProductColumns,
@@ -363,7 +480,10 @@ export class StoreService {
     }
     // The raw extras stay internal; the shopper gets the computed gallery.
     const { extraImages, ...product } = row;
-    return { ...product, images: productGallery(product.image, extraImages) };
+    return {
+      ...(this.toPublic(product, badges) as StorePublicProduct),
+      images: productGallery(product.image, extraImages),
+    };
   }
 
   /**

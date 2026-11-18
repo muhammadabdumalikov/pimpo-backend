@@ -50,6 +50,9 @@ export const businesses = pgTable('businesses', {
   storePhone: varchar('store_phone', {length: 32}),
   storeLogo: varchar('store_logo', {length: 500}),
   storeCover: varchar('store_cover', {length: 500}),
+  // Storefront accent colour (0115): a key from the fixed palette in
+  // common/store-accent.ts, never a free colour. null = the default.
+  storeAccent: varchar('store_accent', {length: 16}),
   // What kind of business this is: 'retail' (a shop — the default, and every
   // business before FASTFOOD.md) or 'food' (a fast-food kitchen: dishes with
   // recipes, a daily queue number, the kitchen ticket) or 'online' (a seller
@@ -232,6 +235,10 @@ export const products = pgTable(
     plu: integer('plu'),
     priceIn: decimal('price_in', {precision: 10, scale: 2}).notNull(),
     priceOut: decimal('price_out', {precision: 10, scale: 2}).notNull(),
+    // The price before a markdown, shown struck through on the storefront next
+    // to priceOut (0115). Shown only while it is above priceOut, so a later
+    // price change never displays a fake discount. Null = no markdown.
+    oldPrice: decimal('old_price', {precision: 10, scale: 2}),
     // Optional wholesale (bulk) selling price. Set at goods-receipt time or in the
     // catalog; null when the product has no separate wholesale tier.
     priceWholesale: decimal('price_wholesale', {precision: 10, scale: 2}),

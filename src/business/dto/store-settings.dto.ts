@@ -6,6 +6,7 @@ import {
   MaxLength,
   ValidateIf,
 } from 'class-validator';
+import {STORE_ACCENTS} from '../../common/store-accent';
 
 /**
  * Owner-facing settings for the online storefront: subdomain + on/off, and its
@@ -102,4 +103,18 @@ export class UpdateStoreSettingsDto {
   @IsString()
   @MaxLength(500)
   storeCover?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Storefront accent colour, one of: ' +
+      STORE_ACCENTS.join(', ') +
+      '. null or "" goes back to the default colour.',
+    example: 'rose',
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(16)
+  storeAccent?: string | null;
 }

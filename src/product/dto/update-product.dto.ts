@@ -13,7 +13,9 @@ import {
   MinLength,
   ValidateIf,
   ValidateNested,
+  Matches,
 } from 'class-validator';
+import {OLD_PRICE_PATTERN} from '../old-price';
 import {Type} from 'class-transformer';
 import {PRODUCT_KINDS, type ProductKind} from '../../common/business-type';
 import {ProductOptionGroupDto} from './create-product.dto';
@@ -152,6 +154,19 @@ export class UpdateProductDto {
   @IsString()
   @IsOptional()
   priceBundle?: string;
+
+  @ApiProperty({
+    description:
+      'Price before a markdown, shown struck through on the storefront while it is above priceOut. "" or null clears it.',
+    example: '150000',
+    required: false,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @Matches(OLD_PRICE_PATTERN)
+  oldPrice?: string | null;
 
   @ApiProperty({
     description: 'Wholesale selling price ("ulgurji narxi"). Optional.',

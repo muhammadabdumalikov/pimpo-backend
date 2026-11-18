@@ -213,6 +213,7 @@ export enum ErrorCode {
   STORE_TAGLINE_TOO_LONG = 'STORE_TAGLINE_TOO_LONG',
   STORE_INSTAGRAM_INVALID = 'STORE_INSTAGRAM_INVALID',
   STORE_TELEGRAM_INVALID = 'STORE_TELEGRAM_INVALID',
+  STORE_ACCENT_INVALID = 'STORE_ACCENT_INVALID',
   // Online-order delivery (YETKAZISH.md)
   ORDER_NOT_ONLINE = 'ORDER_NOT_ONLINE',
   ORDER_STATUS_TRANSITION_INVALID = 'ORDER_STATUS_TRANSITION_INVALID',
@@ -1213,6 +1214,10 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.STORE_TELEGRAM_INVALID]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'Not a Telegram username or t.me link',
+  },
+  [ErrorCode.STORE_ACCENT_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Not one of the storefront colours',
   },
 
   // Stock-take

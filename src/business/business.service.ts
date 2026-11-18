@@ -16,6 +16,7 @@ import { generateId } from '../utils/uuid';
 import type {BusinessType} from '../common/business-type';
 import {normalizeUzPhone} from '../common/phone';
 import {normalizeInstagram, normalizeTelegram} from '../common/social-handles';
+import {readStoreAccent} from '../common/store-accent';
 import {StorageService} from '../storage/storage.service';
 import {isOwnStoreImage} from '../store/store-images';
 import { FeatureService } from '../feature/feature.service';
@@ -46,6 +47,7 @@ export interface StoreSettingsPatch {
   storePhone?: string | null;
   storeLogo?: string | null;
   storeCover?: string | null;
+  storeAccent?: string | null;
 }
 
 @Injectable()
@@ -409,6 +411,13 @@ export class BusinessService {
     }
     if (dto.storeCover !== undefined) {
       patch.storeCover = this.readStoreImage(id, dto.storeCover);
+    }
+    if (dto.storeAccent !== undefined) {
+      const accent = readStoreAccent(dto.storeAccent);
+      if (accent === undefined) {
+        throw new AppException(ErrorCode.STORE_ACCENT_INVALID);
+      }
+      patch.storeAccent = accent;
     }
 
     const [updated] = await this.dbService.db

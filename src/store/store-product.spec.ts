@@ -24,8 +24,15 @@ const storeSettings = {
   onlineBranch: jest.fn().mockResolvedValue({id: 'br-1', name: 'Chilonzor'}),
 } as unknown as StoreSettingsService;
 
+// findOne first reads the badge context (catalogue counts, then the ranked
+// sales), then the product row.
 const service = (rows: unknown[][]) =>
-  new StoreService(fakeDb(rows), {} as never, storeSettings, {} as never);
+  new StoreService(
+    fakeDb([[{total: 20, recent: 2}], [{productId: 'p-1', orders: 5}], ...rows]),
+    {} as never,
+    storeSettings,
+    {} as never,
+  );
 
 const row = (image: string | null, extraImages: string[]) => ({
   id: 'p-1',
@@ -39,6 +46,8 @@ const row = (image: string | null, extraImages: string[]) => ({
   options: null,
   leadTime: null,
   description: null,
+  rawOldPrice: '990000.00',
+  createdAt: new Date(),
   extraImages,
 });
 
@@ -74,14 +83,28 @@ describe('StoreService.findOne — gallery', () => {
         'options',
         'leadTime',
         'description',
+        'oldPrice',
+        'isNew',
+        'popular',
       ].sort(),
     );
   });
 
+  it('folds the old price and badges into the public shape', async () => {
+    const product = await service([[row('https://cdn/a.jpg', [])]]).findOne('b-1', 'p-1');
+    expect(product.oldPrice).toBe('990000.00');
+    expect(product.isNew).toBe(true);
+    expect(product.popular).toBe(true);
+  });
+
   it('drops a main photo repeated among the extras', async () => {
-    const product = await service([
-      [row('https://cdn/b.jpg', ['https://cdn/a.jpg', 'https://cdn/b.jpg'])],
-    ]).findOne(null, 'p-1');
+    // Unscoped: no badge reads, straight to the row.
+    const product = await new StoreService(
+      fakeDb([[row('https://cdn/b.jpg', ['https://cdn/a.jpg', 'https://cdn/b.jpg'])]]),
+      {} as never,
+      storeSettings,
+      {} as never,
+    ).findOne(null, 'p-1');
     expect(product.images).toEqual(['https://cdn/b.jpg', 'https://cdn/a.jpg']);
   });
 
