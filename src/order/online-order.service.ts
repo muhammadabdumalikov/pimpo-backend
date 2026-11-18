@@ -1450,6 +1450,12 @@ export class OnlineOrderService {
     });
 
     void this.orderService.settleWaitingPrices(businessId, drawn);
+    if (from === 'Pending' && updated) {
+      await this.orderService.forgetPendingStoreCount(
+        businessId,
+        (updated as Order).branchId,
+      );
+    }
     if (updated)
       this.tellCustomer(
         updated,

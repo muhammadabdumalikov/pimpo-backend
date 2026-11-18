@@ -1469,6 +1469,7 @@ export class OrderService {
       status: 'Pending',
       source: 'store',
     });
+    await this.forgetPendingStoreCount(product.businessId, order.branchId);
     this.telegramNotify.notifyOnlineOrder(product.businessId, {
       orderId: order.id,
       totalAmount: order.totalAmount,
@@ -2459,6 +2460,32 @@ export class OrderService {
       debt: Math.max(0, Number(debtRow.total) - Number(debtRow.paid) - retDebt),
       deliveryIncome: Number(totals.delivery) - retDelivery,
     };
+  }
+
+  /**
+   * Drops the cached count of storefront orders waiting to be taken — the
+   * badge on the orders tab. Without it an order just accepted or cancelled
+   * keeps the old number for up to TTL.ORDERS_COUNT. Both the whole-business
+   * key and the branch-scoped one (staff pinned to a store) are dropped.
+   * Best-effort: a cache that fails to delete only delays the badge.
+   */
+  async forgetPendingStoreCount(
+    businessId: string,
+    branchId: string | null,
+  ): Promise<void> {
+    const keys = [
+      CacheKeys.ordersCount(businessId, {status: 'Pending', source: 'store'}),
+      ...(branchId
+        ? [
+            CacheKeys.ordersCount(businessId, {
+              status: 'Pending',
+              source: 'store',
+              branchId,
+            }),
+          ]
+        : []),
+    ];
+    await Promise.all(keys.map((k) => this.cache.del(k).catch(() => false)));
   }
 
   async getCount(
