@@ -43,7 +43,11 @@ export class StoreController {
   @Get('info')
   @ApiOperation({ summary: 'Get storefront info for a slug (public)' })
   @ApiQuery({ name: 'store', required: false, type: String, description: 'Store subdomain slug' })
-  @ApiResponse({ status: 200, description: 'Store name + slug' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Store name + slug, branding (logo, cover, tagline, contacts {instagram, telegram, phone}; each null when unset) and fulfilment',
+  })
   @ApiResponse({ status: 404, description: 'Store not found' })
   async getInfo(@Query('store') store?: string) {
     const businessId = await this.storeService.resolveBusinessId(store);

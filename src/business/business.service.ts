@@ -15,6 +15,9 @@ import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/uuid';
 import type {BusinessType} from '../common/business-type';
 import {normalizeUzPhone} from '../common/phone';
+import {normalizeInstagram, normalizeTelegram} from '../common/social-handles';
+import {StorageService} from '../storage/storage.service';
+import {isOwnStoreImage} from '../store/store-images';
 import { FeatureService } from '../feature/feature.service';
 import { TelegramSenderService } from '../telegram/telegram-sender.service';
 import { signupAlertText } from './signup-alert';
@@ -22,6 +25,28 @@ import { signupAlertText } from './signup-alert';
 // New businesses start on a 1-month free trial of the Standart (basic) plan.
 const TRIAL_TIER = 'basic';
 const TRIAL_DAYS = 30;
+
+/** Longest storefront tagline, in characters (businesses.store_tagline). */
+export const STORE_TAGLINE_MAX = 140;
+
+/** The tagline as stored: one line, trimmed; null when blank. */
+export function normalizeStoreTagline(
+  raw: string | null | undefined,
+): string | null {
+  return raw?.replace(/\s+/g, ' ').trim() || null;
+}
+
+/** Store settings an owner may change (PUT /businesses/me/store). */
+export interface StoreSettingsPatch {
+  storeSlug?: string | null;
+  storeEnabled?: boolean;
+  storeTagline?: string | null;
+  storeInstagram?: string | null;
+  storeTelegram?: string | null;
+  storePhone?: string | null;
+  storeLogo?: string | null;
+  storeCover?: string | null;
+}
 
 @Injectable()
 export class BusinessService {
@@ -124,6 +149,21 @@ export class BusinessService {
     }
 
     return business;
+  }
+
+  /**
+   * A storefront picture URL to save; null when cleared. Only one this shop
+   * uploaded (POST /businesses/me/store/logo|cover, or a banner picture): the
+   * storefront must never be made to load an address a client chose.
+   */
+  private readStoreImage(businessId: string, raw: string | null): string | null {
+    const url = raw?.trim();
+    if (!url) return null;
+    const storage = this.moduleRef.get(StorageService, {strict: false});
+    if (!isOwnStoreImage(storage, businessId, url)) {
+      throw new AppException(ErrorCode.VALIDATION_ERROR);
+    }
+    return url;
   }
 
   /** Canonical "+998…" form of a typed phone; null when none was given. */
@@ -289,13 +329,15 @@ export class BusinessService {
   ]);
 
   /**
-   * Set the online-store subdomain slug and/or on-off flag for a business.
-   * The slug is normalised to a DNS label; uniqueness and a reserved-word list
-   * are enforced so subdomains stay unambiguous.
+   * Set the online-store subdomain slug, on-off flag and branding for a
+   * business. The slug is normalised to a DNS label; uniqueness and a
+   * reserved-word list are enforced so subdomains stay unambiguous. Branding
+   * fields left out stay as they are; null or "" clears one; the rest are
+   * normalised (see the read* helpers) or refused.
    */
   async updateStoreSettings(
     id: string,
-    dto: { storeSlug?: string | null; storeEnabled?: boolean },
+    dto: StoreSettingsPatch,
   ): Promise<Business> {
     const business = await this.findById(id);
     if (!business) {
@@ -335,6 +377,40 @@ export class BusinessService {
       patch.storeEnabled = dto.storeEnabled;
     }
 
+    if (dto.storeTagline !== undefined) {
+      const tagline = normalizeStoreTagline(dto.storeTagline);
+      // Characters, not UTF-16 units: an emoji is one, as in varchar(140).
+      if (tagline && [...tagline].length > STORE_TAGLINE_MAX) {
+        throw new AppException(ErrorCode.STORE_TAGLINE_TOO_LONG, {
+          max: STORE_TAGLINE_MAX,
+        });
+      }
+      patch.storeTagline = tagline;
+    }
+    if (dto.storeInstagram !== undefined) {
+      patch.storeInstagram = readHandle(
+        dto.storeInstagram,
+        normalizeInstagram,
+        ErrorCode.STORE_INSTAGRAM_INVALID,
+      );
+    }
+    if (dto.storeTelegram !== undefined) {
+      patch.storeTelegram = readHandle(
+        dto.storeTelegram,
+        normalizeTelegram,
+        ErrorCode.STORE_TELEGRAM_INVALID,
+      );
+    }
+    if (dto.storePhone !== undefined) {
+      patch.storePhone = this.readPhone(dto.storePhone);
+    }
+    if (dto.storeLogo !== undefined) {
+      patch.storeLogo = this.readStoreImage(id, dto.storeLogo);
+    }
+    if (dto.storeCover !== undefined) {
+      patch.storeCover = this.readStoreImage(id, dto.storeCover);
+    }
+
     const [updated] = await this.dbService.db
       .update(businesses)
       .set(patch)
@@ -343,4 +419,16 @@ export class BusinessService {
 
     return updated;
   }
+}
+
+/** A pasted username or link as its bare handle; null when cleared. */
+function readHandle(
+  raw: string | null,
+  normalize: (raw: string) => string | null,
+  invalid: ErrorCode,
+): string | null {
+  if (!raw?.trim()) return null;
+  const handle = normalize(raw);
+  if (!handle) throw new AppException(invalid);
+  return handle;
 }

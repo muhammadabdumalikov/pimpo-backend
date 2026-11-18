@@ -80,6 +80,33 @@ export type StorePublicProduct = {
   description: string | null;
 };
 
+/** GET /store/info: who the shop is and how it hands orders over. */
+export type StoreInfo = {
+  name: string | null;
+  slug: string | null;
+  /** Square WebP; null until the owner uploads one. */
+  logo: string | null;
+  /** 3:1 WebP; null until the owner uploads one. */
+  cover: string | null;
+  /** One line, at most 140 characters. */
+  tagline: string | null;
+  /** Bare usernames (no "@", no URL) and a "+998…" phone. */
+  contacts: {
+    instagram: string | null;
+    telegram: string | null;
+    phone: string | null;
+  };
+  fulfilment: {
+    pickupEnabled: boolean;
+    deliveryEnabled: boolean;
+    deliveryFee: number;
+    freeDeliveryFrom: number | null;
+    minDeliveryAmount: number | null;
+    pickupBranchName: string | null;
+    pickupAddress: string | null;
+  };
+};
+
 @Injectable()
 export class StoreService {
   constructor(
@@ -162,26 +189,19 @@ export class StoreService {
     return process.env.TELEGRAM_BOT_TOKEN || undefined;
   }
 
-  /** Public storefront branding for the resolved business (name shown in the
-   *  header/footer) and how orders can be handed over. Null businessId (apex,
-   *  unscoped) returns a neutral name and the default fulfilment. */
-  async getInfo(businessId: string | null): Promise<{
-    name: string | null;
-    slug: string | null;
-    fulfilment: {
-      pickupEnabled: boolean;
-      deliveryEnabled: boolean;
-      deliveryFee: number;
-      freeDeliveryFrom: number | null;
-      minDeliveryAmount: number | null;
-      pickupBranchName: string | null;
-      pickupAddress: string | null;
-    };
-  }> {
+  /** Public storefront branding for the resolved business (name, logo, cover,
+   *  tagline and contacts shown in the header/footer) and how orders can be
+   *  handed over. Null businessId (apex, unscoped) returns a neutral name, no
+   *  branding and the default fulfilment. */
+  async getInfo(businessId: string | null): Promise<StoreInfo> {
     if (!businessId) {
       return {
         name: null,
         slug: null,
+        logo: null,
+        cover: null,
+        tagline: null,
+        contacts: { instagram: null, telegram: null, phone: null },
         fulfilment: {
           pickupEnabled: true,
           deliveryEnabled: true,
@@ -195,7 +215,16 @@ export class StoreService {
     }
     const [[biz], settings] = await Promise.all([
       this.dbService.db
-        .select({ name: businesses.name, slug: businesses.storeSlug })
+        .select({
+          name: businesses.name,
+          slug: businesses.storeSlug,
+          logo: businesses.storeLogo,
+          cover: businesses.storeCover,
+          tagline: businesses.storeTagline,
+          instagram: businesses.storeInstagram,
+          telegram: businesses.storeTelegram,
+          phone: businesses.storePhone,
+        })
         .from(businesses)
         .where(eq(businesses.id, businessId))
         .limit(1),
@@ -205,6 +234,14 @@ export class StoreService {
     return {
       name: biz?.name ?? null,
       slug: biz?.slug ?? null,
+      logo: biz?.logo ?? null,
+      cover: biz?.cover ?? null,
+      tagline: biz?.tagline ?? null,
+      contacts: {
+        instagram: biz?.instagram ?? null,
+        telegram: biz?.telegram ?? null,
+        phone: biz?.phone ?? null,
+      },
       fulfilment: {
         pickupEnabled: settings.pickupEnabled,
         deliveryEnabled: settings.deliveryEnabled,

@@ -13,17 +13,10 @@ import {
 import {StorageService} from '../storage/storage.service';
 import {generateId} from '../utils/uuid';
 import {BannerLinkType, SaveStoreBannerDto} from './dto/store-banner.dto';
-
-// sharp is CommonJS at runtime; see ai/image/packshot-image.ts for why require().
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
-const sharp: typeof import('sharp').default = require('sharp');
+import {isOwnStoreImage, uploadStoreImage} from './store-images';
 
 /** Most banners one storefront may hold (shown or not). */
 export const STORE_BANNER_LIMIT = 6;
-/** The stored banner picture: 2:1, cropped to fit, WebP. */
-const BANNER_WIDTH = 1600;
-const BANNER_HEIGHT = 800;
-const BANNER_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
 
 /** Where a banner stands today, for the settings list. */
 export type BannerStatus = 'live' | 'scheduled' | 'expired' | 'off';
@@ -117,38 +110,23 @@ export class StoreBannerService {
   }
 
   /** Crops the upload to 2:1 and stores it; the URL then goes into save. */
-  async uploadImage(
+  uploadImage(
     businessId: string,
     file: {buffer: Buffer; mimetype: string},
   ): Promise<{url: string}> {
-    if (!this.storage.isEnabled()) {
-      throw new AppException(ErrorCode.STORAGE_NOT_CONFIGURED);
-    }
-    const invalid = () =>
-      new AppException(ErrorCode.INVALID_FILE_TYPE, {
-        allowed: 'JPEG, PNG, WebP',
-      });
-    if (!BANNER_MIMES.includes(file.mimetype)) throw invalid();
-    let webp: Buffer;
-    try {
-      webp = await sharp(file.buffer, {failOn: 'none'})
-        .rotate()
-        .flatten({background: '#ffffff'})
-        .resize(BANNER_WIDTH, BANNER_HEIGHT, {
-          fit: 'cover',
-          position: 'attention',
-          withoutEnlargement: false,
-        })
-        .webp({quality: 80, effort: 6, smartSubsample: true})
-        .toBuffer();
-    } catch {
-      throw invalid();
-    }
-    const {url} = await this.storage.upload(webp, {
-      key: `${bannerPrefix(businessId)}${generateId()}.webp`,
-      contentType: 'image/webp',
-    });
-    return {url};
+    return uploadStoreImage(this.storage, businessId, 'banner', file);
+  }
+
+  /**
+   * The storefront's logo (square) or cover (3:1). Stored like a banner; the
+   * URL then goes into PUT /businesses/me/store as storeLogo / storeCover.
+   */
+  uploadBrandingImage(
+    businessId: string,
+    kind: 'logo' | 'cover',
+    file: {buffer: Buffer; mimetype: string},
+  ): Promise<{url: string}> {
+    return uploadStoreImage(this.storage, businessId, kind, file);
   }
 
   async create(
@@ -303,8 +281,7 @@ export class StoreBannerService {
    * must never be made to load an address a client chose.
    */
   private ownImage(businessId: string, url: string): string {
-    const key = this.storage.keyFromUrl(url);
-    if (!key || !key.startsWith(bannerPrefix(businessId))) {
+    if (!isOwnStoreImage(this.storage, businessId, url)) {
       throw new AppException(ErrorCode.VALIDATION_ERROR);
     }
     return url;
@@ -388,10 +365,6 @@ export class StoreBannerService {
   ): Promise<Set<string>> {
     return new Set((await this.targetLabels(businessId, rows)).keys());
   }
-}
-
-function bannerPrefix(businessId: string): string {
-  return `banners/${businessId}/`;
 }
 
 function clean(value: string | null | undefined): string | null {

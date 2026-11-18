@@ -209,6 +209,10 @@ export enum ErrorCode {
   STORE_BANNER_INVALID_LINK = 'STORE_BANNER_INVALID_LINK',
   STORE_SLUG_TAKEN = 'STORE_SLUG_TAKEN',
   STORE_SLUG_INVALID = 'STORE_SLUG_INVALID',
+  // Storefront branding (PUT /businesses/me/store)
+  STORE_TAGLINE_TOO_LONG = 'STORE_TAGLINE_TOO_LONG',
+  STORE_INSTAGRAM_INVALID = 'STORE_INSTAGRAM_INVALID',
+  STORE_TELEGRAM_INVALID = 'STORE_TELEGRAM_INVALID',
   // Online-order delivery (YETKAZISH.md)
   ORDER_NOT_ONLINE = 'ORDER_NOT_ONLINE',
   ORDER_STATUS_TRANSITION_INVALID = 'ORDER_STATUS_TRANSITION_INVALID',
@@ -1197,6 +1201,18 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.BAD_REQUEST,
     message:
       'The store address may use only lowercase letters, digits and hyphens (3-63 chars)',
+  },
+  [ErrorCode.STORE_TAGLINE_TOO_LONG]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The store tagline may be at most {max} characters',
+  },
+  [ErrorCode.STORE_INSTAGRAM_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Not an Instagram username or profile link',
+  },
+  [ErrorCode.STORE_TELEGRAM_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Not a Telegram username or t.me link',
   },
 
   // Stock-take

@@ -158,9 +158,16 @@ export class BusinessController {
   @ApiBearerAuth('JWT-auth')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: "Set the business's online-store subdomain slug and on/off flag",
+    summary:
+      "Set the business's online-store subdomain slug, on/off flag and branding " +
+      '(tagline, Instagram, Telegram, phone, logo, cover). Omitted fields stay; null or "" clears.',
   })
   @ApiResponse({ status: 200, description: 'Updated business', type: BusinessResponseDto })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Invalid slug, tagline too long, not an Instagram / Telegram username, invalid phone, or a picture URL not uploaded by this shop',
+  })
   @ApiResponse({ status: 409, description: 'Slug already taken' })
   async updateStoreSettings(
     @CurrentBusiness() business: IBusiness,

@@ -39,6 +39,17 @@ export const businesses = pgTable('businesses', {
   // owner opts in from Settings. See ECOMMERCE.md F3/T13.
   storeSlug: varchar('store_slug', {length: 63}).unique(),
   storeEnabled: boolean('store_enabled').default(false).notNull(),
+  // Storefront branding (0113), all optional, set from Settings → Online
+  // store: a one-line tagline under the name, the shop's Instagram / Telegram
+  // usernames (bare, no "@" or URL — common/social-handles.ts), a public
+  // contact phone ("+998" and nine digits, common/phone.ts), and a logo and a
+  // cover picture uploaded like the banners (store/store-images.ts).
+  storeTagline: varchar('store_tagline', {length: 140}),
+  storeInstagram: varchar('store_instagram', {length: 30}),
+  storeTelegram: varchar('store_telegram', {length: 32}),
+  storePhone: varchar('store_phone', {length: 32}),
+  storeLogo: varchar('store_logo', {length: 500}),
+  storeCover: varchar('store_cover', {length: 500}),
   // What kind of business this is: 'retail' (a shop — the default, and every
   // business before FASTFOOD.md) or 'food' (a fast-food kitchen: dishes with
   // recipes, a daily queue number, the kitchen ticket) or 'online' (a seller

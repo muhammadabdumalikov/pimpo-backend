@@ -35,9 +35,14 @@ import {
   SaveStoreBannerDto,
 } from './dto/store-banner.dto';
 import {StoreBannerService} from './store-banner.service';
+import {MAX_STORE_IMAGE_BYTES} from './store-images';
 import {StoreService} from './store.service';
 
-const MAX_BANNER_BYTES = 10 * 1024 * 1024;
+const imageUpload = () =>
+  FileInterceptor('image', {
+    storage: multer.memoryStorage(),
+    limits: {fileSize: MAX_STORE_IMAGE_BYTES},
+  });
 
 /** The storefront's read of its banners — public, scoped by the store slug. */
 @ApiTags('store')
@@ -77,12 +82,7 @@ export class StoreBannerSettingsController {
   }
 
   @Post('image')
-  @UseInterceptors(
-    FileInterceptor('image', {
-      storage: multer.memoryStorage(),
-      limits: {fileSize: MAX_BANNER_BYTES},
-    }),
-  )
+  @UseInterceptors(imageUpload())
   @ApiConsumes('multipart/form-data')
   @ApiOperation({summary: 'Upload a banner picture (cropped to 2:1, WebP)'})
   uploadImage(
@@ -127,5 +127,48 @@ export class StoreBannerSettingsController {
   @ApiParam({name: 'id'})
   remove(@CurrentBusiness() business: IBusiness, @Param('id') id: string) {
     return this.banners.remove(business.id, id);
+  }
+}
+
+/**
+ * Settings → Online store → the logo and the cover. Uploaded exactly like a
+ * banner picture (same types, size cap, folder and permission); the returned
+ * URL is then saved with PUT /businesses/me/store as storeLogo / storeCover.
+ */
+@ApiTags('store')
+@Controller('businesses/me/store')
+@UseGuards(JwtAuthGuard, PlanTierGuard, PermissionsGuard)
+@MinTier('pro')
+@RequirePermission('settings:manage')
+@ApiBearerAuth('JWT-auth')
+export class StoreBrandingSettingsController {
+  constructor(private readonly banners: StoreBannerService) {}
+
+  @Post('logo')
+  @UseInterceptors(imageUpload())
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload a storefront logo (fitted into a square, WebP); returns {url}',
+  })
+  uploadLogo(
+    @CurrentBusiness() business: IBusiness,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file?.buffer) throw new AppException(ErrorCode.NO_FILE_PROVIDED);
+    return this.banners.uploadBrandingImage(business.id, 'logo', file);
+  }
+
+  @Post('cover')
+  @UseInterceptors(imageUpload())
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Upload a storefront cover (cropped to 3:1, WebP); returns {url}',
+  })
+  uploadCover(
+    @CurrentBusiness() business: IBusiness,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file?.buffer) throw new AppException(ErrorCode.NO_FILE_PROVIDED);
+    return this.banners.uploadBrandingImage(business.id, 'cover', file);
   }
 }
