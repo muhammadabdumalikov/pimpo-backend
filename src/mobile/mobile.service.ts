@@ -831,7 +831,7 @@ export class MobileService {
     if (!p) throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
 
     const since = new Date(Date.now() - 30 * DAY_MS);
-    const [branchList, stockRows, [last], [sold]] = await Promise.all([
+    const [branchList, stockRows, [last], [sold], [held]] = await Promise.all([
       this.branchService.findAll(businessId),
       this.db
         .select({branchId: branchStock.branchId, quantity: branchStock.quantity})
@@ -877,6 +877,23 @@ export class MobileService {
             gte(orders.createdAt, since),
           ),
         ),
+      // Units open storefront orders still wait for: on hand, they are spoken
+      // for — the stock is drawn only when the seller continues the order.
+      this.db
+        .select({
+          units: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orders.id, orderItems.orderId))
+        .where(
+          and(
+            eq(orderItems.businessId, businessId),
+            eq(orderItems.productId, productId),
+            eq(orderItems.stockPending, true),
+            eq(orders.source, 'store'),
+            inArray(orders.status, ['Pending', 'Awaiting']),
+          ),
+        ),
     ]);
 
     const qtyBy = new Map(stockRows.map((r) => [r.branchId, Number(r.quantity)]));
@@ -915,6 +932,7 @@ export class MobileService {
       last30: canSales
         ? {units: Number(sold?.units ?? 0), revenue: Number(sold?.revenue ?? 0)}
         : null,
+      onOrder: Number(held?.units ?? 0),
     };
   }
 

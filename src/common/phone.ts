@@ -10,6 +10,16 @@ export const PHONE_INPUT_RE = /^\+?[\d\s()-]{9,20}$/;
  * The canonical form stored in the database: "+998" and nine digits. Returns
  * null when the input is not an Uzbek number (wrong length or country code).
  */
+/**
+ * A buyer's phone as an order stores it: canonical when it is an Uzbek number
+ * (so search and links agree), as typed otherwise; undefined when empty.
+ */
+export function storedPhone(raw: string | null | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  return normalizeUzPhone(trimmed) ?? trimmed;
+}
+
 export function normalizeUzPhone(raw: string | null | undefined): string | null {
   if (!raw) return null;
   let digits = raw.replace(/\D/g, '');

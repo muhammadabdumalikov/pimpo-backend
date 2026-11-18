@@ -1,4 +1,4 @@
-import {normalizeUzPhone, PHONE_INPUT_RE} from './phone';
+import {normalizeUzPhone, PHONE_INPUT_RE, storedPhone} from './phone';
 
 describe('normalizeUzPhone', () => {
   it.each([
@@ -29,5 +29,18 @@ describe('PHONE_INPUT_RE', () => {
     expect(PHONE_INPUT_RE.test('+998 (90) 123-45-67')).toBe(true);
     expect(PHONE_INPUT_RE.test('call me')).toBe(false);
     expect(PHONE_INPUT_RE.test('12345')).toBe(false);
+  });
+});
+
+describe('storedPhone', () => {
+  it.each([
+    ['+998 900000001', '+998900000001'],
+    [' 90 111 22 33 ', '+998901112233'],
+    ['+7 701 123 45 67', '+7 701 123 45 67'], // not Uzbek: kept as typed
+    ['', undefined],
+    ['   ', undefined],
+    [null, undefined],
+  ])('stores %s as %s', (raw, expected) => {
+    expect(storedPhone(raw)).toBe(expected);
   });
 });

@@ -13,6 +13,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
+import {storedPhone} from '../common/phone';
 import {
   branchStock,
   branches,
@@ -926,7 +927,7 @@ export class OnlineOrderService {
         quantity: i.quantity,
       })),
       customerName: input.customerName?.trim() || undefined,
-      phone: input.customerPhone?.trim() || undefined,
+      phone: storedPhone(input.customerPhone),
       note: input.note?.trim() || undefined,
       source: 'store',
       branchId: branch.id,
@@ -1027,6 +1028,8 @@ export class OnlineOrderService {
       available: number;
       missing: number;
       lastPriceIn: string | null;
+      /** The card's selling price — the arrival screen shows the profit against the landed cost. */
+      priceOut: string | null;
       options: {label: string; quantity: number}[];
       orders: {
         id: string;
@@ -1052,6 +1055,7 @@ export class OnlineOrderService {
         image: products.image,
         quantityType: products.quantityType,
         priceIn: products.priceIn,
+        priceOut: products.priceOut,
         onHand: sql<number>`coalesce(${branchStock.quantity}, 0)::float8`,
       })
       .from(orderItems)
@@ -1092,6 +1096,7 @@ export class OnlineOrderService {
           available: Math.max(0, Number(r.onHand) || 0),
           missing: 0,
           lastPriceIn: Number(r.priceIn) > 0 ? r.priceIn : null,
+          priceOut: Number(r.priceOut) > 0 ? r.priceOut : null,
           options: [],
           orders: [],
           optionMap: new Map(),

@@ -18,6 +18,7 @@ import {
 import { CategoryService } from '../category/category.service';
 import { OrderService } from '../order/order.service';
 import { OnlineOrderService } from '../order/online-order.service';
+import { storedPhone } from '../common/phone';
 import { StoreCheckoutDto } from './dto/store-checkout.dto';
 import { AppException } from '../common/errors/app.exception';
 import { ErrorCode } from '../common/errors/error-codes';
@@ -186,7 +187,7 @@ export class StoreController {
         (telegramUser
           ? (telegramDisplayName(telegramUser) ?? undefined)
           : undefined),
-      phone: dto.phone,
+      phone: storedPhone(dto.phone),
       note: dto.note || undefined,
       telegramUserId: telegramUser?.id ?? null,
       branchId,
