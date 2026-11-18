@@ -46,6 +46,7 @@ import {tierAtLeast} from '../subscription/tier';
 import {BranchService} from '../branch/branch.service';
 import {applyBranchStockDelta, getBranchStock} from '../common/branch-stock';
 import {selectFields} from '../common/field-selection';
+import {cleanExtraImages} from '../common/product-images';
 import {
   createdAtKeys,
   decodeCursor,
@@ -194,6 +195,8 @@ export class ProductService {
       quantityType?: string;
       unitId?: string;
       image?: string;
+      /** Additional photos besides `image` (common/product-images.ts). */
+      extraImages?: string[] | null;
       categoryId?: string;
       priceBundle?: string;
       priceWholesale?: string;
@@ -293,6 +296,7 @@ export class ProductService {
       quantityType,
       unitId,
       image: data.image || null,
+      extraImages: cleanExtraImages(data.extraImages, data.image),
       categoryId: data.categoryId || null,
       priceBundle: data.priceBundle || null,
       priceWholesale: data.priceWholesale || null,
@@ -1287,6 +1291,14 @@ export class ProductService {
     if (data.leadTime !== undefined) data.leadTime = data.leadTime?.trim() || null;
     if (data.description !== undefined)
       data.description = data.description?.trim() || null;
+    // The extra photos are replaced as a whole list; a copy of the main photo
+    // (the new one when this request changes it) is dropped. Left out = kept.
+    if (data.extraImages !== undefined) {
+      data.extraImages = cleanExtraImages(
+        data.extraImages,
+        data.image !== undefined ? data.image : existing.image,
+      );
+    }
     if (hasRecipe(existing.kind)) delete data.preorder;
     if (hasRecipe(existing.kind)) {
       delete data.quantity;

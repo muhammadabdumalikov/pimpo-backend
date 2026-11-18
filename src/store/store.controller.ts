@@ -91,7 +91,11 @@ export class StoreController {
   @ApiOperation({ summary: 'Get a product by ID (public)' })
   @ApiParam({ name: 'id', description: 'Product ID' })
   @ApiQuery({ name: 'store', required: false, type: String, description: 'Store subdomain slug' })
-  @ApiResponse({ status: 200, description: 'Product details' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Product details. `images` is the whole gallery: the main `image` first, then the extra photos (blanks and repeats dropped; [] with no photo).',
+  })
   @ApiResponse({ status: 404, description: 'Product not found' })
   async getProduct(@Param('id') id: string, @Query('store') store?: string) {
     const businessId = await this.storeService.resolveBusinessId(store);

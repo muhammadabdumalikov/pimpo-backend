@@ -17,6 +17,10 @@ import {
 import {Type} from 'class-transformer';
 import {PRODUCT_KINDS, type ProductKind} from '../../common/business-type';
 import {ProductOptionGroupDto} from './create-product.dto';
+import {
+  MAX_EXTRA_PRODUCT_IMAGES,
+  PRODUCT_IMAGE_MAX_LENGTH,
+} from '../../common/product-images';
 
 export class UpdateProductDto {
   @ApiProperty({
@@ -115,6 +119,21 @@ export class UpdateProductDto {
   @IsString()
   @IsOptional()
   image?: string;
+
+  @ApiProperty({
+    description:
+      `Additional photo URLs besides the main \`image\`, in display order (max ${MAX_EXTRA_PRODUCT_IMAGES}). ` +
+      'Replaces the whole list: omit to leave it unchanged, [] to clear it. Trimmed; blanks, repeats and copies of `image` are dropped.',
+    example: ['/images/product/product-01-back.jpg'],
+    required: false,
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_EXTRA_PRODUCT_IMAGES)
+  @IsString({each: true})
+  @MaxLength(PRODUCT_IMAGE_MAX_LENGTH, {each: true})
+  extraImages?: string[];
 
   @ApiProperty({
     description: 'Category ID for store catalog',

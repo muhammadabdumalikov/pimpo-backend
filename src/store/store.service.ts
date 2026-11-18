@@ -23,6 +23,7 @@ import {
 import type { StoreFulfilment } from '../order/order.service';
 import { deliveryFeeFor } from '../order/online-order.rules';
 import type { StoreCheckoutDto } from './dto/store-checkout.dto';
+import { productGallery } from '../common/product-images';
 
 // The online storefront is a Business-plan (`pro`) feature. Unlike the admin
 // API there is no JWT here to hang PlanTierGuard off, so the tier is checked
@@ -78,6 +79,14 @@ export type StorePublicProduct = {
   options: {name: string; values: string[]}[] | null;
   leadTime: string | null;
   description: string | null;
+};
+
+/**
+ * GET /store/products/:id: the list shape plus the whole gallery — the main
+ * photo first, then the extras (common/product-images.ts). [] with no photo.
+ */
+export type StorePublicProductDetail = StorePublicProduct & {
+  images: string[];
 };
 
 /** GET /store/info: who the shop is and how it hands orders over. */
@@ -336,19 +345,25 @@ export class StoreService {
   async findOne(
     businessId: string | null,
     id: string,
-  ): Promise<StorePublicProduct> {
+  ): Promise<StorePublicProductDetail> {
     const branchId = await this.stockBranchId(businessId);
-    const [product] = await this.dbService.db
-      .select({ ...publicProductColumns, quantity: onHand(branchId) })
+    const [row] = await this.dbService.db
+      .select({
+        ...publicProductColumns,
+        quantity: onHand(branchId),
+        extraImages: products.extraImages,
+      })
       .from(products)
       .leftJoin(branchStock, this.stockJoin(branchId))
       .where(and(eq(products.id, id), ...this.scopeConditions(businessId)))
       .limit(1);
 
-    if (!product) {
+    if (!row) {
       throw new AppException(ErrorCode.PRODUCT_NOT_FOUND);
     }
-    return product;
+    // The raw extras stay internal; the shopper gets the computed gallery.
+    const { extraImages, ...product } = row;
+    return { ...product, images: productGallery(product.image, extraImages) };
   }
 
   /**

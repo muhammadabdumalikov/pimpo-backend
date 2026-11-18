@@ -16,6 +16,10 @@ import {
 } from 'class-validator';
 import {Type} from 'class-transformer';
 import {PRODUCT_KINDS, type ProductKind} from '../../common/business-type';
+import {
+  MAX_EXTRA_PRODUCT_IMAGES,
+  PRODUCT_IMAGE_MAX_LENGTH,
+} from '../../common/product-images';
 
 /** One choice group of a card (products.options). */
 export class ProductOptionGroupDto {
@@ -122,6 +126,21 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   image?: string;
+
+  @ApiProperty({
+    description:
+      `Additional photo URLs besides the main \`image\`, in display order (max ${MAX_EXTRA_PRODUCT_IMAGES}). ` +
+      'Trimmed; blanks, repeats and copies of `image` are dropped. Upload each through POST /storage/upload first.',
+    example: ['/images/product/product-01-back.jpg'],
+    required: false,
+    type: [String],
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_EXTRA_PRODUCT_IMAGES)
+  @IsString({each: true})
+  @MaxLength(PRODUCT_IMAGE_MAX_LENGTH, {each: true})
+  extraImages?: string[];
 
   @ApiProperty({
     description: 'Category ID for store catalog',

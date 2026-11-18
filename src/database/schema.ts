@@ -251,6 +251,11 @@ export const products = pgTable(
       onDelete: 'set null',
     }),
     image: varchar('image', {length: 500}),
+    // Additional photos only, in the owner's order (at most 7) — `image` above
+    // stays THE main photo everything else reads. The storefront gallery is
+    // [image, ...extraImages] worked out on read (common/product-images.ts);
+    // the two columns are never kept in sync (0114).
+    extraImages: jsonb('extra_images').$type<string[]>().notNull().default([]),
     categoryId: varchar('category_id', {length: 100}),
     // Reorder point: when quantity drops to or below this, the product is flagged
     // "low stock" in the catalog and can drive a reorder alert. Null = no alert.
