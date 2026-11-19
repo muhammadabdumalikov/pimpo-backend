@@ -1095,9 +1095,12 @@ export class OrderService {
               rate = Math.max(rate, tier.cashbackPercent);
             }
           }
+          // Earned on what was paid with real tenders (or is owed), never on
+          // the part covered by points — spending points must not mint more.
+          // The threshold still looks at the size of the purchase itself.
           const earn =
             total >= Number(loyalty!.minPurchase) && rate > 0
-              ? Math.round((total * rate) / 100)
+              ? Math.round((payable * rate) / 100)
               : 0;
           if (earn > 0) {
             balance += earn;
