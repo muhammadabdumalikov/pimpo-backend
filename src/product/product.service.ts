@@ -108,12 +108,6 @@ export interface ScanResolution {
    * empty result, but only one of them is a catalogue gap.
    */
   isScaleLabel: boolean;
-  /**
-   * Set when nothing matched in the requested branch but another branch's
-   * card carries the code: the till says "not in this branch" instead of
-   * "unknown barcode" (FILIAL-ASSORTIMENT.md Q11).
-   */
-  notInBranch?: {id: string; name: string} | null;
 }
 
 /**
@@ -141,6 +135,13 @@ export function cleanProductOptions(
 
 /** Stock buckets of the product list (stockCondition). */
 export type ProductStockFilter = 'in' | 'low' | 'out' | 'alert' | 'preorder';
+
+/**
+ * A card's on-hand in the branch a query is scoped to. Every card belongs to
+ * every branch; a branch that has never held one has no branch_stock row for
+ * it, and that reads as 0 — not as "this card is not sold here".
+ */
+const BRANCH_QTY = sql<number>`coalesce(${branchStock.quantity}, 0)::float8`;
 
 @Injectable()
 export class ProductService {
@@ -654,15 +655,15 @@ export class ProductService {
   // (lowStockThreshold), falling back to 10 when none is set.
   private static readonly DEFAULT_LOW_STOCK_THRESHOLD = 10;
 
-  // SQL predicate for a stock-status bucket over the given quantity column
-  // (products.quantity, or branch_stock.quantity in branch scope).
+  // SQL predicate for a stock-status bucket over the given quantity
+  // (products.quantity, or BRANCH_QTY in branch scope).
   // `alert` is the owner's phone signal (MOBILE.md): only products the owner
   // gave a threshold to — the default 10 would flag most of a small shop.
   // A "Buyurtmaga olinadi" card (ONLAYN-SOTUVCHI.md Q4) is sold before it is
   // in stock, so it is never low or sold out; `preorder` lists those cards.
   private stockCondition(
     stock: ProductStockFilter,
-    qtyCol: typeof products.quantity | typeof branchStock.quantity,
+    qtyCol: typeof products.quantity | typeof BRANCH_QTY,
   ) {
     const threshold = sql`coalesce(${products.lowStockThreshold}, ${ProductService.DEFAULT_LOW_STOCK_THRESHOLD})`;
     const notPreorder = sql`not ${products.preorder}`;
@@ -824,19 +825,15 @@ export class ProductService {
 
     if (stock) {
       whereConditions.push(
-        this.stockCondition(
-          stock,
-          branchId ? branchStock.quantity : products.quantity,
-        ),
+        this.stockCondition(stock, branchId ? BRANCH_QTY : products.quantity),
       );
     }
 
-    // Per-branch: a product belongs to a branch's catalogue when it has a
-    // branch_stock row there — seeded for its home branch at creation, and added
-    // by a transfer for any branch it was moved into. An INNER JOIN scopes the
-    // list to exactly those products and reports THAT branch's on-hand as
-    // `quantity` (instead of the cross-branch sum). Without a branch, the whole
-    // catalogue is returned with the row's own quantity (the sum).
+    // Per-branch: the catalogue is the same in every branch — a card is one
+    // card for the whole business — and only the on-hand differs. The LEFT JOIN
+    // reports THAT branch's on-hand as `quantity` (instead of the cross-branch
+    // sum); a card the branch has never held has no branch_stock row and reads
+    // as 0. Without a branch, `quantity` is the row's own (the sum).
     // The cursor narrows the page query only — the total still counts every
     // matching row, not just the ones after the cursor.
     const pageWhere = cursor
@@ -858,7 +855,7 @@ export class ProductService {
             await this.dbService.db
               .select({value: sql<number>`count(*)::int`})
               .from(products)
-              .innerJoin(branchStock, branchJoin)
+              .leftJoin(branchStock, branchJoin)
               .where(and(...whereConditions))
           )[0].value
         : null;
@@ -866,13 +863,13 @@ export class ProductService {
       const branchRows = await this.dbService.db
         .select(
           selectFields(
-            {...getTableColumns(products), quantity: branchStock.quantity},
+            {...getTableColumns(products), quantity: BRANCH_QTY},
             options?.fields,
             always,
           ),
         )
         .from(products)
-        .innerJoin(branchStock, branchJoin)
+        .leftJoin(branchStock, branchJoin)
         .where(and(...pageWhere))
         .orderBy(...CATALOGUE_ORDER)
         .limit(fetchLimit)
@@ -975,7 +972,7 @@ export class ProductService {
           );
         }
 
-        const qtyCol = branchId ? branchStock.quantity : products.quantity;
+        const qtyCol = branchId ? BRANCH_QTY : products.quantity;
         // Value sums ignore negative (oversold) rows so they can't shrink the
         // totals. quantity is doublePrecision — cast to ::numeric before
         // multiplying by the decimal prices to keep exact money math, then
@@ -996,7 +993,9 @@ export class ProductService {
           ? await this.dbService.db
               .select(selection)
               .from(products)
-              .innerJoin(
+              // Same scope as the list beside it: every card, 0 where the
+              // branch holds none.
+              .leftJoin(
                 branchStock,
                 and(
                   eq(branchStock.productId, products.id),
@@ -1817,43 +1816,7 @@ export class ProductService {
       };
     }
 
-    return {
-      ...base,
-      product: null,
-      notInBranch: branchId
-        ? await this.findCardElsewhere(businessId, terms)
-        : null,
-    };
-  }
-
-  /** An active card carrying one of these codes exactly, in any branch. */
-  private async findCardElsewhere(
-    businessId: string,
-    terms: string[],
-  ): Promise<{id: string; name: string} | null> {
-    const codes = [
-      ...new Set(terms.filter(Boolean).map((t) => t.toLowerCase())),
-    ];
-    if (codes.length === 0) return null;
-    const list = sql.join(
-      codes.map((c) => sql`${c}`),
-      sql`, `,
-    );
-    const [card] = await this.dbService.db
-      .select({id: products.id, name: products.name})
-      .from(products)
-      .where(
-        and(
-          eq(products.businessId, businessId),
-          eq(products.isActive, true),
-          or(
-            sql`lower(${products.barcode}) IN (${list})`,
-            sql`lower(${products.code}) IN (${list})`,
-          ),
-        ),
-      )
-      .limit(1);
-    return card ?? null;
+    return {...base, product: null};
   }
 
   /**

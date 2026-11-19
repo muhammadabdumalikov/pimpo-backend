@@ -2334,6 +2334,10 @@ export const stockTransferItems = pgTable(
 // scans; completing it either opens lots at the typed cost and books the value
 // as capital ('undocumented'), or moves the goods from another branch through
 // the stock-transfer service ('transfer').
+//
+// It is also the ONE list of moves between branches: a transfer made in a
+// single call (the transfer suggestions report) gets a completed 'transfer'
+// document too, so nothing is listed anywhere else (0118).
 export const openingStocks = pgTable(
   'opening_stocks',
   {

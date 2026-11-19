@@ -28,8 +28,10 @@ import {
 } from './dto/opening-stock.dto';
 import {BranchScope} from '../permission/branch-scope.decorator';
 
-// "Boshlang'ich qoldiq" documents (FILIAL-ASSORTIMENT.md). Open on every tier
-// (Q15); writes need the stock-take permission (Q8).
+// The one tool that puts stock into a branch without a supplier: a move from
+// another branch or goods with no paperwork (FILIAL-ASSORTIMENT.md). Open on
+// every tier (Q15); writes need transfer:manage — the same permission whichever
+// source the document names.
 @ApiTags('opening-stocks')
 @Controller('opening-stocks')
 @UseGuards(JwtAuthGuard, PermissionsGuard)
@@ -70,7 +72,7 @@ export class OpeningStockController {
   }
 
   @Post()
-  @RequirePermission('stocktake:manage')
+  @RequirePermission('transfer:manage')
   @ApiOperation({summary: 'Start a draft opening stock document'})
   async create(
     @CurrentBusiness() business: IBusiness,
@@ -81,7 +83,7 @@ export class OpeningStockController {
   }
 
   @Put(':id/items')
-  @RequirePermission('stocktake:manage')
+  @RequirePermission('transfer:manage')
   @ApiOperation({
     summary: 'Upsert counted lines (absolute quantity; <= 0 removes)',
   })
@@ -95,7 +97,7 @@ export class OpeningStockController {
   }
 
   @Post(':id/complete')
-  @RequirePermission('stocktake:manage')
+  @RequirePermission('transfer:manage')
   @ApiOperation({summary: 'Complete: add the stock (capital or transfer)'})
   @ApiParam({name: 'id'})
   async complete(
@@ -107,7 +109,7 @@ export class OpeningStockController {
   }
 
   @Post(':id/cancel')
-  @RequirePermission('stocktake:manage')
+  @RequirePermission('transfer:manage')
   @ApiOperation({summary: 'Cancel a draft'})
   @ApiParam({name: 'id'})
   async cancel(

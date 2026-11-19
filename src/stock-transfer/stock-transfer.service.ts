@@ -9,6 +9,8 @@ import {DatabaseService} from '../database/database.service';
 import {
   stockTransfers,
   stockTransferItems,
+  openingStocks,
+  openingStockItems,
   products,
   inventoryBatches,
   branches,
@@ -118,10 +120,77 @@ export class StockTransferService {
     }
 
     const cashier = await this.resolveCashier(account);
-    const id = await this.dbService.db.transaction((tx) =>
-      this.createInTx(tx, businessId, dto, qtyByProduct, cashier),
-    );
+    const id = await this.dbService.db.transaction(async (tx) => {
+      const transferId = await this.createInTx(
+        tx,
+        businessId,
+        dto,
+        qtyByProduct,
+        cashier,
+      );
+      await this.recordDocumentTx(tx, transferId);
+      return transferId;
+    });
     return this.getOne(businessId, id);
+  }
+
+  /**
+   * Every move between branches is listed as a document in one place
+   * (opening_stocks, source 'transfer'). A move counted on the document page
+   * already has its document; one made in a single call — the transfer
+   * suggestions report — gets a completed one here, so the list misses nothing.
+   */
+  private async recordDocumentTx(tx: Tx, transferId: string): Promise<void> {
+    const [transfer] = await tx
+      .select()
+      .from(stockTransfers)
+      .where(eq(stockTransfers.id, transferId))
+      .limit(1);
+    if (!transfer) return;
+    const items = await tx
+      .select({
+        productId: stockTransferItems.productId,
+        productName: stockTransferItems.productName,
+        quantity: stockTransferItems.quantity,
+      })
+      .from(stockTransferItems)
+      .where(eq(stockTransferItems.transferId, transferId));
+
+    const documentId = generateId();
+    await tx.insert(openingStocks).values({
+      id: documentId,
+      businessId: transfer.businessId,
+      branchId: transfer.toBranchId,
+      branchName: transfer.toBranchName,
+      source: 'transfer',
+      fromBranchId: transfer.fromBranchId,
+      fromBranchName: transfer.fromBranchName,
+      status: 'completed',
+      itemCount: transfer.itemCount,
+      totalQty: transfer.totalQty,
+      totalValue: transfer.totalValue,
+      transferId,
+      createdByCashierId: transfer.createdByCashierId,
+      createdByCashierName: transfer.createdByCashierName,
+      note: transfer.note,
+      completedAt: transfer.createdAt,
+      createdAt: transfer.createdAt,
+    });
+    const lines = items.filter(
+      (i): i is typeof i & {productId: string} => i.productId !== null,
+    );
+    if (lines.length > 0) {
+      await tx.insert(openingStockItems).values(
+        lines.map((i) => ({
+          id: generateId(),
+          openingStockId: documentId,
+          businessId: transfer.businessId,
+          productId: i.productId,
+          productName: i.productName,
+          quantity: i.quantity,
+        })),
+      );
+    }
   }
 
   /**
