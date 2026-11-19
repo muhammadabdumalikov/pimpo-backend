@@ -45,4 +45,20 @@ export class QueryTransactionsDto {
   @ApiPropertyOptional({description: 'Page size', default: 50})
   @IsOptional()
   limit?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Opaque `nextCursor` from the previous page (keyset paging). Overrides `page`; an unreadable one falls back to it.',
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "'false' skips the per-filter aggregates (count and summary) — they are the same on every page; `total` and `summary` then come back null",
+  })
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  withTotal?: 'true' | 'false';
 }

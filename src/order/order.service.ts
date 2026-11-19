@@ -15,11 +15,13 @@ import {
   lte,
   inArray,
   isNull,
+  getTableColumns,
 } from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {
   createdAtKeys,
+  cursorAtField,
   decodeCursor,
   keysetBefore,
   takePage,
@@ -1644,7 +1646,7 @@ export class OrderService {
     const pageWhere = cursor ? [...where, keysetBefore(keys, cursor)] : where;
 
     const fetched = await this.dbService.db
-      .select()
+      .select({...getTableColumns(orders), ...cursorAtField(keys)})
       .from(orders)
       .where(and(...pageWhere))
       .orderBy(desc(orders.createdAt), desc(orders.id))

@@ -4,6 +4,13 @@ import {
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {businessDayStart, businessDayEnd} from '../common/business-time';
+import {
+  createdAtKeys,
+  cursorAtField,
+  decodeCursor,
+  keysetBefore,
+  takePage,
+} from '../common/cursor';
 import {DatabaseService} from '../database/database.service';
 import {
   accounts,
@@ -28,6 +35,7 @@ import {
   lte,
   inArray,
   notInArray,
+  getTableColumns,
   sql,
   type SQL,
 } from 'drizzle-orm';
@@ -1300,6 +1308,18 @@ export class FinanceService {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
     const offset = (page - 1) * limit;
+    // Keyset paging (common/cursor.ts): the ledger only grows and is read
+    // newest-first, so a cursor keeps every page one index range scan and
+    // stops rows booked while the reader scrolls from shifting the window.
+    // An unreadable cursor falls back to `page`.
+    const keys = createdAtKeys(
+      financialTransactions.createdAt,
+      financialTransactions.id,
+    );
+    const cursor = decodeCursor(query.cursor, keys.length);
+    // The count and the summary depend on the filters only, never on the
+    // page, so a client that already has them for this filter set skips both.
+    const withTotal = query.withTotal !== 'false';
 
     const conditions: SQL[] = [
       eq(financialTransactions.businessId, businessId),
@@ -1329,31 +1349,51 @@ export class FinanceService {
     }
 
     const where = and(...conditions);
+    // The keyset narrows the page only — total and summary still cover every
+    // row the filters match.
+    const pageWhere = cursor ? and(where, keysetBefore(keys, cursor)) : where;
 
     // Totals skip stornoed rows and the storno rows themselves — a cancelled
     // kirim must not still read as money in.
-    const [rows, totalRow, summary] = await Promise.all([
+    const [fetched, totalRow, summary] = await Promise.all([
       this.db
-        .select()
-        .from(financialTransactions)
-        .where(where)
-        .orderBy(desc(financialTransactions.createdAt))
-        .limit(limit)
-        .offset(offset),
-      this.db
-        .select({count: sql<number>`count(*)::int`})
-        .from(financialTransactions)
-        .where(where),
-      this.db
+        // cursorAt: every row one sale or shift close books shares a single
+        // now(), so the cursor needs created_at to the microsecond.
         .select({
-          kind: financialTransactions.kind,
-          currency: financialTransactions.currency,
-          total: sql<string>`sum(${financialTransactions.amount})`,
+          ...getTableColumns(financialTransactions),
+          ...cursorAtField(keys),
         })
         .from(financialTransactions)
-        .where(and(where, liveRow()))
-        .groupBy(financialTransactions.kind, financialTransactions.currency),
+        .where(pageWhere)
+        // id breaks ties: one sale or shift close books several rows inside
+        // the same millisecond, and created_at alone would let the keyset
+        // skip or repeat them.
+        .orderBy(
+          desc(financialTransactions.createdAt),
+          desc(financialTransactions.id),
+        )
+        // One row past the page: its presence is what says "there is more".
+        .limit(limit + 1)
+        .offset(cursor ? 0 : offset),
+      withTotal
+        ? this.db
+            .select({count: sql<number>`count(*)::int`})
+            .from(financialTransactions)
+            .where(where)
+        : null,
+      withTotal
+        ? this.db
+            .select({
+              kind: financialTransactions.kind,
+              currency: financialTransactions.currency,
+              total: sql<string>`sum(${financialTransactions.amount})`,
+            })
+            .from(financialTransactions)
+            .where(and(where, liveRow()))
+            .groupBy(financialTransactions.kind, financialTransactions.currency)
+        : null,
     ]);
+    const {rows, nextCursor} = takePage(fetched, limit, keys);
 
     // A pair is cancellable only as a whole, so look at both legs' sources.
     const pairIds = [
@@ -1386,14 +1426,17 @@ export class FinanceService {
 
     return {
       transactions: rows.map((r) => ({...r, cancellable: cancellable(r)})),
-      total: totalRow[0]?.count ?? 0,
+      total: totalRow ? (totalRow[0]?.count ?? 0) : null,
       page,
       limit,
-      summary: summary.map((s) => ({
-        kind: s.kind,
-        currency: s.currency,
-        total: s.total ?? '0',
-      })),
+      nextCursor,
+      summary: summary
+        ? summary.map((s) => ({
+            kind: s.kind,
+            currency: s.currency,
+            total: s.total ?? '0',
+          }))
+        : null,
     };
   }
 

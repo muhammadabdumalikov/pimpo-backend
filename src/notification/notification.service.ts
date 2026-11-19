@@ -13,6 +13,7 @@ import {
 import {generateId} from '../utils/uuid';
 import {
   createdAtKeys,
+  cursorAtField,
   decodeCursor,
   keysetBefore,
   takePage,
@@ -146,6 +147,7 @@ export class NotificationService {
         data: notifications.data,
         readAt: notifications.readAt,
         createdAt: notifications.createdAt,
+        ...cursorAtField(keys),
       })
       .from(notifications)
       .where(

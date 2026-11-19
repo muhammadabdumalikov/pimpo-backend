@@ -1634,9 +1634,15 @@ export const financialTransactions = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({
-    businessCreatedIdx: index('financial_transactions_business_created_idx').on(
+    // The Tranzaksiyalar list's keyset order (newest first, id tiebreak), 0119.
+    // Also serves every business + date-range read the old (business_id,
+    // created_at) index did.
+    businessCreatedIdx: index(
+      'financial_transactions_business_created_id_idx',
+    ).on(
       table.businessId,
-      table.createdAt,
+      table.createdAt.desc().nullsFirst(),
+      table.id.desc().nullsFirst(),
     ),
     accountIdx: index('financial_transactions_account_idx').on(table.accountId),
     // The other half of a paired entry (transfer / storno / external), 0079.

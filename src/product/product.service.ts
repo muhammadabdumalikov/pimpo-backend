@@ -50,6 +50,7 @@ import {selectFields} from '../common/field-selection';
 import {cleanExtraImages} from '../common/product-images';
 import {
   createdAtKeys,
+  cursorAtField,
   decodeCursor,
   keysetBefore,
   takePage,
@@ -839,10 +840,11 @@ export class ProductService {
     const pageWhere = cursor
       ? [...whereConditions, keysetBefore(keys, cursor)]
       : whereConditions;
-    // `createdAt` rides along even when the caller asked for a sparse fieldset:
-    // the next cursor is built from the last row's sort key, which the client
-    // never has to know about.
-    const always = ['id', 'createdAt'];
+    // The sort key rides along even when the caller asked for a sparse
+    // fieldset: the next cursor is built from the last row's, which the client
+    // never has to know about. `cursorAt` (its exact text) is stripped by
+    // takePage.
+    const always = ['id', 'createdAt', 'cursorAt'];
 
     if (branchId) {
       const branchJoin = and(
@@ -863,7 +865,11 @@ export class ProductService {
       const branchRows = await this.dbService.db
         .select(
           selectFields(
-            {...getTableColumns(products), quantity: BRANCH_QTY},
+            {
+              ...getTableColumns(products),
+              quantity: BRANCH_QTY,
+              ...cursorAtField(keys),
+            },
             options?.fields,
             always,
           ),
@@ -895,7 +901,13 @@ export class ProductService {
       : null;
 
     const rows = await this.dbService.db
-      .select(selectFields(getTableColumns(products), options?.fields, always))
+      .select(
+        selectFields(
+          {...getTableColumns(products), ...cursorAtField(keys)},
+          options?.fields,
+          always,
+        ),
+      )
       .from(products)
       .where(and(...pageWhere))
       .orderBy(...CATALOGUE_ORDER)
@@ -1159,6 +1171,7 @@ export class ProductService {
         priceOut: orderItems.priceOut,
         priceType: orderItems.priceType,
         lineTotal: orderItems.lineTotal,
+        ...cursorAtField(keys),
       })
       .from(orderItems)
       .innerJoin(orders, eq(orders.id, orderItems.orderId))

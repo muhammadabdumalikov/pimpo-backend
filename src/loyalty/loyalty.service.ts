@@ -13,6 +13,7 @@ import {
 import { CacheKeys, TTL } from '../cache/cache.util';
 import { UpdateLoyaltySettingsDto } from './dto/update-loyalty-settings.dto';
 import {
+  cursorAtField,
   decodeCursor,
   encodeCursor,
   keysetBefore,
@@ -215,9 +216,9 @@ export class LoyaltyService {
         bonusBalance: users.bonusBalance,
         totalSpent: users.totalSpent,
         lastOrderAt,
-        // Part of the sort key, so it has to be read even though the client
-        // never sees it — it is stripped back out below.
-        createdAt: users.createdAt,
+        // The sort key's signup date, exact to the microsecond — read for the
+        // cursor only; the mapping below never passes it on.
+        ...cursorAtField(CUSTOMER_KEYS),
       })
       .from(users)
       .where(
@@ -236,7 +237,7 @@ export class LoyaltyService {
       : null;
 
     const { tiers } = await this.getSettings(businessId);
-    // `createdAt` was read for the cursor only — it is not part of the shape
+    // `cursorAt` was read for the cursor only — it is not part of the shape
     // the customers screen is typed against, so it stops here.
     const customers: LoyaltyCustomer[] = rows.map((r) => ({
       id: r.id,

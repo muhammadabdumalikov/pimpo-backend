@@ -3,6 +3,7 @@ import {PgDialect} from 'drizzle-orm/pg-core';
 import {products} from '../database/schema';
 import {
   createdAtKeys,
+  cursorAtField,
   decodeCursor,
   encodeCursor,
   keysetBefore,
@@ -73,6 +74,56 @@ describe('takePage', () => {
     expect(decodeCursor(page.nextCursor, 2)).toEqual([
       '2026-09-14 09:00:00.000',
       'b',
+    ]);
+  });
+});
+
+describe('cursorAtField (microsecond ties)', () => {
+  // Rows one statement writes share one now(), to the microsecond; a JS Date
+  // keeps only milliseconds, so the cursor must come from the exact text.
+  const tied = [
+    {
+      createdAt: new Date('2026-11-19T10:14:08.054Z'),
+      id: 'sc-g',
+      cursorAt: '2026-11-19 10:14:08.054937',
+    },
+    {
+      createdAt: new Date('2026-11-19T10:14:08.054Z'),
+      id: 'sc-f',
+      cursorAt: '2026-11-19 10:14:08.054937',
+    },
+    {
+      createdAt: new Date('2026-11-19T10:14:08.054Z'),
+      id: 'sc-e',
+      cursorAt: '2026-11-19 10:14:08.054937',
+    },
+  ];
+
+  it('selects the timestamp key as Postgres text', () => {
+    const {sql: text} = new PgDialect().sqlToQuery(
+      cursorAtField(KEYS).cursorAt,
+    );
+    expect(text).toBe('"products"."created_at"::text');
+  });
+
+  it('refuses a keyset without exactly one timestamp key', () => {
+    expect(() => cursorAtField(KEYS.slice(1))).toThrow();
+  });
+
+  it('encodes the exact text, not the millisecond Date', () => {
+    expect(decodeCursor(encodeCursor(tied[1], KEYS), 2)).toEqual([
+      '2026-11-19 10:14:08.054937',
+      'sc-f',
+    ]);
+  });
+
+  it('strips cursorAt from the rows takePage returns', () => {
+    const page = takePage(tied, 2, KEYS);
+    expect(page.rows.map((r) => r.id)).toEqual(['sc-g', 'sc-f']);
+    expect(page.rows.every((r) => !('cursorAt' in r))).toBe(true);
+    expect(decodeCursor(page.nextCursor, 2)).toEqual([
+      '2026-11-19 10:14:08.054937',
+      'sc-f',
     ]);
   });
 });
