@@ -27,9 +27,17 @@ export class OnboardingController {
 
   @Post('dismiss')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({summary: 'Hide the checklist for good (idempotent)'})
+  @ApiOperation({summary: 'Hide the checklist until the owner restores it (idempotent)'})
   @ApiResponse({status: 200, description: 'The checklist, with dismissed: true'})
   dismiss(@CurrentBusiness() business: IBusiness) {
     return this.onboarding.dismiss(business);
+  }
+
+  @Post('restore')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({summary: 'Bring a hidden checklist back (idempotent)'})
+  @ApiResponse({status: 200, description: 'The checklist, with dismissed: false'})
+  restore(@CurrentBusiness() business: IBusiness) {
+    return this.onboarding.restore(business);
   }
 }

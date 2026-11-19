@@ -2844,6 +2844,34 @@ export const pushSubscriptions = pgTable(
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
 
 /**
+ * The owner's iPhones running the KPOS app (pimpo/IOS.md, stage 1): one APNs
+ * device token per app install. The web-push twin is push_subscriptions; both
+ * get the same events. `environment` is the APNs host the token belongs to
+ * (debug builds → sandbox, TestFlight/App Store → production).
+ */
+export const apnsDevices = pgTable(
+  'apns_devices',
+  {
+    id: varchar('id', {length: 36}).primaryKey().notNull(),
+    businessId: varchar('business_id', {length: 36})
+      .notNull()
+      .references(() => businesses.id, {onDelete: 'cascade'}),
+    token: varchar('token', {length: 200}).notNull(),
+    environment: varchar('environment', {length: 16}).notNull().default('production'),
+    locale: varchar('locale', {length: 8}).notNull().default('uz'),
+    failureCount: integer('failure_count').notNull().default(0),
+    lastSuccessAt: timestamp('last_success_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => ({
+    tokenUq: uniqueIndex('apns_devices_token_uq').on(table.token),
+    businessIdx: index('apns_devices_business_idx').on(table.businessId),
+  }),
+);
+export type ApnsDeviceRow = typeof apnsDevices.$inferSelect;
+
+/**
  * The owner's notification inbox (🔔): every event that passed its toggle,
  * whether or not a push reached a phone. The client renders the text from
  * `event` + `data` in its own language. Pruned after 30 days.

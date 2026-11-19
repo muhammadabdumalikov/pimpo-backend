@@ -19,7 +19,9 @@ import {ErrorCode} from '../common/errors/error-codes';
 import {NotificationService} from './notification.service';
 import {
   NotificationListQueryDto,
+  RegisterApnsDto,
   SubscribePushDto,
+  UnregisterApnsDto,
   UnsubscribePushDto,
 } from './dto/push-subscription.dto';
 import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
@@ -72,7 +74,7 @@ export class NotificationController {
   }
 
   @Get('push/config')
-  @ApiOperation({summary: 'Whether push is configured + the VAPID public key'})
+  @ApiOperation({summary: 'Whether web push (+ VAPID public key) and iPhone push (apns) are configured'})
   config() {
     return this.notifications.config();
   }
@@ -94,6 +96,23 @@ export class NotificationController {
   async unsubscribe(@CurrentAccount() account: IAccount, @Body() dto: UnsubscribePushDto) {
     assertOwner(account);
     await this.notifications.unsubscribe(account.businessId, dto.endpoint);
+    return {ok: true};
+  }
+
+  @Post('push/apns/register')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({summary: "This iPhone's APNs token (KPOS iPhone app, relayed by the web app)"})
+  async registerApns(@CurrentAccount() account: IAccount, @Body() dto: RegisterApnsDto) {
+    assertOwner(account);
+    await this.notifications.registerApns(account.businessId, dto);
+    return {ok: true};
+  }
+
+  @Post('push/apns/unregister')
+  @HttpCode(HttpStatus.OK)
+  async unregisterApns(@CurrentAccount() account: IAccount, @Body() dto: UnregisterApnsDto) {
+    assertOwner(account);
+    await this.notifications.unregisterApns(account.businessId, dto.token);
     return {ok: true};
   }
 

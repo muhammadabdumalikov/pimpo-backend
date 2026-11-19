@@ -47,6 +47,15 @@ export class OnboardingService {
     });
   }
 
+  /** Brings a hidden checklist back; a no-op when it was never hidden. */
+  async restore(business: IBusiness): Promise<OnboardingState> {
+    await this.dbService.db
+      .update(businesses)
+      .set({onboardingDismissedAt: null})
+      .where(eq(businesses.id, business.id));
+    return this.getState({...business, onboardingDismissedAt: null});
+  }
+
   private async readFacts(business: IBusiness): Promise<OnboardingFacts> {
     const facts: OnboardingFacts = {
       // Free: it is on the business row already.

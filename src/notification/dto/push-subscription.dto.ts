@@ -6,6 +6,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  Matches,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -43,6 +44,32 @@ export class SubscribePushDto {
   @IsIn(['uz', 'ru', 'uzc', 'en'])
   @IsOptional()
   locale?: string;
+}
+
+// An APNs device token as the iPhone app sends it: the raw bytes in hex
+// (32 bytes today; Apple says the length may change).
+const APNS_TOKEN = /^[0-9a-fA-F]{32,200}$/;
+
+/** The iPhone app's APNs device token (kpos-ios), relayed by the web app. */
+export class RegisterApnsDto {
+  @ApiProperty()
+  @Matches(APNS_TOKEN)
+  token!: string;
+
+  @ApiProperty({enum: ['sandbox', 'production']})
+  @IsIn(['sandbox', 'production'])
+  environment!: 'sandbox' | 'production';
+
+  @ApiPropertyOptional({enum: ['uz', 'ru', 'uzc', 'en']})
+  @IsIn(['uz', 'ru', 'uzc', 'en'])
+  @IsOptional()
+  locale?: string;
+}
+
+export class UnregisterApnsDto {
+  @ApiProperty()
+  @Matches(APNS_TOKEN)
+  token!: string;
 }
 
 export class UnsubscribePushDto {

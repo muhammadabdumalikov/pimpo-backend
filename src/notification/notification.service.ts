@@ -1,4 +1,4 @@
-import {Inject, Injectable, Logger} from '@nestjs/common';
+import {Inject, Injectable, Logger, OnModuleDestroy} from '@nestjs/common';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {Cron} from '@nestjs/schedule';
 import {and, desc, eq, gt, isNull, lt, lte, or, sql} from 'drizzle-orm';
@@ -6,6 +6,8 @@ import * as webpush from 'web-push';
 import {DatabaseService} from '../database/database.service';
 import {
   announcements,
+  ApnsDeviceRow,
+  apnsDevices,
   notifications,
   pushSubscriptions,
   PushSubscriptionRow,
@@ -21,6 +23,7 @@ import {
 import {AnnouncementService} from '../announcement/announcement.service';
 import {readNotificationSettings} from '../telegram/notification-settings';
 import {Notice, pickLocalized, PushText, renderPush} from './push-text';
+import {ApnsClient, ApnsEnvironment, apnsMessage, isDeadToken, readApnsConfig} from './apns';
 
 const INBOX_RETENTION_DAYS = 30;
 // A push service that keeps failing (not 404/410, which delete at once) is
@@ -34,17 +37,20 @@ interface PushPayload extends PushText {
 }
 
 /**
- * The owner's phone notifications: the 🔔 inbox and Web Push delivery.
+ * The owner's phone notifications: the 🔔 inbox, Web Push delivery and APNs
+ * delivery to the KPOS iPhone app (IOS.md).
  *
  * Events arrive from TelegramNotifyService.dispatch after the shared toggle
  * passed, so `record` never re-checks settings. Delivery is fire-and-forget —
  * a sale, a shift close or a return must never wait on a push service.
- * Push is off (inbox still recorded) when the VAPID keys are not configured.
+ * Each channel is off on its own (inbox still recorded) when its keys are not
+ * configured: VAPID for web push, APNS_* for the iPhone app.
  */
 @Injectable()
-export class NotificationService {
+export class NotificationService implements OnModuleDestroy {
   private readonly logger = new Logger(NotificationService.name);
   private readonly publicKey: string | null;
+  private readonly apns: ApnsClient | null;
 
   constructor(
     private readonly dbService: DatabaseService,
@@ -61,6 +67,19 @@ export class NotificationService {
         priv,
       );
     }
+    let apns: ApnsClient | null = null;
+    try {
+      const cfg = readApnsConfig();
+      apns = cfg ? new ApnsClient(cfg) : null;
+    } catch (e) {
+      // A broken key must not stop the server: iPhone push just stays off.
+      this.logger.error(`APNs is off — APNS_PRIVATE_KEY is unreadable: ${(e as Error).message}`);
+    }
+    this.apns = apns;
+  }
+
+  onModuleDestroy(): void {
+    this.apns?.close();
   }
 
   private get db() {
@@ -89,7 +108,19 @@ export class NotificationService {
     }));
   }
 
+  /** Every phone of the business, both channels. Returns how many accepted it. */
   private async pushToBusiness(
+    businessId: string,
+    render: (locale: string) => PushPayload,
+  ): Promise<number> {
+    const [web, iphone] = await Promise.all([
+      this.pushWeb(businessId, render),
+      this.pushApns(businessId, render),
+    ]);
+    return web + iphone;
+  }
+
+  private async pushWeb(
     businessId: string,
     render: (locale: string) => PushPayload,
   ): Promise<number> {
@@ -132,6 +163,51 @@ export class NotificationService {
       this.logger.warn(`push → ${sub.id} failed (${status ?? '?'}): ${(e as Error).message}`);
       return false;
     }
+  }
+
+  private async pushApns(
+    businessId: string,
+    render: (locale: string) => PushPayload,
+  ): Promise<number> {
+    if (!this.apns) return 0;
+    const devices = await this.db
+      .select()
+      .from(apnsDevices)
+      .where(eq(apnsDevices.businessId, businessId));
+    const results = await Promise.all(
+      devices.map((d) => this.sendApns(d, render(d.locale))),
+    );
+    return results.filter(Boolean).length;
+  }
+
+  private async sendApns(device: ApnsDeviceRow, payload: PushPayload): Promise<boolean> {
+    const apns = this.apns;
+    if (!apns) return false;
+    const res = await apns.send(
+      {token: device.token, environment: device.environment as ApnsEnvironment},
+      apnsMessage(payload),
+    );
+    if (res.status === 200) {
+      if (device.failureCount > 0 || !device.lastSuccessAt) {
+        await this.db
+          .update(apnsDevices)
+          .set({failureCount: 0, lastSuccessAt: new Date()})
+          .where(eq(apnsDevices.id, device.id));
+      }
+      return true;
+    }
+    // Unregistered / BadDeviceToken: the app was removed or the token is
+    // not Apple's any more — for good.
+    if (isDeadToken(res) || device.failureCount + 1 >= MAX_PUSH_FAILURES) {
+      await this.db.delete(apnsDevices).where(eq(apnsDevices.id, device.id));
+    } else {
+      await this.db
+        .update(apnsDevices)
+        .set({failureCount: device.failureCount + 1})
+        .where(eq(apnsDevices.id, device.id));
+    }
+    this.logger.warn(`apns → ${device.id} failed (${res.status}): ${res.reason ?? '?'}`);
+    return false;
   }
 
   // ── Inbox ─────────────────────────────────────────────────────────────────
@@ -198,8 +274,9 @@ export class NotificationService {
 
   // ── Subscriptions ─────────────────────────────────────────────────────────
 
-  config(): {enabled: boolean; publicKey: string | null} {
-    return {enabled: this.publicKey != null, publicKey: this.publicKey};
+  /** `enabled`/`publicKey`: web push. `apns`: the iPhone app's push. */
+  config(): {enabled: boolean; publicKey: string | null; apns: boolean} {
+    return {enabled: this.publicKey != null, publicKey: this.publicKey, apns: this.apns != null};
   }
 
   /**
@@ -239,6 +316,36 @@ export class NotificationService {
       );
   }
 
+  /**
+   * Save this iPhone's APNs token (the web app inside kpos-ios relays it). A
+   * token is one app install; if another business registered it (the phone
+   * logged into a different shop), it moves to this one.
+   */
+  async registerApns(
+    businessId: string,
+    device: {token: string; environment: ApnsEnvironment; locale?: string},
+  ): Promise<void> {
+    const values = {
+      businessId,
+      environment: device.environment,
+      locale: device.locale === 'ru' ? 'ru' : 'uz',
+      failureCount: 0,
+      updatedAt: new Date(),
+    };
+    await this.db
+      .insert(apnsDevices)
+      .values({id: generateId(), token: device.token.toLowerCase(), ...values})
+      .onConflictDoUpdate({target: apnsDevices.token, set: values});
+  }
+
+  async unregisterApns(businessId: string, token: string): Promise<void> {
+    await this.db
+      .delete(apnsDevices)
+      .where(
+        and(eq(apnsDevices.businessId, businessId), eq(apnsDevices.token, token.toLowerCase())),
+      );
+  }
+
   /** "Sinab ko'rish": push to every phone of the business, no inbox row. */
   async test(businessId: string): Promise<{sent: number}> {
     const notice: Notice = {event: 'test', data: {url: '/more/notifications'}};
@@ -269,7 +376,7 @@ export class NotificationService {
    */
   @Cron('*/5 * * * *', {name: 'announcements-push'})
   async pushAnnouncements(): Promise<void> {
-    if (!this.publicKey) return;
+    if (!this.publicKey && !this.apns) return;
     try {
       const now = new Date();
       const due = await this.db
@@ -289,10 +396,12 @@ export class NotificationService {
         });
       if (!due.length) return;
 
-      const businessIds = await this.db
-        .selectDistinct({businessId: pushSubscriptions.businessId})
-        .from(pushSubscriptions);
-      for (const {businessId} of businessIds) {
+      const [web, iphone] = await Promise.all([
+        this.db.selectDistinct({businessId: pushSubscriptions.businessId}).from(pushSubscriptions),
+        this.db.selectDistinct({businessId: apnsDevices.businessId}).from(apnsDevices),
+      ]);
+      const businessIds = new Set([...web, ...iphone].map((r) => r.businessId));
+      for (const businessId of businessIds) {
         const settings = await readNotificationSettings(this.dbService, this.cache, businessId);
         if (!settings.announcements) continue;
         const visible = new Set(
