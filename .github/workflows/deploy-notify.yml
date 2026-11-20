@@ -1,0 +1,34 @@
+# Coolify builds and deploys this repo by itself on every push to main; this
+# workflow only posts what the push shipped (full commit messages) to the
+# platform Telegram chat. It does not wait for Coolify, so a failed build still
+# gets a notice - Coolify's own Telegram notifications cover build failures.
+name: Deploy notice
+
+on:
+  push:
+    branches: [main]
+
+# One push at a time, none cancelled: each notice covers exactly its own push.
+concurrency:
+  group: deploy-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Post deploy notes to Telegram
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_DEPLOY_CHAT_ID: ${{ secrets.TELEGRAM_DEPLOY_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.before }}
+          DEPLOY_LABEL: Backend (pimpo-backend)
+        run: python3 .github/scripts/deploy-notify.py
