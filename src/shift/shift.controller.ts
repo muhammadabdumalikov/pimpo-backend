@@ -243,6 +243,18 @@ export class ShiftController {
     return this.shiftService.listMovements(business.id, query);
   }
 
+  @Get('cash-movements/:id')
+  @ApiOperation({
+    summary: 'One kirim/chiqim with its register name and shift status',
+  })
+  @ApiParam({name: 'id', description: 'Cash movement ID'})
+  async getMovement(
+    @CurrentBusiness() business: IBusiness,
+    @Param('id') id: string,
+  ) {
+    return this.shiftService.getMovement(business.id, id);
+  }
+
   // Who may correct is decided per movement (own + open shift, or
   // finance:manage), so the service checks it rather than a decorator.
   @Put('cash-movements/:id')

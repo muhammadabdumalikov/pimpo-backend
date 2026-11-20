@@ -868,6 +868,31 @@ export class ShiftService {
   }
 
   /**
+   * One kirim/chiqim with its register and shift state — what the phone needs
+   * to open "Tuzatish" from a ledger row, which carries only its id.
+   */
+  async getMovement(businessId: string, movementId: string) {
+    const [row] = await this.dbService.db
+      .select({
+        ...getTableColumns(cashMovements),
+        registerName: cashRegisters.name,
+        shiftStatus: cashShifts.status,
+      })
+      .from(cashMovements)
+      .leftJoin(cashRegisters, eq(cashRegisters.id, cashMovements.registerId))
+      .leftJoin(cashShifts, eq(cashShifts.id, cashMovements.shiftId))
+      .where(
+        and(
+          eq(cashMovements.id, movementId),
+          eq(cashMovements.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new AppException(ErrorCode.CASH_MOVEMENT_NOT_FOUND);
+    return row;
+  }
+
+  /**
    * Kassa operatsiyalari: the till's kirim/chiqim across shifts, newest
    * first, filtered — with the totals of everything that matches (not just
    * the page), per direction × method × currency, never summed across
