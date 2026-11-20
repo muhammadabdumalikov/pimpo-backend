@@ -14,7 +14,7 @@ import {
   type BillingProfile,
   type SubscriptionDiscount,
 } from '../database/schema';
-import { eq, and, asc, desc, count } from 'drizzle-orm';
+import { eq, and, asc, desc, count, isNotNull } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
 import {type Tier, gateTier, planBusinessType, sellsAiAddon, tierAtLeast} from './tier';
@@ -357,6 +357,23 @@ export class SubscriptionService implements OnModuleInit {
         isTrial: opts.isTrial ?? false,
         paidExtraBranches: Math.max(0, Number(activeBranches) - 1),
       });
+
+      // The stores open now are part of the grant too (FILIAL-OBUNA.md): paid
+      // through the new end, and none of them closed any more.
+      await tx
+        .update(branches)
+        .set({
+          ...(endDate && !opts.isTrial ? { paidUntil: endDate } : {}),
+          billingClosedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(branches.businessId, businessId),
+            eq(branches.isActive, true),
+            eq(branches.isDefault, false),
+          ),
+        );
     });
 
     // Drop the stale caches before re-reading so the fresh subscription is
@@ -379,7 +396,34 @@ export class SubscriptionService implements OnModuleInit {
     await Promise.all([
       this.cache.del(CacheKeys.subscriptionCurrent(businessId)),
       this.cache.del(CacheKeys.subscriptionBilling(businessId)),
+      this.cache.del(CacheKeys.branchesClosed(businessId)),
     ]);
+  }
+
+  /**
+   * The shop's stores closed for non-payment (FILIAL-OBUNA.md Q3), read from
+   * the flag billing keeps in step with the store states. Cached: the lock
+   * interceptor asks on every staff request.
+   */
+  async closedBranchIds(businessId: string): Promise<string[]> {
+    const cached = await this.cache.wrap<{ids: string[]}>(
+      CacheKeys.branchesClosed(businessId),
+      async () => {
+        const rows = await this.dbService.db
+          .select({id: branches.id})
+          .from(branches)
+          .where(
+            and(
+              eq(branches.businessId, businessId),
+              eq(branches.isActive, true),
+              isNotNull(branches.billingClosedAt),
+            ),
+          );
+        return {ids: rows.map((r) => r.id)};
+      },
+      TTL.SUBSCRIPTION,
+    );
+    return cached?.ids ?? [];
   }
 
   /**
@@ -613,7 +657,7 @@ export class SubscriptionService implements OnModuleInit {
     const [subscription, branchRows, discountRows, profile] = await Promise.all([
       this.getBusinessSubscription(businessId),
       this.dbService.db
-        .select({ id: branches.id })
+        .select({ isDefault: branches.isDefault, renew: branches.renew })
         .from(branches)
         .where(
           and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
@@ -642,8 +686,9 @@ export class SubscriptionService implements OnModuleInit {
         !!profile?.aiAddon && sellsAiAddon(subscription?.plan.tier ?? null),
       planPrice: subscription ? Number(subscription.plan.price) : 0,
       planTier: subscription?.plan.tier ?? null,
-      // First branch is included in the plan; each extra one is billed monthly.
-      extraBranches: branchRows.length - 1,
+      // The main store is in the plan; each extra one the owner keeps renewing
+      // is billed monthly (FILIAL-OBUNA.md — a stopped one is not renewed).
+      extraBranches: branchRows.filter((b) => !b.isDefault && b.renew).length,
       // Not yet expired. A discount tied to another plan stays listed (it
       // comes back if the shop returns to that plan) but takes nothing off.
       activeDiscounts: discountRows.filter(

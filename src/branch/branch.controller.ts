@@ -20,8 +20,7 @@ import {
 import { BranchService } from './branch.service';
 import { JwtAuthGuard } from '../business/jwt-auth.guard';
 import { CurrentBusiness } from '../business/decorators/current-business.decorator';
-import { CurrentAccount } from '../business/decorators/current-account.decorator';
-import { IAccount, IBusiness } from '../business/types';
+import { IBusiness } from '../business/types';
 import { BillingService } from '../billing/billing.service';
 import { CreateBranchDto } from './dto/create-branch.dto';
 import { UpdateBranchDto } from './dto/update-branch.dto';
@@ -60,13 +59,11 @@ export class BranchController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a branch' })
   @ApiResponse({ status: 201, description: 'Branch created' })
-  @ApiResponse({ status: 409, description: 'BILLING_INSUFFICIENT_BALANCE' })
   async create(
     @CurrentBusiness() business: IBusiness,
-    @CurrentAccount() account: IAccount,
     @Body() dto: CreateBranchDto,
   ) {
-    return this.branchService.create(business.id, dto, account?.id ?? business.id);
+    return this.branchService.create(business.id, dto);
   }
 
   @Put(':id')

@@ -34,6 +34,7 @@ import {ErrorCode} from '../common/errors/error-codes';
 import {CacheKeys, TTL} from '../cache/cache.util';
 import {IAccount, IBusiness} from '../business/types';
 import {PermissionService} from '../permission/permission.service';
+import {BranchScopeService} from '../permission/branch-scope.service';
 import {SubscriptionService} from '../subscription/subscription.service';
 import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import type {TelegramUrlButton} from '../telegram/telegram-sender.service';
@@ -73,6 +74,14 @@ import {
   type BillingTransactionType,
   type Tx,
 } from './billing-ledger';
+import {
+  BRANCH_FREE_DAYS,
+  BRANCH_FREE_MS,
+  branchBillingState,
+  fitRenewal,
+  isBranchClosed,
+  type BranchBillingState,
+} from './branch-billing';
 import {
   NOTICE_KIND,
   billingNoticeButton,
@@ -145,6 +154,8 @@ export interface BillingStatus {
   graceDaysLeft: number | null;
   paymentPending: boolean;
   canPay: boolean;
+  /** Extra stores in warning or closed, as far as this account sees (FILIAL-OBUNA.md Q6). */
+  stores: StoreAlert[];
   pay: null | {
     amountDue: number;
     /** What the next renewal charges (a year when `cycle` is 'year'). */
@@ -214,12 +225,46 @@ export function renewalQuote(
 }
 
 export interface BranchBillingPreview {
+  /** Always false: opening a store never charges (FILIAL-OBUNA.md). */
   chargeable: boolean;
   charge: number;
   monthlyPrice: number;
+  /** Days of the running period left when the free days end. */
   daysRemaining: number;
   balance: number;
   shortfall: number;
+  freeDays: number;
+  /** The plan pays for every store (trial, admin open-ended): nothing is taken. */
+  covered: boolean;
+  /** What the end of the free days takes from the balance (0 when covered). */
+  afterFree: number;
+}
+
+/** One store on the subscription page (GET /subscriptions/stores). */
+export interface StoreBillingView {
+  id: string;
+  name: string;
+  isMain: boolean;
+  state: BranchBillingState;
+  /** Free or paid up to here. */
+  until: string | null;
+  /** When a store in warning closes. */
+  closesAt: string | null;
+  /** Tashkent days to `closesAt` (warning) or to the end of the free days. */
+  daysLeft: number | null;
+  renew: boolean;
+  /** The plan for the main store, one store's share for the others. */
+  monthlyPrice: number;
+  openedAt: string;
+}
+
+/** A store the banner tells about (BillingStatus.stores). */
+export interface StoreAlert {
+  id: string;
+  name: string;
+  state: 'warning' | 'closed';
+  closesAt: string | null;
+  daysLeft: number | null;
 }
 
 export interface PlatformPaymentRequest {
@@ -273,6 +318,7 @@ interface BillingContext {
   balance: number;
   sub: ActiveSubscription | null;
   activeBranches: number;
+  /** Extra stores the owner keeps renewing. */
   extraBranches: number;
   /**
    * The shop's active discount rows. Which of them hold depends on the plan
@@ -330,6 +376,12 @@ interface Quote {
    * wanted year still takes a month (OBUNA-TOLOV.md §9), so the warnings measure this.
    */
   minimumTotal: number;
+  /**
+   * A month of the plan alone (FILIAL-OBUNA.md Q2): what keeps KPOS open. The
+   * shop-level warnings ("KPOS yopiladi") measure this; a balance that covers
+   * it but not every store only closes the stores it leaves out.
+   */
+  keepOpenTotal: number;
   amountDue: number;
 }
 
@@ -359,6 +411,7 @@ export class BillingService {
     private readonly subscriptions: SubscriptionService,
     private readonly permissions: PermissionService,
     private readonly telegram: TelegramNotifyService,
+    private readonly scopes: BranchScopeService,
   ) {}
 
   private get db() {
@@ -400,8 +453,8 @@ export class BillingService {
       )
       .orderBy(desc(businessSubscriptions.createdAt))
       .limit(1);
-    const [{value: activeBranches}] = await tx
-      .select({value: count()})
+    const branchRows = await tx
+      .select({isDefault: branches.isDefault, renew: branches.renew})
       .from(branches)
       .where(
         and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
@@ -426,14 +479,15 @@ export class BillingService {
       .from(billingProfiles)
       .where(eq(billingProfiles.businessId, businessId));
 
-    const active = Number(activeBranches);
     return {
       balance,
       aiAddonWanted: !!profile?.aiAddon,
       cycleWanted: asBillingCycle(profile?.billingCycle),
       sub: subRow ? {...subRow.sub, plan: subRow.plan} : null,
-      activeBranches: active,
-      extraBranches: Math.max(0, active - 1),
+      activeBranches: branchRows.length,
+      // The extra stores the next renewal bills: a store the owner stopped
+      // renewing is not one of them (FILIAL-OBUNA.md).
+      extraBranches: branchRows.filter((b) => !b.isDefault && b.renew).length,
       discounts,
       now,
     };
@@ -457,9 +511,13 @@ export class BillingService {
       this.subscriptions.getBillingInfo(businessId),
     ]);
     let monthlyTotal = billing.monthly.total;
+    // The plan the renewal charges: the scheduled one when there is one.
+    let renewPlan: {price: string | number; tier: string} | null =
+      sub?.plan ?? null;
     if (sub?.pendingPlanId) {
       const pending = await this.subscriptions.getPlanById(sub.pendingPlanId);
       if (pending) {
+        renewPlan = pending;
         // Re-priced from the rows, not from the current plan's percent: a
         // discount tied to the current plan does not follow the shop down.
         monthlyTotal = computeMonthlyTotal({
@@ -471,6 +529,15 @@ export class BillingService {
         }).total;
       }
     }
+    const keepOpenTotal = renewPlan
+      ? computeMonthlyTotal({
+          planPrice: Number(renewPlan.price),
+          planTier: renewPlan.tier,
+          extraBranches: 0,
+          aiAddon: billing.monthly.aiAddon > 0 && sellsAiAddon(renewPlan.tier),
+          discounts: billing.discounts,
+        }).total
+      : 0;
     // Older cached views (before OBUNA-TOLOV.md §9) carry no cycle block.
     const wanted = asBillingCycle(billing.cycle?.wanted);
     const renewalTotal = cycleTotal(monthlyTotal, wanted);
@@ -480,6 +547,7 @@ export class BillingService {
       cycle: wanted,
       renewalTotal,
       minimumTotal: monthlyTotal,
+      keepOpenTotal,
       amountDue: Math.max(0, renewalTotal - billing.balance),
     };
   }
@@ -552,7 +620,7 @@ export class BillingService {
       ? computeBillingStage({
           endDate,
           balance: q.balance,
-          amountNeeded: q.minimumTotal,
+          amountNeeded: q.keepOpenTotal,
           now,
         })
       : 'none';
@@ -584,6 +652,7 @@ export class BillingService {
       this.permissions.can(account, 'settings:manage'),
     ]);
     const sub = core.q.sub;
+    const stores = await this.storeAlerts(businessId, account, sub, now);
     return {
       stage: core.stage,
       isTrial: sub?.isTrial ?? false,
@@ -595,6 +664,7 @@ export class BillingService {
       graceDaysLeft: core.graceDaysLeft,
       paymentPending: !!core.requests.pending,
       canPay,
+      stores,
       pay: canPay
         ? {
             amountDue: core.q.amountDue,
@@ -783,15 +853,31 @@ export class BillingService {
         if (pending) plan = pending;
       }
 
-      const monthly = monthlyFor(ctx, plan, ctx.extraBranches);
-      // No partial charges (Q1): short of the full month, nothing changes. A
-      // wanted year the balance cannot cover falls back to a month (OBUNA-TOLOV.md §9), so
-      // the shop keeps running and the choice waits for the next renewal.
-      if (ctx.balance < monthly.total) return null;
+      // The stores this renewal may take, oldest first (FILIAL-OBUNA.md Q9):
+      // every extra store the owner keeps renewing, except one still in its
+      // free days — that one pays its share when they end.
+      const stores = await this.extraStores(tx, businessId);
+      const candidates = stores.filter(
+        (b) => b.renew && !(b.freeUntil && asDate(b.freeUntil) > now),
+      );
+      // Short of the plan alone, nothing changes and the whole shop goes into
+      // its grace (Q2). A wanted year the balance cannot cover falls back to a
+      // month (OBUNA-TOLOV.md §9); a month takes as many stores as it covers.
+      const fit = fitRenewal({
+        balance: ctx.balance,
+        candidates: candidates.length,
+        totalFor: (k) => monthlyFor(ctx, plan, k).total,
+        cycleWanted: ctx.cycleWanted,
+        yearTotal: (m) => cycleTotal(m, 'year'),
+      });
+      if (!fit.renews) return null;
+      const monthly = monthlyFor(ctx, plan, fit.stores);
+      const cycle: BillingCycle = fit.cycle;
       const yearly = cycleTotal(monthly.total, 'year');
-      const cycle: BillingCycle =
-        ctx.cycleWanted === 'year' && ctx.balance >= yearly ? 'year' : 'month';
       const charged = cycle === 'year' ? yearly : monthly.total;
+      const renewedStores = candidates.slice(0, fit.stores);
+      const leftOut = candidates.slice(fit.stores);
+      const oldEnd = asDate(sub.endDate);
 
       const period = nextPeriod(sub.endDate, now, cycle);
       const posted = await postBillingTransaction(tx, businessId, {
@@ -845,6 +931,23 @@ export class BillingService {
         aiAddon: monthly.aiAddon > 0,
         billingCycle: cycle,
       });
+      if (renewedStores.length) {
+        await tx
+          .update(branches)
+          .set({paidUntil: period.end, updatedAt: now})
+          .where(inArray(branches.id, renewedStores.map((b) => b.id)));
+      }
+      // A store settled through the old period that the balance did not
+      // cover starts its warning days now, not back at the old end.
+      const startWarning = leftOut.filter(
+        (b) => sub.isTrial || (b.paidUntil && asDate(b.paidUntil) >= oldEnd),
+      );
+      if (startWarning.length) {
+        await tx
+          .update(branches)
+          .set({paidUntil: now, updatedAt: now})
+          .where(inArray(branches.id, startWarning.map((b) => b.id)));
+      }
       return {
         plan,
         monthly,
@@ -853,11 +956,18 @@ export class BillingService {
         yearlyFellBack: ctx.cycleWanted === 'year' && cycle === 'month',
         period,
         balanceAfter: posted.balanceAfter,
+        storesLeftOut: leftOut.map((b) => b.name),
       };
     });
 
-    if (!result) return {renewed: false};
+    if (!result) {
+      // Not due for renewal (or short of the plan): a store whose free days
+      // ended, or one waiting for money, may still be settled from the balance.
+      await this.settleBranches(businessId, now);
+      return {renewed: false};
+    }
     await this.invalidate(businessId);
+    await this.reconcileBranchClosures(businessId, now);
 
     // Q16: one message per renewal; say now if next month will be short.
     const nextShortfall = Math.max(
@@ -874,6 +984,7 @@ export class BillingService {
         nextShortfall,
         yearly: result.cycle === 'year',
         yearlyFellBack: result.yearlyFellBack,
+        storesLeftOut: result.storesLeftOut,
       }),
       {
         kind: 'renewed',
@@ -885,6 +996,9 @@ export class BillingService {
         yearlyFellBack: result.yearlyFellBack,
         balance: result.balanceAfter,
         shortfall: nextShortfall,
+        ...(result.storesLeftOut.length && {
+          storesLeftOut: result.storesLeftOut,
+        }),
       },
     );
     this.logger.log(
@@ -1124,107 +1238,480 @@ export class BillingService {
       .where(eq(businessSubscriptions.id, subscriptionId));
   }
 
-  // ─── Branch seats (§5, Q13) ───────────────────────────────────────────────
+  // ─── Stores (FILIAL-OBUNA.md) ─────────────────────────────────────────────
 
-  private branchQuote(
-    ctx: BillingContext,
-    now: Date,
-  ): BranchBillingPreview & {
-    extraAfter: number;
-  } {
-    const sub = ctx.sub;
-    // The default branch always exists (created on first use), so the new one
-    // is at least the first extra.
-    const extraAfter = Math.max(1, ctx.activeBranches);
-    const newSeats = Math.max(0, extraAfter - (sub?.paidExtraBranches ?? 0));
-    const plan = sub?.plan ?? null;
-    const totalWith = (extra: number) => monthlyFor(ctx, plan, extra).total;
-    const monthlyPrice = totalWith(extraAfter) - totalWith(extraAfter - 1);
-
-    const running =
-      sub?.endDate != null && !sub.isTrial && !isPastEnd(sub.endDate, now);
-    const chargeable = running && newSeats > 0;
-    const days =
-      chargeable && sub?.endDate != null
-        ? periodDays(sub.startDate, sub.endDate, now)
-        : {daysRemaining: 0, periodDays: 1};
-    const charge = chargeable
-      ? prorate({
-          // What the unpaid seats add to the month, net of any discount that
-          // covers branches — 150 000 each when there is none — at the
-          // period's cycle price.
-          monthlyAmount: periodAmount(
-            totalWith(extraAfter) - totalWith(extraAfter - newSeats),
-            asBillingCycle(sub?.billingCycle),
-          ),
-          ...days,
-        })
-      : 0;
-    return {
-      chargeable,
-      charge,
-      monthlyPrice,
-      daysRemaining: days.daysRemaining,
-      balance: ctx.balance,
-      shortfall: Math.max(0, charge - ctx.balance),
-      extraAfter,
-    };
+  /** The shop's extra stores, oldest first — the order money reaches them (Q9). */
+  private extraStores(tx: Tx, businessId: string) {
+    return tx
+      .select({
+        id: branches.id,
+        name: branches.name,
+        createdAt: branches.createdAt,
+        freeUntil: branches.freeUntil,
+        paidUntil: branches.paidUntil,
+        renew: branches.renew,
+      })
+      .from(branches)
+      .where(
+        and(
+          eq(branches.businessId, businessId),
+          eq(branches.isActive, true),
+          eq(branches.isDefault, false),
+        ),
+      )
+      .orderBy(asc(branches.createdAt), asc(branches.id));
   }
 
-  /** GET /branches/billing-preview — what opening one more branch costs now. */
-  async previewBranchCharge(businessId: string): Promise<BranchBillingPreview> {
-    const now = new Date();
-    const ctx = await this.readContext(businessId, now);
-    const q = this.branchQuote(ctx, now);
+  /**
+   * Pay the share of the running period for every extra store that is due —
+   * its free days are over, or it waits in its warning days, or it is closed —
+   * oldest first while the balance covers it (Q9). The share is the rest of
+   * the period at the period's cycle price, net of any discount on stores.
+   * Nothing to do on a trial, an open-ended plan or past the shop's end (the
+   * renewal takes the stores then). Idempotent, under the billing lock.
+   */
+  async settleBranches(businessId: string, now: Date = new Date()): Promise<string[]> {
+    const settled = await this.db.transaction(async (tx) => {
+      const ctx = await this.loadContext(tx, businessId, now, true);
+      const sub = ctx.sub;
+      if (
+        !sub ||
+        sub.endDate == null ||
+        sub.isTrial ||
+        isPastEnd(sub.endDate, now)
+      ) {
+        return [];
+      }
+      const end = asDate(sub.endDate);
+      const stores = await this.extraStores(tx, businessId);
+      const paidThrough = (b: (typeof stores)[number]) =>
+        !!b.paidUntil && asDate(b.paidUntil) >= end;
+      let paid = stores.filter(paidThrough).length;
+      const due = stores.filter(
+        (b) =>
+          b.renew &&
+          !(b.freeUntil && asDate(b.freeUntil) > now) &&
+          !paidThrough(b),
+      );
+      if (!due.length) return [];
+
+      const days = periodDays(sub.startDate, sub.endDate, now);
+      const cycle = asBillingCycle(sub.billingCycle);
+      let balance = ctx.balance;
+      const out: string[] = [];
+      for (const store of due) {
+        const charge = prorate({
+          monthlyAmount: periodAmount(
+            monthlyFor(ctx, sub.plan, paid + 1).total -
+              monthlyFor(ctx, sub.plan, paid).total,
+            cycle,
+          ),
+          ...days,
+        });
+        if (charge > balance) break;
+        if (charge > 0) {
+          const posted = await postBillingTransaction(tx, businessId, {
+            type: 'branch',
+            amount: -charge,
+            meta: {
+              branchName: store.name,
+              days: days.daysRemaining,
+              extraBranches: paid + 1,
+              periodEnd: end.toISOString(),
+            },
+            createdBy: 'system',
+          });
+          balance = posted.balanceAfter;
+        }
+        await tx
+          .update(branches)
+          .set({paidUntil: end, updatedAt: now})
+          .where(eq(branches.id, store.id));
+        paid++;
+        out.push(store.name);
+      }
+      if (out.length) {
+        await tx
+          .update(businessSubscriptions)
+          .set({
+            paidExtraBranches: Math.max(sub.paidExtraBranches, paid),
+            updatedAt: now,
+          })
+          .where(eq(businessSubscriptions.id, sub.id));
+      }
+      return out;
+    });
+    if (settled.length) {
+      await this.invalidate(businessId);
+      this.logger.log(`Settled stores of ${businessId}: ${settled.join(', ')}`);
+    }
+    await this.reconcileBranchClosures(businessId, now);
+    return settled;
+  }
+
+  /**
+   * Bring every store's closed flag in step with its state: set it when the
+   * store closes, clear it when it is paid (or covered) again. The branch_stock
+   * trigger and the staff lock read the flag, so this runs after every change
+   * that can move a store, and on the sweep for the ones time moves.
+   */
+  async reconcileBranchClosures(
+    businessId: string,
+    now: Date = new Date(),
+  ): Promise<number> {
+    const [subRow] = await this.db
+      .select({
+        endDate: businessSubscriptions.endDate,
+        isTrial: businessSubscriptions.isTrial,
+      })
+      .from(businessSubscriptions)
+      .where(
+        and(
+          eq(businessSubscriptions.businessId, businessId),
+          eq(businessSubscriptions.isActive, true),
+        ),
+      )
+      .orderBy(desc(businessSubscriptions.createdAt))
+      .limit(1);
+    const rows = await this.db
+      .select({
+        id: branches.id,
+        isDefault: branches.isDefault,
+        createdAt: branches.createdAt,
+        freeUntil: branches.freeUntil,
+        paidUntil: branches.paidUntil,
+        renew: branches.renew,
+        billingClosedAt: branches.billingClosedAt,
+      })
+      .from(branches)
+      .where(
+        and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+      );
+    const close: string[] = [];
+    const open: string[] = [];
+    for (const r of rows) {
+      const closed = isBranchClosed(r, subRow ?? null, now);
+      if (closed && !r.billingClosedAt) close.push(r.id);
+      else if (!closed && r.billingClosedAt) open.push(r.id);
+    }
+    if (close.length) {
+      await this.db
+        .update(branches)
+        .set({billingClosedAt: now, updatedAt: now})
+        .where(inArray(branches.id, close));
+    }
+    if (open.length) {
+      await this.db
+        .update(branches)
+        .set({billingClosedAt: null, updatedAt: now})
+        .where(inArray(branches.id, open));
+    }
+    if (close.length || open.length) await this.invalidate(businessId);
+    return close.length + open.length;
+  }
+
+  /** What one extra store and the plan (the main store) cost a month now. */
+  private storePrices(ctx: BillingContext) {
+    const plan = ctx.sub?.plan ?? null;
+    const k = Math.max(1, ctx.extraBranches);
     return {
-      chargeable: q.chargeable,
-      charge: q.charge,
-      monthlyPrice: q.monthlyPrice,
-      daysRemaining: q.daysRemaining,
-      balance: q.balance,
-      shortfall: q.shortfall,
+      main: monthlyFor(ctx, plan, 0).total,
+      store: monthlyFor(ctx, plan, k).total - monthlyFor(ctx, plan, k - 1).total,
     };
   }
 
   /**
-   * Open a branch, charging its seat for the rest of the period when the shop
-   * is on a running paid period and the seat isn't paid yet. `insert` runs in
-   * the same transaction, so a refused charge (BILLING_INSUFFICIENT_BALANCE)
-   * leaves no branch behind.
+   * GET /subscriptions/stores — every store with its billing state, for the
+   * subscription page. A staff account pinned to one store sees that one only
+   * (Q6).
    */
-  async createBranchWithCharge<T>(
+  async listStores(
     businessId: string,
-    branchName: string,
-    createdBy: string,
-    insert: (tx: Tx) => Promise<T>,
-  ): Promise<T> {
+    account: IAccount,
+  ): Promise<StoreBillingView[]> {
+    return this.storesView(businessId, await this.scopes.scopeFor(account));
+  }
+
+  /** The platform console's store list: every store. */
+  storesForPlatform(businessId: string): Promise<StoreBillingView[]> {
+    return this.storesView(businessId, null);
+  }
+
+  private async storesView(
+    businessId: string,
+    pinned: string | null,
+  ): Promise<StoreBillingView[]> {
     const now = new Date();
-    const created = await this.db.transaction(async (tx) => {
-      const ctx = await this.loadContext(tx, businessId, now, true);
-      const q = this.branchQuote(ctx, now);
-      if (q.chargeable && ctx.sub) {
-        if (q.charge > 0) {
-          await postBillingTransaction(tx, businessId, {
-            type: 'branch',
-            amount: -q.charge,
-            meta: {
-              branchName,
-              days: q.daysRemaining,
-              extraBranches: q.extraAfter,
-              periodEnd: asDate(ctx.sub.endDate!).toISOString(),
-            },
-            createdBy,
-          });
-        }
-        await tx
-          .update(businessSubscriptions)
-          .set({paidExtraBranches: q.extraAfter, updatedAt: now})
-          .where(eq(businessSubscriptions.id, ctx.sub.id));
-      }
-      return insert(tx);
-    });
+    const [ctx, rows] = await Promise.all([
+      this.readContext(businessId, now),
+      this.db
+        .select({
+          id: branches.id,
+          name: branches.name,
+          isDefault: branches.isDefault,
+          createdAt: branches.createdAt,
+          freeUntil: branches.freeUntil,
+          paidUntil: branches.paidUntil,
+          renew: branches.renew,
+        })
+        .from(branches)
+        .where(
+          and(eq(branches.businessId, businessId), eq(branches.isActive, true)),
+        )
+        .orderBy(desc(branches.isDefault), asc(branches.createdAt)),
+    ]);
+    const prices = this.storePrices(ctx);
+    return rows
+      .filter((r) => !pinned || r.id === pinned)
+      .map((r) => {
+        const v = branchBillingState(r, ctx.sub, now);
+        const daysTo = (d: Date | null) =>
+          d ? Math.max(0, tashkentDaysBetween(now, d)) : null;
+        return {
+          id: r.id,
+          name: r.name,
+          isMain: r.isDefault,
+          state: v.state,
+          until: v.until?.toISOString() ?? null,
+          closesAt: v.closesAt?.toISOString() ?? null,
+          daysLeft: daysTo(v.closesAt ?? (v.state === 'free' ? v.until : null)),
+          renew: r.isDefault ? true : r.renew,
+          monthlyPrice: r.isDefault ? prices.main : prices.store,
+          openedAt: asDate(r.createdAt).toISOString(),
+        };
+      });
+  }
+
+  /**
+   * The stores in warning or closed that this account should be told about:
+   * all of them for the owner and staff who see every store, the own store
+   * for a pinned one (Q6). For the banner on every page.
+   */
+  private async storeAlerts(
+    businessId: string,
+    account: IAccount,
+    sub: {endDate: Date | string | null; isTrial: boolean} | null,
+    now: Date,
+  ): Promise<StoreAlert[]> {
+    if (!sub || sub.endDate == null || sub.isTrial) return [];
+    const [rows, pinned] = await Promise.all([
+      this.db
+        .select({
+          id: branches.id,
+          name: branches.name,
+          isDefault: branches.isDefault,
+          createdAt: branches.createdAt,
+          freeUntil: branches.freeUntil,
+          paidUntil: branches.paidUntil,
+          renew: branches.renew,
+        })
+        .from(branches)
+        .where(
+          and(
+            eq(branches.businessId, businessId),
+            eq(branches.isActive, true),
+            eq(branches.isDefault, false),
+          ),
+        )
+        .orderBy(asc(branches.createdAt)),
+      this.scopes.scopeFor(account),
+    ]);
+    const out: StoreAlert[] = [];
+    for (const r of rows) {
+      if (pinned && r.id !== pinned) continue;
+      const v = branchBillingState(r, sub, now);
+      if (v.state !== 'warning' && v.state !== 'closed') continue;
+      // A store the owner stopped renewing closing is no news to the owner.
+      if (v.state === 'closed' && !r.renew) continue;
+      out.push({
+        id: r.id,
+        name: r.name,
+        state: v.state,
+        closesAt: v.closesAt?.toISOString() ?? null,
+        daysLeft: v.closesAt
+          ? Math.max(0, tashkentDaysBetween(now, v.closesAt))
+          : null,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * PUT /subscriptions/stores/:id/renew — keep renewing an extra store, or
+   * stop: it then closes when its paid time runs out, without being deleted.
+   * Switched back on, a due store is settled from the balance at once.
+   */
+  async setStoreRenew(
+    businessId: string,
+    account: IAccount,
+    branchId: string,
+    renew: boolean,
+  ): Promise<StoreBillingView[]> {
+    const [row] = await this.db
+      .select({id: branches.id, isDefault: branches.isDefault})
+      .from(branches)
+      .where(
+        and(
+          eq(branches.id, branchId),
+          eq(branches.businessId, businessId),
+          eq(branches.isActive, true),
+        ),
+      )
+      .limit(1);
+    const pinned = await this.scopes.scopeFor(account);
+    if (!row || (pinned && pinned !== branchId)) {
+      throw new AppException(ErrorCode.BRANCH_NOT_FOUND);
+    }
+    if (row.isDefault) {
+      throw new AppException(ErrorCode.BRANCH_MAIN_RENEW_FORBIDDEN);
+    }
+    await this.db
+      .update(branches)
+      .set({renew, updatedAt: new Date()})
+      .where(eq(branches.id, branchId));
     await this.invalidate(businessId);
-    return created;
+    if (renew) await this.settleBranches(businessId);
+    else await this.reconcileBranchClosures(businessId);
+    return this.listStores(businessId, account);
+  }
+
+  /** GET /branches/billing-preview — what opening one more store means now. */
+  async previewBranchCharge(businessId: string): Promise<BranchBillingPreview> {
+    const now = new Date();
+    const ctx = await this.readContext(businessId, now);
+    const sub = ctx.sub;
+    const covered = !sub || sub.endDate == null || sub.isTrial;
+    const freeEnd = new Date(now.getTime() + BRANCH_FREE_MS);
+    // Free days that end inside the running period are followed by its rest;
+    // ending past it, the store is taken by the renewal instead.
+    const days =
+      !covered && sub?.endDate && freeEnd < asDate(sub.endDate)
+        ? periodDays(sub.startDate, sub.endDate, freeEnd)
+        : {daysRemaining: 0, periodDays: 1};
+    const plan = sub?.plan ?? null;
+    const k = ctx.extraBranches + 1;
+    const monthlyPrice =
+      monthlyFor(ctx, plan, k).total - monthlyFor(ctx, plan, k - 1).total;
+    const afterFree = covered
+      ? 0
+      : prorate({
+          monthlyAmount: periodAmount(
+            monthlyPrice,
+            asBillingCycle(sub?.billingCycle),
+          ),
+          ...days,
+        });
+    return {
+      // Opening never charges now (FILIAL-OBUNA.md); kept for older clients.
+      chargeable: false,
+      charge: 0,
+      shortfall: 0,
+      monthlyPrice,
+      daysRemaining: days.daysRemaining,
+      balance: ctx.balance,
+      freeDays: BRANCH_FREE_DAYS,
+      covered,
+      afterFree,
+    };
+  }
+
+  /** Free days for a store opened now. */
+  branchFreeUntil(now: Date = new Date()): Date {
+    return new Date(now.getTime() + BRANCH_FREE_MS);
+  }
+
+  /**
+   * The shops the store sweep looks at: an extra store that is due (free days
+   * over, not paid through the period) or carries the closed flag.
+   */
+  async storeSweepCandidates(now: Date = new Date()): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({businessId: branches.businessId})
+      .from(branches)
+      .leftJoin(
+        businessSubscriptions,
+        and(
+          eq(businessSubscriptions.businessId, branches.businessId),
+          eq(businessSubscriptions.isActive, true),
+        ),
+      )
+      .where(
+        and(
+          eq(branches.isActive, true),
+          eq(branches.isDefault, false),
+          sql`(${branches.billingClosedAt} IS NOT NULL OR (
+                ${businessSubscriptions.endDate} IS NOT NULL
+                AND NOT ${businessSubscriptions.isTrial}
+                AND (${branches.freeUntil} IS NULL OR ${branches.freeUntil} <= ${now.toISOString()}::timestamptz)
+                AND (${branches.paidUntil} IS NULL OR ${branches.paidUntil} < ${businessSubscriptions.endDate})))`,
+        ),
+      );
+    return rows.map((r) => r.businessId);
+  }
+
+  /**
+   * The stores the daily note names (§3): those in warning, and those closed
+   * within the last two days — older closures are no news. Stores the owner
+   * stopped renewing are left out.
+   */
+  async storeNoticeState(
+    businessId: string,
+    now: Date = new Date(),
+  ): Promise<{name: string; state: 'warning' | 'closed'; daysLeft: number}[]> {
+    const [subRow] = await this.db
+      .select({
+        endDate: businessSubscriptions.endDate,
+        isTrial: businessSubscriptions.isTrial,
+      })
+      .from(businessSubscriptions)
+      .where(
+        and(
+          eq(businessSubscriptions.businessId, businessId),
+          eq(businessSubscriptions.isActive, true),
+        ),
+      )
+      .orderBy(desc(businessSubscriptions.createdAt))
+      .limit(1);
+    if (!subRow || subRow.endDate == null || subRow.isTrial) return [];
+    const rows = await this.db
+      .select({
+        name: branches.name,
+        isDefault: branches.isDefault,
+        createdAt: branches.createdAt,
+        freeUntil: branches.freeUntil,
+        paidUntil: branches.paidUntil,
+        renew: branches.renew,
+        billingClosedAt: branches.billingClosedAt,
+      })
+      .from(branches)
+      .where(
+        and(
+          eq(branches.businessId, businessId),
+          eq(branches.isActive, true),
+          eq(branches.isDefault, false),
+          eq(branches.renew, true),
+        ),
+      )
+      .orderBy(asc(branches.createdAt));
+    const recent = now.getTime() - 2 * DAY_MS;
+    const out: {name: string; state: 'warning' | 'closed'; daysLeft: number}[] = [];
+    for (const r of rows) {
+      const v = branchBillingState(r, subRow, now);
+      if (v.state === 'warning' && v.closesAt) {
+        out.push({
+          name: r.name,
+          state: 'warning',
+          daysLeft: Math.max(0, tashkentDaysBetween(now, v.closesAt)),
+        });
+      } else if (
+        v.state === 'closed' &&
+        r.billingClosedAt &&
+        asDate(r.billingClosedAt).getTime() >= recent
+      ) {
+        out.push({name: r.name, state: 'closed', daysLeft: 0});
+      }
+    }
+    return out;
   }
 
   // ─── AI bot add-on (ONLAYN-SOTUVCHI.md E4–E7) ──────────────────────────────
@@ -1628,10 +2115,17 @@ export class BillingService {
             aiAddon: billingProfiles.aiAddon,
           })
           .from(billingProfiles),
+        // The extra stores the renewal bills (FILIAL-OBUNA.md).
         this.db
           .select({businessId: branches.businessId, c: count()})
           .from(branches)
-          .where(eq(branches.isActive, true))
+          .where(
+            and(
+              eq(branches.isActive, true),
+              eq(branches.isDefault, false),
+              eq(branches.renew, true),
+            ),
+          )
           .groupBy(branches.businessId),
         this.db
           .select({
@@ -1688,14 +2182,15 @@ export class BillingService {
       const next = (s.pendingPlanId
         ? pendingPlan.get(s.pendingPlanId)
         : undefined) ?? {price: s.planPrice, tier: s.planTier};
+      const pricing = {
+        discounts: discountsBy.get(s.businessId) ?? [],
+        aiAddonWanted: wantsAiAddon.has(s.businessId),
+        now,
+      };
       const total = monthlyFor(
-        {
-          discounts: discountsBy.get(s.businessId) ?? [],
-          aiAddonWanted: wantsAiAddon.has(s.businessId),
-          now,
-        },
+        pricing,
         next,
-        (branchCount.get(s.businessId) ?? 1) - 1,
+        branchCount.get(s.businessId) ?? 0,
       ).total;
       out.set(s.businessId, {
         stage:
@@ -1704,7 +2199,8 @@ export class BillingService {
             : computeBillingStage({
                 endDate: s.endDate,
                 balance: bal,
-                amountNeeded: total,
+                // What keeps KPOS open: the plan alone (FILIAL-OBUNA.md Q2).
+                amountNeeded: monthlyFor(pricing, next, 0).total,
                 now,
               }),
         amountDue: s.endDate == null ? 0 : Math.max(0, total - bal),

@@ -168,3 +168,14 @@ export class SetBillingCycleDto {
   @IsIn(['month', 'year'])
   cycle: 'month' | 'year';
 }
+
+/** PUT /subscriptions/stores/:id/renew (FILIAL-OBUNA.md). */
+export class SetStoreRenewDto {
+  @ApiProperty({
+    description:
+      'false: the store is not renewed and closes when its paid time runs out ' +
+      '(it is not deleted); true: renew it again — a due store is paid from the balance at once',
+  })
+  @IsBoolean()
+  renew: boolean;
+}

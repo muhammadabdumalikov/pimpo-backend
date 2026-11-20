@@ -4,6 +4,7 @@
 
 import {BUSINESS_OFFSET_MS} from '../common/business-time';
 import {GRACE_DAYS, type BillingStage} from './billing';
+import {BRANCH_WARNING_DAYS} from './branch-billing';
 
 export type BillingNoticeKind = 'd7' | 'd3' | 'expired' | 'restricted';
 
@@ -180,6 +181,8 @@ export function billingRenewedText(input: {
   yearly?: boolean;
   /** A year was wanted but the balance covered only a month. */
   yearlyFellBack?: boolean;
+  /** Stores the balance did not cover (FILIAL-OBUNA.md Q9). */
+  storesLeftOut?: string[];
 }): string {
   const lines = [
     `✅ Obuna yangilandi${input.yearly ? ' (1 yilga)' : ''}: ${input.planName}, ${tashkentDate(input.periodEnd)} gacha.`,
@@ -190,12 +193,36 @@ export function billingRenewedText(input: {
       "Yillik to'lov uchun balans yetmadi, shuning uchun obuna bir oyga uzaytirildi. Yillik tanlov keyingi to'lovda qayta tekshiriladi.",
     );
   }
+  const leftOut = input.storesLeftOut ?? [];
+  if (leftOut.length) {
+    lines.push(
+      `Balans ${leftOut.map((n) => `“${n}”`).join(', ')} ${leftOut.length > 1 ? 'filiallariga' : 'filialiga'} yetmadi: ${capital(when(BRANCH_WARNING_DAYS))} ${leftOut.length > 1 ? 'ular yopiladi' : 'u yopiladi'}. Balans to'ldirilsa, filial o'zi uzayadi.`,
+    );
+  }
   if (input.nextShortfall > 0) {
     lines.push(
       `Keyingi to'lov uchun balansda yana ${money(input.nextShortfall)} so'm kerak bo'ladi.`,
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * The daily note about stores that are due or just closed (FILIAL-OBUNA.md
+ * §3): one message per shop a day, every such store on its own line.
+ */
+export function branchNoticeText(input: {
+  stores: {name: string; state: 'warning' | 'closed'; daysLeft: number}[];
+}): string {
+  const lines = input.stores.map((s) =>
+    s.state === 'closed'
+      ? `⛔ “${s.name}” yopildi: sotuv va qabul to'xtatildi. Ma'lumotlari saqlangan.`
+      : `⚠️ “${s.name}” uchun to'lov o'tmadi. ${capital(when(s.daysLeft))} filial yopiladi.`,
+  );
+  return [
+    ...lines,
+    "Balans to'ldirilsa, filial o'zi uzayadi va darhol ochiladi.",
+  ].join('\n');
 }
 
 /** To the platform admins when a shop presses "To'lov qildim". */

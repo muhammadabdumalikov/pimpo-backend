@@ -858,6 +858,16 @@ export const branches = pgTable('branches', {
   // Exactly one per business; the fallback for documents without an explicit branch.
   isDefault: boolean('is_default').default(false).notNull(),
   isActive: boolean('is_active').default(true).notNull(),
+  // Per-store billing (FILIAL-OBUNA.md, 0121) — extra stores only; the main
+  // store follows the plan. A new store's free days end at `free_until`; its
+  // seat is settled up to `paid_until` (the period end it was paid for).
+  freeUntil: timestamp('free_until', {withTimezone: true}),
+  paidUntil: timestamp('paid_until', {withTimezone: true}),
+  // false = the owner stopped renewing it: it closes when its paid time ends.
+  renew: boolean('renew').default(true).notNull(),
+  // Set while the store is closed for non-payment (billing/branch-billing.ts);
+  // the branch_stock trigger refuses any stock change in it then.
+  billingClosedAt: timestamp('billing_closed_at', {withTimezone: true}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -1565,6 +1575,12 @@ export const cashMovements = pgTable('cash_movements', {
   // is booked as supplier payments + an advance, never as an expense.
   supplierId: varchar('supplier_id', {length: 36}),
   supplierName: varchar('supplier_name', {length: 255}),
+  // A wrong movement taken back (0122): it stays listed, struck through, and
+  // counts nowhere. A correction is a new movement whose replacesId points here.
+  cancelledAt: timestamp('cancelled_at'),
+  cancelledById: varchar('cancelled_by_id', {length: 36}),
+  cancelledByName: varchar('cancelled_by_name', {length: 255}),
+  replacesId: varchar('replaces_id', {length: 36}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

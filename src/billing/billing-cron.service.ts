@@ -8,7 +8,12 @@ import {
   graceEndsAt,
   tashkentHour,
 } from './billing';
-import {NOTICE_KIND} from './billing-text';
+import {
+  NOTICE_KIND,
+  billingNoticeButton,
+  branchNoticeText,
+} from './billing-text';
+import {businessDay} from '../common/business-time';
 
 const DAY_MS = 86_400_000;
 
@@ -61,6 +66,29 @@ export class BillingCronService {
   }
 
   /**
+   * Every 5 minutes, day and night: settle the extra stores that came due
+   * (free days over, or waiting for money) and close the ones whose warning
+   * days ran out (FILIAL-OBUNA.md §3). Silent — the daily note tells.
+   */
+  @Cron('*/5 * * * *', {name: 'billing-store-sweep'})
+  async sweepStores(): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      for (const id of await this.billing.storeSweepCandidates()) {
+        try {
+          await this.billing.settleBranches(id);
+        } catch (e) {
+          this.logger.error(
+            `Store sweep failed for ${id}: ${(e as Error).message}`,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.error(`Store sweep failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
    * 09:00 Tashkent: d7 / d3 / expired / restricted, each once per period
    * (billing_notices is the dedupe — two instances can't both claim a row).
    * Ignores the shop's notification toggles and its plan tier (Q8).
@@ -83,6 +111,45 @@ export class BillingCronService {
     } catch (e) {
       this.logger.error(`Billing notice run failed: ${(e as Error).message}`);
     }
+    try {
+      for (const id of await this.billing.storeSweepCandidates(now)) {
+        try {
+          await this.storeNoticeFor(id, now);
+        } catch (e) {
+          this.logger.error(
+            `Store notice failed for ${id}: ${(e as Error).message}`,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.error(`Store notice run failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * One note a day per shop naming its stores in warning and those closed in
+   * the last two days (FILIAL-OBUNA.md §3); billing_notices keyed by the
+   * Tashkent day is the dedupe.
+   */
+  private async storeNoticeFor(businessId: string, now: Date): Promise<void> {
+    const stores = await this.billing.storeNoticeState(businessId, now);
+    if (!stores.length) return;
+    const claimed = await this.dbService.db
+      .insert(billingNotices)
+      .values({
+        businessId,
+        periodEnd: new Date(`${businessDay(now)}T00:00:00Z`),
+        kind: 'stores',
+      })
+      .onConflictDoNothing()
+      .returning({kind: billingNotices.kind});
+    if (!claimed.length) return;
+    this.billing.sendBilling(
+      businessId,
+      branchNoticeText({stores}),
+      {kind: 'stores', stores},
+      [[billingNoticeButton({isTrial: false})]],
+    );
   }
 
   private async noticeFor(businessId: string, now: Date): Promise<void> {

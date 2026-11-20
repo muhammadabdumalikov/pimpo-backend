@@ -362,7 +362,7 @@ export class PlatformService {
       throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
     }
 
-    const [productRows, branchRows, staffRows, subscription, billing, paymentReminder] =
+    const [productRows, branchRows, staffRows, subscription, billing, paymentReminder, stores] =
       await Promise.all([
         this.dbService.db
           .select({ c: count() })
@@ -387,6 +387,7 @@ export class PlatformService {
         this.subscriptionService.getBusinessSubscription(id),
         this.subscriptionService.getBillingInfo(id),
         this.billingService.paymentReminderState(id),
+        this.billingService.storesForPlatform(id),
       ]);
 
     const { password: _pw, ...safeBusiness } = business;
@@ -415,6 +416,8 @@ export class PlatformService {
       billing,
       // Whether a payment reminder can be sent to the shop's Telegram by hand.
       paymentReminder,
+      // Every store with its billing state (FILIAL-OBUNA.md).
+      stores,
     };
   }
 

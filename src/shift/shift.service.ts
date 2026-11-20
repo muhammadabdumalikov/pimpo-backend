@@ -47,10 +47,13 @@ import {PaySupplierDto} from './dto/pay-supplier.dto';
 import {QueryCashMovementsDto} from './dto/query-cash-movements.dto';
 import {CloseShiftDto} from './dto/close-shift.dto';
 import {
+  applyMovementToRows,
   computeReconciliation,
   type ReconRow,
   type SaleTotals,
 } from './reconciliation';
+import {PermissionService} from '../permission/permission.service';
+import {BranchScopeService} from '../permission/branch-scope.service';
 import {shiftsOfBranch} from '../common/branch-shifts';
 import {getBusinessType} from '../common/business-type';
 
@@ -90,6 +93,8 @@ export class ShiftService {
     private readonly receiptService: ReceiptService,
     private readonly branchService: BranchService,
     private readonly telegramNotify: TelegramNotifyService,
+    private readonly permissions: PermissionService,
+    private readonly branchScopes: BranchScopeService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -497,22 +502,7 @@ export class ShiftService {
   ): Promise<CashMovement> {
     const shift = await this.loadOpenShift(businessId, shiftId);
 
-    // Resolve the category (name snapshot) if one was given.
-    let categoryName: string | null = null;
-    if (dto.categoryId) {
-      const [cat] = await this.dbService.db
-        .select()
-        .from(financialCategories)
-        .where(
-          and(
-            eq(financialCategories.id, dto.categoryId),
-            eq(financialCategories.businessId, businessId),
-          ),
-        )
-        .limit(1);
-      if (!cat) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
-      categoryName = cat.name;
-    }
+    const categoryName = await this.categoryName(businessId, dto.categoryId);
 
     const cashier = await this.resolveCashier(account);
     const isCash = dto.isCash ?? true;
@@ -564,6 +554,216 @@ export class ShiftService {
     // Post-commit, fire-and-forget: notify the linked chats of the cash in/out.
     this.telegramNotify.notifyCashOperation(businessId, movement);
     return movement;
+  }
+
+  /** Name snapshot of the movement's category; null when none was picked. */
+  private async categoryName(
+    businessId: string,
+    categoryId?: string | null,
+  ): Promise<string | null> {
+    if (!categoryId) return null;
+    const [cat] = await this.dbService.db
+      .select({name: financialCategories.name})
+      .from(financialCategories)
+      .where(
+        and(
+          eq(financialCategories.id, categoryId),
+          eq(financialCategories.businessId, businessId),
+        ),
+      )
+      .limit(1);
+    if (!cat) throw new AppException(ErrorCode.CATEGORY_NOT_FOUND);
+    return cat.name;
+  }
+
+  // ─── Correcting a kirim/chiqim ─────────────────────────────────────────────
+
+  /**
+   * Take back a till kirim/chiqim typed wrong and, given `dto`, write the
+   * right one in its place ("Tuzatish"); without `dto` it is only cancelled.
+   *
+   * Nothing is edited in place. The wrong movement is marked cancelled (who,
+   * when) and its ledger row stornoed. The correction is a new movement on
+   * the same shift at the same time, pointing back at it, and its ledger row
+   * keeps that day for the P&L. On a closed shift the stored Z-report moves by
+   * exactly that movement; its sales and the counted cash stay as closed.
+   *
+   * A till payment to a supplier settled receipts, so it is not undone here.
+   */
+  async correctMovement(
+    businessId: string,
+    movementId: string,
+    dto: CreateCashMovementDto | null,
+    account: IAccount,
+  ): Promise<{cancelled: CashMovement; movement: CashMovement | null}> {
+    const categoryName = dto
+      ? await this.categoryName(businessId, dto.categoryId)
+      : null;
+    const actor = await this.resolveCashier(account);
+
+    const result = await this.dbService.db.transaction(async (tx) => {
+      const [old] = await tx
+        .select()
+        .from(cashMovements)
+        .where(
+          and(
+            eq(cashMovements.id, movementId),
+            eq(cashMovements.businessId, businessId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (!old) throw new AppException(ErrorCode.CASH_MOVEMENT_NOT_FOUND);
+      if (old.cancelledAt) {
+        throw new AppException(ErrorCode.CASH_MOVEMENT_ALREADY_CANCELLED);
+      }
+      if (old.supplierId) {
+        throw new AppException(ErrorCode.CASH_MOVEMENT_SUPPLIER_PAYMENT);
+      }
+      // Locked so two corrections of one closed shift can't lose each
+      // other's change to its stored Z-report.
+      const [shift] = await tx
+        .select()
+        .from(cashShifts)
+        .where(
+          and(
+            eq(cashShifts.id, old.shiftId),
+            eq(cashShifts.businessId, businessId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+      if (!shift) throw new AppException(ErrorCode.SHIFT_NOT_FOUND);
+      await this.assertCanCorrect(account, old, shift);
+
+      const [cancelled] = await tx
+        .update(cashMovements)
+        .set({
+          cancelledAt: new Date(),
+          cancelledById: actor.id,
+          cancelledByName: actor.name,
+        })
+        .where(eq(cashMovements.id, old.id))
+        .returning();
+      await this.financeService.reverseCashMovementTx(
+        tx,
+        businessId,
+        old.id,
+        actor,
+      );
+
+      let movement: CashMovement | null = null;
+      if (dto) {
+        [movement] = await tx
+          .insert(cashMovements)
+          .values({
+            id: generateId(),
+            businessId,
+            shiftId: old.shiftId,
+            registerId: old.registerId,
+            type: dto.type,
+            isCash: dto.isCash ?? true,
+            amount: String(dto.amount),
+            currency: dto.currency ?? 'UZS',
+            categoryId: dto.categoryId ?? null,
+            categoryName,
+            reason: dto.reason ?? null,
+            // Still the cashier's movement; who corrected it is on the old row.
+            cashierId: old.cashierId,
+            cashierName: old.cashierName,
+            replacesId: old.id,
+            createdAt: old.createdAt,
+          })
+          .returning();
+        await this.financeService.recordCashMovementTx(
+          tx,
+          businessId,
+          {
+            id: movement.id,
+            shiftId: movement.shiftId,
+            registerId: movement.registerId,
+            type: movement.type,
+            isCash: movement.isCash,
+            amount: movement.amount,
+            currency: movement.currency,
+            categoryId: movement.categoryId,
+            categoryName: movement.categoryName,
+            cashierId: movement.cashierId,
+            cashierName: movement.cashierName,
+            operationDate: old.createdAt,
+          },
+          {id: shift.registerId, name: shift.registerName},
+        );
+      }
+
+      if (shift.status === 'closed' && Array.isArray(shift.reconciliation)) {
+        let rows = applyMovementToRows(
+          shift.reconciliation as ReconRow[],
+          old,
+          -1,
+        );
+        if (movement) rows = applyMovementToRows(rows, movement, 1);
+        const cash = rows.find(
+          (r) => r.method === 'cash' && r.currency === 'UZS',
+        );
+        await tx
+          .update(cashShifts)
+          .set({
+            reconciliation: rows,
+            ...(cash && {
+              expectedCash: String(cash.expected),
+              cashIn: String(cash.in),
+              cashOut: String(cash.out),
+              difference: cash.diff != null ? String(cash.diff) : null,
+            }),
+            updatedAt: new Date(),
+          })
+          .where(eq(cashShifts.id, shift.id));
+      }
+      return {cancelled, movement};
+    });
+
+    this.telegramNotify.notifyCashCorrection(
+      businessId,
+      result.cancelled,
+      result.movement,
+      actor.name,
+    );
+    return result;
+  }
+
+  /**
+   * finance:manage (the owner included) may correct any movement in its store
+   * scope. A cashier may correct only what they typed themselves, and only
+   * while that shift is still open — after the close it is the owner's call.
+   */
+  private async assertCanCorrect(
+    account: IAccount,
+    movement: CashMovement,
+    shift: CashShift,
+  ): Promise<void> {
+    if (await this.permissions.can(account, 'finance:manage')) {
+      const pinned = await this.branchScopes.scopeFor(account);
+      if (!pinned) return;
+      const [reg] = await this.dbService.db
+        .select({branchId: cashRegisters.branchId})
+        .from(cashRegisters)
+        .where(eq(cashRegisters.id, shift.registerId))
+        .limit(1);
+      const branchId =
+        reg?.branchId ??
+        (await this.branchService.ensureDefault(shift.businessId)).id;
+      if (branchId === pinned) return;
+      throw new AppException(ErrorCode.CASH_MOVEMENT_CORRECT_FORBIDDEN);
+    }
+    if (
+      shift.status === 'open' &&
+      movement.cashierId === account.id &&
+      (await this.permissions.can(account, 'cash:movement'))
+    ) {
+      return;
+    }
+    throw new AppException(ErrorCode.CASH_MOVEMENT_CORRECT_FORBIDDEN);
   }
 
   /**
@@ -731,9 +931,12 @@ export class ShiftService {
         .select({
           ...getTableColumns(cashMovements),
           registerName: cashRegisters.name,
+          // Lets the list offer "Tuzatish" to a cashier only while open.
+          shiftStatus: cashShifts.status,
         })
         .from(cashMovements)
         .leftJoin(cashRegisters, eq(cashRegisters.id, cashMovements.registerId))
+        .leftJoin(cashShifts, eq(cashShifts.id, cashMovements.shiftId))
         .where(filter)
         .orderBy(desc(cashMovements.createdAt), desc(cashMovements.id))
         .limit(limit)
@@ -751,7 +954,9 @@ export class ShiftService {
           amount: sql<string>`sum(${cashMovements.amount})`,
         })
         .from(cashMovements)
-        .where(filter)
+        // Cancelled movements stay in the list, struck through, but count
+        // in no total.
+        .where(and(filter, isNull(cashMovements.cancelledAt)))
         .groupBy(
           cashMovements.type,
           cashMovements.isCash,
@@ -846,12 +1051,15 @@ export class ShiftService {
         totalAmount: o.totalAmount,
         payments: o.payments as {method: string; amount: number}[] | null,
       })),
-      movements: movements.map((m) => ({
-        isCash: m.isCash,
-        currency: m.currency,
-        type: m.type,
-        amount: m.amount,
-      })),
+      // A cancelled (or corrected) movement no longer moved any money.
+      movements: movements
+        .filter((m) => !m.cancelledAt)
+        .map((m) => ({
+          isCash: m.isCash,
+          currency: m.currency,
+          type: m.type,
+          amount: m.amount,
+        })),
       counted,
     });
   }

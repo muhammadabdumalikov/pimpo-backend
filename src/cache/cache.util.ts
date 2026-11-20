@@ -126,6 +126,10 @@ export const CacheKeys = {
   subscriptionCurrent: (businessId: string) => `sub:current:${businessId}`,
   subscriptionLimits: (businessId: string) => `sub:limits:${businessId}`,
   subscriptionBilling: (businessId: string) => `sub:billing:${businessId}`,
+  // Ids of the shop's stores closed for non-payment (FILIAL-OBUNA.md) — read
+  // on every staff request by the lock interceptor; TTL.SUBSCRIPTION, dropped
+  // with the subscription caches.
+  branchesClosed: (businessId: string) => `sub:branches-closed:${businessId}`,
   // The shop's payment-request state (pending one + latest rejection) behind
   // GET /subscriptions/billing-status, which every staff page polls. Written
   // on request create/approve/reject; TTL.SUBSCRIPTION.

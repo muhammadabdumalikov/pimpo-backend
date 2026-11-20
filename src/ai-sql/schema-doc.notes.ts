@@ -51,6 +51,12 @@ export const SCHEMA_DOC_NOTES = `
   number people quote ("chek #1245").
 - A customer's remaining debt is user_debts.amount minus the sum of that debt's
   debt_payments rows — not user_debts.amount on its own.
+- A till kirim/chiqim with cash_movements.cancelled_at set was taken back
+  (cancelled or corrected — the correction is a new row whose replaces_id
+  points at it). Every cash_movements total filters cancelled_at IS NULL.
+- financial_transactions rows with cancelled_at set were stornoed, and rows
+  with source = 'reversal' are the stornos themselves. Every finance total
+  filters cancelled_at IS NULL AND source <> 'reversal'.
 
 # Time
 

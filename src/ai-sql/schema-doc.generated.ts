@@ -36,8 +36,15 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   business_id varchar(36) NOT NULL
   name varchar(255) NOT NULL
   address varchar(500)
+  phone varchar(32)
+  working_hours jsonb
+  map_url varchar(500)
   is_default boolean NOT NULL
   is_active boolean NOT NULL
+  free_until timestamp with time zone
+  paid_until timestamp with time zone
+  renew boolean NOT NULL
+  billing_closed_at timestamp with time zone
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
 
@@ -63,6 +70,12 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   reason varchar(500)
   cashier_id varchar(36)
   cashier_name varchar(255)
+  supplier_id varchar(36)
+  supplier_name varchar(255)
+  cancelled_at timestamp
+  cancelled_by_id varchar(36)
+  cancelled_by_name varchar(255)
+  replaces_id varchar(36)
   created_at timestamp NOT NULL
 
 ## cash_operation_categories
@@ -111,8 +124,9 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
 ## categories
   id varchar(100) NOT NULL
   business_id varchar(36) NOT NULL
-  name varchar(255) NOT NULL
+  name varchar(255)
   image varchar(500)
+  global_key varchar(64)
   is_deleted boolean NOT NULL
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
@@ -169,6 +183,8 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   loss_value numeric(14, 2) NOT NULL
   credit_value numeric(14, 2)
   currency varchar(3)
+  settlement varchar(8)
+  cancelled_at timestamp
   cashier_id varchar(36)
   cashier_name varchar(255)
   created_at timestamp NOT NULL
@@ -219,6 +235,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   product_id varchar(36)
   product_name varchar(255) NOT NULL
   price_in numeric(10, 2) NOT NULL
+  doc_price_in numeric(10, 2)
   currency varchar(3) NOT NULL
   price_out numeric(10, 2)
   price_wholesale numeric(10, 2)
@@ -242,6 +259,9 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   usd_rate numeric(12, 4)
   item_count integer NOT NULL
   note varchar(500)
+  discount_amount numeric(12, 2) NOT NULL
+  discount_pct numeric(7, 4)
+  extra_cost numeric(12, 2) NOT NULL
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
 
@@ -289,6 +309,10 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   cost_in numeric(10, 2) NOT NULL
   cost_total numeric(12, 2) NOT NULL
   returned_quantity double precision NOT NULL
+  weight_source varchar(10)
+  note varchar(200)
+  stock_pending boolean NOT NULL
+  options jsonb
   created_at timestamp NOT NULL
 
 ## orders
@@ -323,6 +347,22 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   branch_id varchar(36)
   receipt_no integer
   returned_amount numeric(12, 2) NOT NULL
+  queue_no integer
+  service_type varchar(10)
+  delivery_type varchar(10)
+  delivery_address varchar(500)
+  delivery_lat double precision
+  delivery_lng double precision
+  delivery_fee numeric(12, 2) NOT NULL
+  courier_id varchar(36)
+  courier_name varchar(255)
+  courier_phone varchar(32)
+  placed_at timestamp
+  locale varchar(5)
+  cancel_reason varchar(20)
+  cancel_note varchar(255)
+  prepaid_amount numeric(12, 2) NOT NULL
+  channel varchar(12)
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
 
@@ -367,12 +407,14 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   plu integer
   price_in numeric(10, 2) NOT NULL
   price_out numeric(10, 2) NOT NULL
+  old_price numeric(10, 2)
   price_wholesale numeric(10, 2)
   price_bundle numeric(10, 2)
   quantity double precision NOT NULL
   quantity_type varchar(50)
   unit_id varchar(36)
   image varchar(500)
+  extra_images jsonb NOT NULL
   category_id varchar(100)
   low_stock_threshold double precision
   brand_id varchar(36)
@@ -380,6 +422,13 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   branch_id varchar(36)
   mxik_code varchar(17)
   package_code varchar(20)
+  kind varchar(8) NOT NULL
+  show_in_menu boolean NOT NULL
+  recipe_yield double precision
+  preorder boolean NOT NULL
+  options jsonb
+  lead_time varchar(60)
+  description text
   is_active boolean NOT NULL
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
@@ -425,6 +474,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   points_reversed numeric(12, 2) NOT NULL
   refund_amount numeric(12, 2) NOT NULL
   refunds jsonb
+  delivery_fee_refund numeric(12, 2) NOT NULL
   cost_total numeric(12, 2) NOT NULL
   restocked_cost numeric(12, 2) NOT NULL
   created_at timestamp NOT NULL
@@ -437,6 +487,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   login varchar(100)
   password varchar(255)
   has_account boolean NOT NULL
+  pin_hash varchar(255)
   avatar_url varchar(500)
   position varchar(100)
   phone varchar(32)
@@ -523,6 +574,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   account_id varchar(36)
   account_name varchar(255)
   financial_transaction_id varchar(36)
+  source varchar(8) NOT NULL
   note varchar(500)
   cashier_id varchar(36)
   cashier_name varchar(255)
@@ -545,7 +597,7 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
 ## supplier_returns
   id varchar(36) PK NOT NULL
   business_id varchar(36) NOT NULL
-  receipt_id varchar(36) NOT NULL
+  receipt_id varchar(36)
   supplier_id varchar(36)
   supplier_name varchar(255)
   total_amount numeric(12, 2) NOT NULL
@@ -555,6 +607,13 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   cashier_id varchar(36)
   cashier_name varchar(255)
   source varchar(12) NOT NULL
+  settlement varchar(8) NOT NULL
+  computed_total numeric(14, 2)
+  usd_rate numeric(12, 4)
+  branch_id varchar(36)
+  finance_tx_id varchar(36)
+  cancelled_at timestamp
+  cancelled_by_name varchar(255)
   created_at timestamp NOT NULL
 
 ## suppliers

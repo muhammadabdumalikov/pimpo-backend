@@ -8,6 +8,7 @@ import {
 import type {Response} from 'express';
 import {AppException} from '../errors/app.exception';
 import {ErrorCode, genericCodeForStatus} from '../errors/error-codes';
+import {isBranchClosedError} from '../errors/db-errors';
 
 // Uniform error envelope for every failed request:
 //   { statusCode, code, message, params? }
@@ -70,7 +71,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
-    // 3) Anything else is an unhandled server error — log it, hide details.
+    // 3) The database refused a stock change in a closed store.
+    if (isBranchClosedError(exception)) {
+      const closed = new AppException(ErrorCode.BRANCH_CLOSED);
+      return {
+        statusCode: closed.getStatus(),
+        code: closed.code,
+        message: closed.message,
+      };
+    }
+
+    // 4) Anything else is an unhandled server error — log it, hide details.
     this.logger.error(
       exception instanceof Error ? exception.stack : String(exception),
     );

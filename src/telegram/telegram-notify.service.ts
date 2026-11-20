@@ -501,6 +501,36 @@ export class TelegramNotifyService {
     });
   }
 
+  /**
+   * A till kirim/chiqim taken back or corrected after the fact. Text only, on
+   * the same toggle as the movement itself: the owner sees what it was, what
+   * it is now, and who changed it.
+   */
+  notifyCashCorrection(
+    businessId: string,
+    was: CashMovement,
+    now: CashMovement | null,
+    byName: string | null,
+  ): void {
+    const line = (m: CashMovement) => {
+      const cur =
+        m.currency && m.currency !== 'UZS' ? ` ${m.currency}` : " so'm";
+      const kind = m.type === 'in' ? 'kirim' : 'chiqim';
+      const note = m.categoryName || m.reason;
+      return `${kind} ${uz(m.amount)}${cur}${note ? ` (${note})` : ''}`;
+    };
+    const lines = [
+      now
+        ? '✏️ Kassa operatsiyasi tuzatildi'
+        : '↩️ Kassa operatsiyasi bekor qilindi',
+      `Avval: ${line(was)}`,
+    ];
+    if (now) lines.push(`Endi: ${line(now)}`);
+    if (byName) lines.push(`👤 ${now ? 'Tuzatdi' : 'Bekor qildi'}: ${byName}`);
+    lines.push(`🕒 Operatsiya vaqti: ${dateTime(was.createdAt)}`);
+    this.fire(businessId, 'cashOperations', lines.join('\n'));
+  }
+
   // ── Owner phone events (MOBILE.md Q9) — also sent to Telegram ──────────────
 
   /** A storefront order arrived and waits for the shop to confirm it. */

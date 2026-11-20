@@ -34,6 +34,7 @@ import {
   gte,
   lte,
   inArray,
+  isNull,
   notInArray,
   getTableColumns,
   sql,
@@ -1523,6 +1524,9 @@ export class FinanceService {
       categoryName: string | null;
       cashierId: string | null;
       cashierName: string | null;
+      // A correction keeps the day of the movement it replaces, so the P&L
+      // reads it where the money really moved.
+      operationDate?: Date | null;
     },
     register: {id: string; name: string | null},
   ): Promise<void> {
@@ -1555,6 +1559,7 @@ export class FinanceService {
       cashierName: movement.cashierName,
       shiftId: movement.shiftId,
       cashMovementId: movement.id,
+      operationDate: movement.operationDate ?? null,
     });
 
     await this.applyBalanceDelta(
@@ -1564,6 +1569,37 @@ export class FinanceService {
       movement.currency,
       signed,
     );
+  }
+
+  /**
+   * Storno the ledger row a till kirim/chiqim wrote (recordCashMovementTx),
+   * when that movement is cancelled or corrected. Like every till movement it
+   * never refuses below zero: a kirim that never happened was never in the
+   * drawer. A movement from before the ledger existed has no row — nothing to
+   * take back.
+   */
+  async reverseCashMovementTx(
+    tx: DbTx,
+    businessId: string,
+    cashMovementId: string,
+    actor: {id: string | null; name: string | null},
+  ): Promise<void> {
+    const rows = await tx
+      .select({id: financialTransactions.id})
+      .from(financialTransactions)
+      .where(
+        and(
+          eq(financialTransactions.businessId, businessId),
+          eq(financialTransactions.cashMovementId, cashMovementId),
+          eq(financialTransactions.source, 'cash_movement'),
+          isNull(financialTransactions.cancelledAt),
+        ),
+      );
+    for (const row of rows) {
+      await this.reverseTx(tx, businessId, row.id, actor, {
+        allowNegative: true,
+      });
+    }
   }
 
   /**

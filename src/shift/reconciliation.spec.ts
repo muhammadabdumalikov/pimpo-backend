@@ -1,4 +1,8 @@
-import {computeReconciliation, type ReconRow} from './reconciliation';
+import {
+  applyMovementToRows,
+  computeReconciliation,
+  type ReconRow,
+} from './reconciliation';
 
 const row = (rows: ReconRow[], method: string, currency = 'UZS') =>
   rows.find((r) => r.method === method && r.currency === currency)!;
@@ -256,5 +260,76 @@ describe('computeReconciliation customer returns', () => {
     expect(saleTotals.cashRefunds).toBe(35000);
     expect(saleTotals.cardRefunds).toBe(10000);
     expect(saleTotals.debtReduced).toBe(7000);
+  });
+});
+
+describe('applyMovementToRows', () => {
+  // The bekmarket case: a 65 000 chiqim typed in USD instead of UZS, on a
+  // shift that was already closed and counted.
+  const closed = computeReconciliation({
+    openingFloat: 0,
+    sales: [
+      {totalAmount: 4961684, payments: [{method: 'cash', amount: 4961684}]},
+    ],
+    movements: [
+      {isCash: true, currency: 'UZS', type: 'out', amount: 2804000},
+      {isCash: true, currency: 'USD', type: 'out', amount: 65000},
+    ],
+    counted: new Map([['cash:UZS', 1640000]]),
+  }).rows;
+
+  it('moves a corrected chiqim from the USD row to the UZS row', () => {
+    const wrong = {isCash: true, currency: 'USD', type: 'out', amount: '65000'};
+    const right = {isCash: true, currency: 'UZS', type: 'out', amount: '65000'};
+    const rows = applyMovementToRows(
+      applyMovementToRows(closed, wrong, -1),
+      right,
+      1,
+    );
+    expect(row(rows, 'cash')).toMatchObject({
+      out: 2869000,
+      expected: 2092684,
+      counted: 1640000,
+      diff: -452684,
+    });
+    expect(row(rows, 'cash', 'USD')).toMatchObject({
+      out: 0,
+      expected: 0,
+      diff: null,
+    });
+    // The input is left as it was.
+    expect(row(closed, 'cash').out).toBe(2804000);
+  });
+
+  it('a kirim taken back lowers the expected cash', () => {
+    const rows = applyMovementToRows(
+      closed,
+      {isCash: true, currency: 'UZS', type: 'in', amount: 100000},
+      1,
+    );
+    expect(row(rows, 'cash')).toMatchObject({
+      in: 5061684,
+      expected: 2257684,
+      diff: -617684,
+    });
+  });
+
+  it('adds USD rows to a UZS-only shift and books non-cash on the card row', () => {
+    const uzsOnly = computeReconciliation({
+      openingFloat: 0,
+      sales: [],
+      movements: [],
+    }).rows;
+    const rows = applyMovementToRows(
+      uzsOnly,
+      {isCash: false, currency: 'USD', type: 'out', amount: 50},
+      1,
+    );
+    expect(row(rows, 'card', 'USD')).toMatchObject({
+      out: 50,
+      expected: -50,
+      counted: null,
+    });
+    expect(row(rows, 'cash', 'USD')).toMatchObject({out: 0, expected: 0});
   });
 });

@@ -184,6 +184,13 @@ export enum ErrorCode {
   SHIFT_NOT_FOUND = 'SHIFT_NOT_FOUND',
   SHIFT_ALREADY_CLOSED = 'SHIFT_ALREADY_CLOSED',
   SHIFT_CLOSE_FORBIDDEN = 'SHIFT_CLOSE_FORBIDDEN',
+  CASH_MOVEMENT_NOT_FOUND = 'CASH_MOVEMENT_NOT_FOUND',
+  CASH_MOVEMENT_ALREADY_CANCELLED = 'CASH_MOVEMENT_ALREADY_CANCELLED',
+  // A till payment to a supplier settled receipts; undo it from the supplier.
+  CASH_MOVEMENT_SUPPLIER_PAYMENT = 'CASH_MOVEMENT_SUPPLIER_PAYMENT',
+  // A cashier may correct only their own kirim/chiqim, and only while the
+  // shift is open; after that it takes finance:manage.
+  CASH_MOVEMENT_CORRECT_FORBIDDEN = 'CASH_MOVEMENT_CORRECT_FORBIDDEN',
   // An online seller has no till: its money goes straight to Moliya
   // accounts (ONLAYN-SOTUVCHI.md Q5, E9).
   SHIFT_NOT_FOR_ONLINE = 'SHIFT_NOT_FOR_ONLINE',
@@ -325,6 +332,15 @@ export enum ErrorCode {
   // closed until it pays, the till included (OBUNA-TOLOV.md Q3, revised
   // 2026-11-17). Only sign-in and the billing routes stay open.
   SUBSCRIPTION_LOCKED = 'SUBSCRIPTION_LOCKED',
+  // One store's seat went unpaid past its warning days (FILIAL-OBUNA.md Q3):
+  // its stock cannot change — no sale, receipt, transfer or count. Raised by
+  // the branch_stock trigger; reads stay open.
+  BRANCH_CLOSED = 'BRANCH_CLOSED',
+  // A staff account pinned to a closed store: the whole app is shut for it
+  // until the owner pays (FILIAL-OBUNA.md Q3).
+  BRANCH_LOCKED = 'BRANCH_LOCKED',
+  // The main store renews with the plan; it has no renewal switch of its own.
+  BRANCH_MAIN_RENEW_FORBIDDEN = 'BRANCH_MAIN_RENEW_FORBIDDEN',
   // The AI bot add-on is sold on the online seller plan only
   // (ONLAYN-SOTUVCHI.md D10, E4).
   AI_ADDON_NOT_AVAILABLE = 'AI_ADDON_NOT_AVAILABLE',
@@ -1066,6 +1082,24 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     message:
       'Only the cashier who opened this shift (or an owner) can close it',
   },
+  [ErrorCode.CASH_MOVEMENT_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Cash movement not found',
+  },
+  [ErrorCode.CASH_MOVEMENT_ALREADY_CANCELLED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This cash movement was already cancelled',
+  },
+  [ErrorCode.CASH_MOVEMENT_SUPPLIER_PAYMENT]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'A payment to a supplier cannot be corrected here — it settled their receipts',
+  },
+  [ErrorCode.CASH_MOVEMENT_CORRECT_FORBIDDEN]: {
+    status: HttpStatus.FORBIDDEN,
+    message:
+      'Only your own movements in an open shift can be corrected; anything else needs finance:manage',
+  },
   [ErrorCode.SHIFT_NOT_FOR_ONLINE]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'An online seller has no till shifts',
@@ -1498,6 +1532,18 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.SUBSCRIPTION_LOCKED]: {
     status: HttpStatus.PAYMENT_REQUIRED,
     message: 'The subscription has ended. Pay to continue using KPOS',
+  },
+  [ErrorCode.BRANCH_CLOSED]: {
+    status: HttpStatus.PAYMENT_REQUIRED,
+    message: 'This store is closed until its subscription is paid',
+  },
+  [ErrorCode.BRANCH_LOCKED]: {
+    status: HttpStatus.PAYMENT_REQUIRED,
+    message: 'Your store is closed until its subscription is paid',
+  },
+  [ErrorCode.BRANCH_MAIN_RENEW_FORBIDDEN]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The main store renews with the plan',
   },
   [ErrorCode.AI_ADDON_NOT_AVAILABLE]: {
     status: HttpStatus.FORBIDDEN,

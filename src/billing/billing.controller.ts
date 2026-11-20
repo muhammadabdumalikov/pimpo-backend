@@ -33,6 +33,7 @@ import {
   CreatePaymentRequestDto,
   SetAiAddonDto,
   SetBillingCycleDto,
+  SetStoreRenewDto,
 } from './dto/billing.dto';
 import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 
@@ -154,6 +155,39 @@ export class BillingController {
     @Body() dto: SetAiAddonDto,
   ) {
     return this.billing.setAiAddon(business.id, dto.enabled, account.id);
+  }
+
+  @Get('stores')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary:
+      'Every store with its billing state (FILIAL-OBUNA.md); a pinned account sees its own',
+  })
+  listStores(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+  ) {
+    return this.billing.listStores(business.id, account);
+  }
+
+  @Put('stores/:id/renew')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermission('settings:manage')
+  @ApiBearerAuth('JWT-auth')
+  @ApiParam({name: 'id', description: 'Branch (store) id'})
+  @ApiOperation({
+    summary:
+      'Keep renewing an extra store, or stop: it closes when its paid time runs out',
+  })
+  setStoreRenew(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: SetStoreRenewDto,
+  ) {
+    return this.billing.setStoreRenew(business.id, account, id, dto.renew);
   }
 
   @Post('billing-cycle')

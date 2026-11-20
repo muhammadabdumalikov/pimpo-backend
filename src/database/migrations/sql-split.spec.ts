@@ -110,6 +110,7 @@ describe('drizzle/*.sql', () => {
       '0077_order_items_product_idx.sql',
       '0084_order_items_weight_source.sql',
       '0091_schema_parity.sql',
+      '0119_finance_tx_keyset_index.sql',
     ]);
   });
 

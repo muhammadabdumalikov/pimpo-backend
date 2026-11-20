@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Body,
   Param,
   Query,
@@ -240,6 +241,38 @@ export class ShiftController {
     @Query() query: QueryCashMovementsDto,
   ) {
     return this.shiftService.listMovements(business.id, query);
+  }
+
+  // Who may correct is decided per movement (own + open shift, or
+  // finance:manage), so the service checks it rather than a decorator.
+  @Put('cash-movements/:id')
+  @ApiOperation({
+    summary:
+      'Correct a kirim/chiqim typed wrong: the old one is cancelled (ledger stornoed), the corrected one written in its place',
+  })
+  @ApiParam({name: 'id', description: 'Cash movement ID'})
+  async correctMovement(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+    @Body() dto: CreateCashMovementDto,
+  ) {
+    return this.shiftService.correctMovement(business.id, id, dto, account);
+  }
+
+  @Post('cash-movements/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Cancel a kirim/chiqim that never happened: marked cancelled, its ledger row stornoed',
+  })
+  @ApiParam({name: 'id', description: 'Cash movement ID'})
+  async cancelMovement(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+  ) {
+    return this.shiftService.correctMovement(business.id, id, null, account);
   }
 
   @Get('shifts/:id/movements')

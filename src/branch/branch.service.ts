@@ -86,11 +86,8 @@ export class BranchService {
   async create(
     businessId: string,
     data: { name: string; address?: string } & BranchContactInput,
-    // Who opened it, for the billing ledger (staff or business id).
-    createdBy: string = businessId,
   ): Promise<Branch> {
     await this.ensureDefault(businessId);
-    // Validate before any charge is taken.
     const contact = contactPatch(data);
 
     // Enforce the plan's branch cap (branchesLimit; null = unlimited). The
@@ -112,39 +109,39 @@ export class BranchService {
       }
     }
 
-    // An extra seat on a running paid period is charged pro rata in the same
-    // transaction as the insert (OBUNA-TOLOV.md Q13); a refused charge
-    // (BILLING_INSUFFICIENT_BALANCE) leaves no branch behind.
-    return this.billingService.createBranchWithCharge(
-      businessId,
-      data.name,
-      createdBy,
-      async (tx) => {
-        const [created] = await tx
-          .insert(branches)
-          .values({
-            id: generateId(),
-            businessId,
-            name: data.name,
-            address: data.address ?? null,
-            ...contact,
-            isDefault: false,
-            isActive: true,
-          })
-          .returning();
-        // A branch sells through a register bound to it; without one the
-        // shop would ring sales on an old register and draw the wrong
-        // branch's stock (FILIAL-ASSORTIMENT.md Q13).
-        await tx.insert(cashRegisters).values({
+    // A new store opens free for its first days, balance or not; when they
+    // end, the billing sweep takes its share of the period from the balance
+    // (FILIAL-OBUNA.md §3). Nothing is charged here.
+    const freeUntil = this.billingService.branchFreeUntil();
+    const created = await this.dbService.db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(branches)
+        .values({
           id: generateId(),
           businessId,
-          name: `${data.name} kassasi`,
-          branchId: created.id,
+          name: data.name,
+          address: data.address ?? null,
+          ...contact,
+          isDefault: false,
           isActive: true,
-        });
-        return created;
-      },
-    );
+          freeUntil,
+        })
+        .returning();
+      // A branch sells through a register bound to it; without one the
+      // shop would ring sales on an old register and draw the wrong
+      // branch's stock (FILIAL-ASSORTIMENT.md Q13).
+      await tx.insert(cashRegisters).values({
+        id: generateId(),
+        businessId,
+        name: `${data.name} kassasi`,
+        branchId: row.id,
+        isActive: true,
+      });
+      return row;
+    });
+    // The monthly total and the store list count it from now on.
+    await this.subscriptionService.invalidate(businessId);
+    return created;
   }
 
   async update(
@@ -176,7 +173,8 @@ export class BranchService {
     }
     await this.dbService.db
       .update(branches)
-      .set({ isActive: false, updatedAt: new Date() })
+      // A deleted store carries no closed flag: nothing reads it any more.
+      .set({ isActive: false, billingClosedAt: null, updatedAt: new Date() })
       .where(and(eq(branches.id, id), eq(branches.businessId, businessId)));
     // The monthly total counts active branches. The paid seat is kept
     // (paid_extra_branches): reopening one this period is not charged again.

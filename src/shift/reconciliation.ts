@@ -177,3 +177,46 @@ export function computeReconciliation(input: ReconInput): {
     },
   };
 }
+
+/**
+ * A closed shift's stored grid with one movement added (sign 1) or taken out
+ * (sign -1) — for a kirim/chiqim corrected after the close. Only that
+ * movement's row moves; sales and the counted cash stay as they were at the
+ * close, so the snapshot never drifts from what the close posted. A USD row
+ * the shift never had is created (nothing counted for it).
+ */
+export function applyMovementToRows(
+  rows: ReconRow[],
+  m: MovementForRecon,
+  sign: 1 | -1,
+): ReconRow[] {
+  const method = m.isCash ? 'cash' : 'card';
+  const currency = m.currency === 'USD' ? 'USD' : 'UZS';
+  const next = rows.map((r) => ({...r}));
+  if (currency === 'USD' && !next.some((r) => r.currency === 'USD')) {
+    for (const mt of ['cash', 'card'] as const) {
+      next.push({
+        method: mt,
+        currency: 'USD',
+        opening: 0,
+        in: 0,
+        out: 0,
+        expected: 0,
+        counted: null,
+        diff: null,
+      });
+    }
+  }
+  const row = next.find((r) => r.method === method && r.currency === currency);
+  if (!row) return next;
+  const amount = Number(m.amount) * sign;
+  if (m.type === 'out') {
+    row.out += amount;
+    row.expected -= amount;
+  } else {
+    row.in += amount;
+    row.expected += amount;
+  }
+  row.diff = row.counted == null ? null : row.counted - row.expected;
+  return next;
+}
