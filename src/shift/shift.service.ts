@@ -53,6 +53,8 @@ import {
   type ReconRow,
   type SaleTotals,
 } from './reconciliation';
+import {mergeSellerTotals, type ShiftSellerTotal} from './seller-totals';
+import {creditedStaffId, creditedStaffName} from '../order/seller-attribution';
 import {PermissionService} from '../permission/permission.service';
 import {BranchScopeService} from '../permission/branch-scope.service';
 import {shiftsOfBranch} from '../common/branch-shifts';
@@ -75,6 +77,8 @@ export interface ShiftReport {
   movements: CashMovement[];
   reconciliation: ReconRow[];
   orderCount: number;
+  /** Sales per seller (else cashier), net of the shift's returns — for the printed Z-report. */
+  sellers: ShiftSellerTotal[];
 }
 
 // Default register created for a business the first time it touches the kassa
@@ -1164,6 +1168,50 @@ export class ShiftService {
     });
   }
 
+  /**
+   * The shift's sales per person credited with them — the seller picked at
+   * the register, else the cashier (the sellers report's rule) — net of the
+   * returns settled in this shift. Same sales filter as the reconciliation,
+   * so the counts add up to its order count.
+   */
+  private async buildSellerTotals(
+    shift: CashShift,
+  ): Promise<ShiftSellerTotal[]> {
+    const [sales, returns] = await Promise.all([
+      this.dbService.db
+        .select({
+          staffId: creditedStaffId,
+          name: creditedStaffName,
+          orderCount: count(),
+          revenue: sql<string>`COALESCE(SUM(${orders.totalAmount}), 0)`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.businessId, shift.businessId),
+            eq(orders.shiftId, shift.id),
+            ne(orders.status, 'Cancelled'),
+          ),
+        )
+        .groupBy(creditedStaffId),
+      this.dbService.db
+        .select({
+          staffId: saleReturns.creditedStaffId,
+          name: sql<string | null>`MAX(${saleReturns.creditedStaffName})`,
+          value: sql<string>`COALESCE(SUM(${saleReturns.totalAmount}), 0)`,
+        })
+        .from(saleReturns)
+        .where(
+          and(
+            eq(saleReturns.businessId, shift.businessId),
+            eq(saleReturns.shiftId, shift.id),
+          ),
+        )
+        .groupBy(saleReturns.creditedStaffId),
+    ]);
+    return mergeSellerTotals(sales, returns);
+  }
+
   /** X-report: live reconciliation without closing the shift. */
   async getShiftReport(
     businessId: string,
@@ -1175,6 +1223,7 @@ export class ShiftService {
       movements: r.movements,
       reconciliation: r.reconciliation,
       orderCount: r.orderCount,
+      sellers: await this.buildSellerTotals(r.shift),
     };
   }
 
@@ -1186,7 +1235,9 @@ export class ShiftService {
   async getShiftReportWithUnposted(
     businessId: string,
     shiftId: string,
-  ): Promise<ShiftReport & {unposted: {cash: number; card: number}}> {
+  ): Promise<
+    Omit<ShiftReport, 'sellers'> & {unposted: {cash: number; card: number}}
+  > {
     const shift = await this.getShift(businessId, shiftId);
     const movements = await this.getShiftMovements(businessId, shiftId);
     const {rows, orderCount, saleTotals} = await this.buildReconciliation(
