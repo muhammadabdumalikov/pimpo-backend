@@ -1548,6 +1548,14 @@ export const cashShifts = pgTable('cash_shifts', {
   note: varchar('note', {length: 500}),
   openedAt: timestamp('opened_at').defaultNow().notNull(),
   closedAt: timestamp('closed_at'),
+  // Approval (0123): someone with shift:approve checked the closed shift and
+  // accepted it. From then on its kirim/chiqim can't be corrected or
+  // cancelled. Null = closed but not approved yet; name snapshotted. Shifts
+  // closed more than 3 days before the rollout were approved by the migration
+  // (approved_at = closed_at, no approver).
+  approvedAt: timestamp('approved_at'),
+  approvedById: varchar('approved_by_id', {length: 36}),
+  approvedByName: varchar('approved_by_name', {length: 255}),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

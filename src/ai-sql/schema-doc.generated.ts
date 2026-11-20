@@ -118,6 +118,9 @@ export const SCHEMA_DOC_GENERATED = `## account_balances
   note varchar(500)
   opened_at timestamp NOT NULL
   closed_at timestamp
+  approved_at timestamp
+  approved_by_id varchar(36)
+  approved_by_name varchar(255)
   created_at timestamp NOT NULL
   updated_at timestamp NOT NULL
 

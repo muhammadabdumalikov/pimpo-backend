@@ -157,18 +157,24 @@ export class ShiftController {
   @ApiQuery({name: 'page', required: false, type: Number})
   @ApiQuery({name: 'limit', required: false, type: Number})
   @ApiQuery({name: 'registerId', required: false, type: String})
+  @ApiQuery({name: 'approval', required: false, enum: ['pending', 'approved']})
   async getShifts(
     @CurrentBusiness() business: IBusiness,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('registerId') registerId?: string,
     @Query('branchId') branchId?: string,
+    @Query('approval') approval?: string,
   ) {
     return this.shiftService.getShifts(business.id, {
       page: page ? parseInt(page, 10) : undefined,
       limit: limit ? parseInt(limit, 10) : undefined,
       registerId,
       branchId: branchId || undefined,
+      approval:
+        approval === 'pending' || approval === 'approved'
+          ? approval
+          : undefined,
     });
   }
 
@@ -325,6 +331,23 @@ export class ShiftController {
       account,
     );
     return {message: 'Shift closed', shift};
+  }
+
+  @Post('shifts/:id/approve')
+  @RequirePermission('shift:approve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Approve a closed shift — its kirim/chiqim can no longer be corrected',
+  })
+  @ApiParam({name: 'id', description: 'Shift ID'})
+  async approveShift(
+    @CurrentBusiness() business: IBusiness,
+    @CurrentAccount() account: IAccount,
+    @Param('id') id: string,
+  ) {
+    const shift = await this.shiftService.approveShift(business.id, id, account);
+    return {message: 'Shift approved', shift};
   }
 
   @Get('shifts/:id')

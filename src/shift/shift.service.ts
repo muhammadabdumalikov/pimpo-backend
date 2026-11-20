@@ -32,6 +32,7 @@ import {
   ilike,
   isNull,
   isNotNull,
+  count,
   sql,
   getTableColumns,
   type SQL,
@@ -445,12 +446,16 @@ export class ShiftService {
       limit?: number;
       registerId?: string;
       branchId?: string;
+      /** 'pending' = closed, not approved yet; 'approved' = approved. */
+      approval?: 'pending' | 'approved';
     },
   ): Promise<{
     shifts: CashShift[];
     total: number;
     page: number;
     limit: number;
+    /** Closed shifts waiting for approval under the same register/store filter. */
+    pendingApproval: number;
   }> {
     const page = options?.page || 1;
     const limit = options?.limit || 10;
@@ -463,21 +468,93 @@ export class ShiftService {
     if (options?.branchId) {
       where.push(shiftsOfBranch(businessId, options.branchId));
     }
+    const pendingWhere = and(
+      ...where,
+      eq(cashShifts.status, 'closed'),
+      isNull(cashShifts.approvedAt),
+    );
+    if (options?.approval === 'pending') {
+      where.push(eq(cashShifts.status, 'closed'), isNull(cashShifts.approvedAt));
+    } else if (options?.approval === 'approved') {
+      where.push(isNotNull(cashShifts.approvedAt));
+    }
 
-    const all = await this.dbService.db
-      .select({id: cashShifts.id})
-      .from(cashShifts)
-      .where(and(...where));
+    const [[{total}], [{pending}], shifts] = await Promise.all([
+      this.dbService.db
+        .select({total: count()})
+        .from(cashShifts)
+        .where(and(...where)),
+      this.dbService.db
+        .select({pending: count()})
+        .from(cashShifts)
+        .where(pendingWhere),
+      this.dbService.db
+        .select()
+        .from(cashShifts)
+        .where(and(...where))
+        .orderBy(desc(cashShifts.openedAt))
+        .limit(limit)
+        .offset(offset),
+    ]);
 
-    const shifts = await this.dbService.db
-      .select()
-      .from(cashShifts)
-      .where(and(...where))
-      .orderBy(desc(cashShifts.openedAt))
-      .limit(limit)
-      .offset(offset);
+    return {shifts, total, page, limit, pendingApproval: pending};
+  }
 
-    return {shifts, total: all.length, page, limit};
+  /**
+   * "Smenani tasdiqlash": someone with shift:approve checked a closed shift
+   * and accepts it. From then on its kirim/chiqim are final — correctMovement
+   * refuses them for everyone, the owner included. Can't be undone.
+   */
+  async approveShift(
+    businessId: string,
+    shiftId: string,
+    account: IAccount,
+  ): Promise<CashShift> {
+    const shift = await this.getShift(businessId, shiftId);
+    if (shift.status !== 'closed') {
+      throw new AppException(ErrorCode.SHIFT_NOT_CLOSED);
+    }
+    if (shift.approvedAt) {
+      throw new AppException(ErrorCode.SHIFT_ALREADY_APPROVED);
+    }
+    const pinned = await this.branchScopes.scopeFor(account);
+    if (pinned && (await this.shiftBranchId(shift)) !== pinned) {
+      throw new AppException(ErrorCode.SHIFT_APPROVE_FORBIDDEN);
+    }
+    const actor = await this.resolveCashier(account);
+    // Waits on the row lock a running correction holds on this shift, so a
+    // correction either lands before the approval or is refused after it.
+    const [approved] = await this.dbService.db
+      .update(cashShifts)
+      .set({
+        approvedAt: new Date(),
+        approvedById: actor.id,
+        approvedByName: actor.name,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(cashShifts.id, shift.id),
+          eq(cashShifts.businessId, businessId),
+          isNull(cashShifts.approvedAt),
+        ),
+      )
+      .returning();
+    if (!approved) throw new AppException(ErrorCode.SHIFT_ALREADY_APPROVED);
+    return approved;
+  }
+
+  /** The store (branch) a shift's register belongs to; a register without one is the default store's. */
+  private async shiftBranchId(shift: CashShift): Promise<string> {
+    const [reg] = await this.dbService.db
+      .select({branchId: cashRegisters.branchId})
+      .from(cashRegisters)
+      .where(eq(cashRegisters.id, shift.registerId))
+      .limit(1);
+    return (
+      reg?.branchId ??
+      (await this.branchService.ensureDefault(shift.businessId)).id
+    );
   }
 
   // ─── Cash movements (kirim/chiqim) ────────────────────────────────────────
@@ -742,18 +819,13 @@ export class ShiftService {
     movement: CashMovement,
     shift: CashShift,
   ): Promise<void> {
+    if (shift.approvedAt) {
+      throw new AppException(ErrorCode.CASH_MOVEMENT_SHIFT_APPROVED);
+    }
     if (await this.permissions.can(account, 'finance:manage')) {
       const pinned = await this.branchScopes.scopeFor(account);
       if (!pinned) return;
-      const [reg] = await this.dbService.db
-        .select({branchId: cashRegisters.branchId})
-        .from(cashRegisters)
-        .where(eq(cashRegisters.id, shift.registerId))
-        .limit(1);
-      const branchId =
-        reg?.branchId ??
-        (await this.branchService.ensureDefault(shift.businessId)).id;
-      if (branchId === pinned) return;
+      if ((await this.shiftBranchId(shift)) === pinned) return;
       throw new AppException(ErrorCode.CASH_MOVEMENT_CORRECT_FORBIDDEN);
     }
     if (
@@ -877,6 +949,7 @@ export class ShiftService {
         ...getTableColumns(cashMovements),
         registerName: cashRegisters.name,
         shiftStatus: cashShifts.status,
+        shiftApprovedAt: cashShifts.approvedAt,
       })
       .from(cashMovements)
       .leftJoin(cashRegisters, eq(cashRegisters.id, cashMovements.registerId))
@@ -956,8 +1029,10 @@ export class ShiftService {
         .select({
           ...getTableColumns(cashMovements),
           registerName: cashRegisters.name,
-          // Lets the list offer "Tuzatish" to a cashier only while open.
+          // Lets the list offer "Tuzatish" to a cashier only while open,
+          // and to no one once the shift is approved.
           shiftStatus: cashShifts.status,
+          shiftApprovedAt: cashShifts.approvedAt,
         })
         .from(cashMovements)
         .leftJoin(cashRegisters, eq(cashRegisters.id, cashMovements.registerId))

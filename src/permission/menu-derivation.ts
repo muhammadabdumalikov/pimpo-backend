@@ -24,7 +24,7 @@ const MENU_REQUIRED_PERMISSION: Record<string, string | string[]> = {
   receipts: 'receipt:read',
   checkout: 'sale:create',
   onlineOrders: 'sale:online:manage',
-  kassa: ['shift:open', 'shift:close', 'cash:movement'],
+  kassa: ['shift:open', 'shift:close', 'shift:approve', 'cash:movement'],
   customers: 'customer:read',
   userDebt: 'debt:read',
   loyalty: 'loyalty:manage',

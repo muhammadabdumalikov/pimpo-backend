@@ -54,6 +54,9 @@ export const SCHEMA_DOC_NOTES = `
 - A till kirim/chiqim with cash_movements.cancelled_at set was taken back
   (cancelled or corrected — the correction is a new row whose replaces_id
   points at it). Every cash_movements total filters cancelled_at IS NULL.
+- A closed shift (cash_shifts.status = 'closed') with approved_at set was
+  checked and approved ("tasdiqlangan"); approved_at IS NULL on a closed shift
+  means it is waiting for approval. Approved shifts' movements are final.
 - financial_transactions rows with cancelled_at set were stornoed, and rows
   with source = 'reversal' are the stornos themselves. Every finance total
   filters cancelled_at IS NULL AND source <> 'reversal'.

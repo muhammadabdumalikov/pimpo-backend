@@ -191,6 +191,12 @@ export enum ErrorCode {
   // A cashier may correct only their own kirim/chiqim, and only while the
   // shift is open; after that it takes finance:manage.
   CASH_MOVEMENT_CORRECT_FORBIDDEN = 'CASH_MOVEMENT_CORRECT_FORBIDDEN',
+  // The shift was approved: its kirim/chiqim are final for everyone.
+  CASH_MOVEMENT_SHIFT_APPROVED = 'CASH_MOVEMENT_SHIFT_APPROVED',
+  // Approving: only a closed shift, once, and within the approver's store.
+  SHIFT_NOT_CLOSED = 'SHIFT_NOT_CLOSED',
+  SHIFT_ALREADY_APPROVED = 'SHIFT_ALREADY_APPROVED',
+  SHIFT_APPROVE_FORBIDDEN = 'SHIFT_APPROVE_FORBIDDEN',
   // An online seller has no till: its money goes straight to Moliya
   // accounts (ONLAYN-SOTUVCHI.md Q5, E9).
   SHIFT_NOT_FOR_ONLINE = 'SHIFT_NOT_FOR_ONLINE',
@@ -1099,6 +1105,23 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
     status: HttpStatus.FORBIDDEN,
     message:
       'Only your own movements in an open shift can be corrected; anything else needs finance:manage',
+  },
+  [ErrorCode.CASH_MOVEMENT_SHIFT_APPROVED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      'This shift was approved — its cash movements can no longer be changed',
+  },
+  [ErrorCode.SHIFT_NOT_CLOSED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Only a closed shift can be approved',
+  },
+  [ErrorCode.SHIFT_ALREADY_APPROVED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'This shift was already approved',
+  },
+  [ErrorCode.SHIFT_APPROVE_FORBIDDEN]: {
+    status: HttpStatus.FORBIDDEN,
+    message: "This shift belongs to another store — it isn't yours to approve",
   },
   [ErrorCode.SHIFT_NOT_FOR_ONLINE]: {
     status: HttpStatus.BAD_REQUEST,

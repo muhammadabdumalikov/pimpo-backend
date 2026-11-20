@@ -89,6 +89,9 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   {key: 'customer:chat:reply', group: 'sales', feature: 'ai_assistant'},
   {key: 'shift:open', group: 'sales'},
   {key: 'shift:close', group: 'sales'},
+  // Approving a closed shift after checking it: its kirim/chiqim become final
+  // (no more corrections). Owner always; others only when given on purpose.
+  {key: 'shift:approve', group: 'sales'},
   // Cash in / cash out on an open shift — money leaving the drawer.
   {key: 'cash:movement', group: 'sales'},
   // Registers ("kassalar") and the cash-movement categories behind them.
