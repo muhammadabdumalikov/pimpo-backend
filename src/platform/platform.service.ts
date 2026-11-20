@@ -84,6 +84,16 @@ export interface PlatformBusinessRow {
    * not change it.
    */
   setup: OnboardingSetup;
+  /**
+   * The setup wizard (AI-SOZLASH.md §6): finished / skipped / never answered,
+   * the last step reached, and what the owner said they sell.
+   */
+  wizard: {
+    status: string | null;
+    step: string | null;
+    directions: string[];
+    directionText: string | null;
+  };
 }
 
 /**
@@ -242,6 +252,10 @@ export class PlatformService {
             storeEnabled: businesses.storeEnabled,
             storeSlug: businesses.storeSlug,
             ...requiredFactColumns(),
+            setupStatus: businesses.setupStatus,
+            setupStep: businesses.setupStep,
+            directions: businesses.directions,
+            directionText: businesses.directionText,
           })
           .from(businesses)
           .where(where)
@@ -295,7 +309,18 @@ export class PlatformService {
       profiles.map((r) => [r.businessId, Number(r.balance)]),
     );
 
-    return rows.map(({storeEnabled, storeSlug, product, stock, sale, ...b}) => {
+    return rows.map(({
+      storeEnabled,
+      storeSlug,
+      product,
+      stock,
+      sale,
+      setupStatus,
+      setupStep,
+      directions,
+      directionText,
+      ...b
+    }) => {
       const sub = subMap.get(b.id);
       const planTier = sub?.planTier ?? null;
       const endDate = sub?.endDate ?? null;
@@ -320,6 +345,12 @@ export class PlatformService {
           b.businessType,
           requiredFactsFromRow({storeEnabled, storeSlug, product, stock, sale}),
         ),
+        wizard: {
+          status: setupStatus,
+          step: setupStep,
+          directions: directions ?? [],
+          directionText,
+        },
       };
     });
   }

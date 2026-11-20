@@ -1,4 +1,5 @@
 import {Injectable, Logger} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../../category/category-names';
 import {Cron} from '@nestjs/schedule';
 import {and, eq, inArray, isNull, or, sql} from 'drizzle-orm';
 import {AppException} from '../../common/errors/app.exception';
@@ -428,7 +429,7 @@ export class AiImageJobsService {
         image: products.image,
         isActive: products.isActive,
         brand: brands.name,
-        category: categories.name,
+        category: CATEGORY_NAME_SQL,
         unit: units.name,
       })
       .from(products)

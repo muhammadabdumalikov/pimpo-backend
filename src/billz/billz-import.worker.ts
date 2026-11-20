@@ -1,4 +1,5 @@
 import {Injectable, Logger, OnApplicationBootstrap} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../category/category-names';
 import {Interval} from '@nestjs/schedule';
 import {
   and,
@@ -1593,7 +1594,7 @@ export class BillzImportWorker implements OnApplicationBootstrap {
         and(
           eq(categories.businessId, businessId),
           eq(categories.isDeleted, false),
-          ilike(categories.name, name),
+          ilike(CATEGORY_NAME_SQL, name),
         ),
       )
       .limit(1);

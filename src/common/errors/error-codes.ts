@@ -63,6 +63,12 @@ export enum ErrorCode {
   // ── Category ───────────────────────────────────────────────────────────────
   CATEGORY_ALREADY_EXISTS = 'CATEGORY_ALREADY_EXISTS',
   CATEGORY_NOT_FOUND = 'CATEGORY_NOT_FOUND',
+  CATEGORY_GLOBAL_READONLY = 'CATEGORY_GLOBAL_READONLY',
+  CATEGORY_SUGGEST_LIMIT = 'CATEGORY_SUGGEST_LIMIT',
+  GLOBAL_CATALOG_KEY_INVALID = 'GLOBAL_CATALOG_KEY_INVALID',
+  GLOBAL_CATALOG_KEY_TAKEN = 'GLOBAL_CATALOG_KEY_TAKEN',
+  GLOBAL_CATALOG_NAMES_REQUIRED = 'GLOBAL_CATALOG_NAMES_REQUIRED',
+  GLOBAL_DIRECTION_NOT_FOUND = 'GLOBAL_DIRECTION_NOT_FOUND',
 
   // ── Debt ───────────────────────────────────────────────────────────────────
   DEBT_LIMIT_REACHED = 'DEBT_LIMIT_REACHED',
@@ -577,6 +583,31 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.CATEGORY_NOT_FOUND]: {
     status: HttpStatus.NOT_FOUND,
     message: 'Category not found',
+  },
+  [ErrorCode.CATEGORY_GLOBAL_READONLY]: {
+    status: HttpStatus.BAD_REQUEST,
+    message:
+      "A ready-made category's name and picture cannot be changed; create your own category instead",
+  },
+  [ErrorCode.CATEGORY_SUGGEST_LIMIT]: {
+    status: HttpStatus.TOO_MANY_REQUESTS,
+    message: "Today's category suggestions are used up; try again tomorrow",
+  },
+  [ErrorCode.GLOBAL_CATALOG_KEY_INVALID]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'Key must be lowercase latin letters, digits or _ and start with a letter',
+  },
+  [ErrorCode.GLOBAL_CATALOG_KEY_TAKEN]: {
+    status: HttpStatus.CONFLICT,
+    message: 'This key is already taken',
+  },
+  [ErrorCode.GLOBAL_CATALOG_NAMES_REQUIRED]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'A name is required in all four languages',
+  },
+  [ErrorCode.GLOBAL_DIRECTION_NOT_FOUND]: {
+    status: HttpStatus.NOT_FOUND,
+    message: 'Line of trade not found',
   },
 
   // Debt

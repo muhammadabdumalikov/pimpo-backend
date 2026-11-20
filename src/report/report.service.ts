@@ -1,4 +1,5 @@
 import {Injectable, Inject} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../category/category-names';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {DatabaseService} from '../database/database.service';
 import {CacheKeys, TTL} from '../cache/cache.util';
@@ -338,7 +339,7 @@ export class ReportService {
         name: products.name,
         code: products.code,
         image: products.image,
-        category: sql<string | null>`MAX(${categories.name})`,
+        category: sql<string | null>`MAX(${CATEGORY_NAME_SQL})`,
         quantity: products.quantity,
         priceIn: products.priceIn,
         priceOut: products.priceOut,
@@ -2733,7 +2734,7 @@ export class ReportService {
         : await this.db
             .select({
               key: products.categoryId,
-              name: sql<string | null>`MAX(${categories.name})`,
+              name: sql<string | null>`MAX(${CATEGORY_NAME_SQL})`,
               revenue: revenueExpr,
               cogs: cogsExpr,
               units: unitsExpr,

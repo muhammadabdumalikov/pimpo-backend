@@ -241,7 +241,7 @@ export function keySegment(barcode: string): string {
  * where transparent, an 800px square — the same as an AI packshot, so a till
  * grid of shared pictures lines up.
  */
-async function toCatalogWebp(file: {
+export async function toCatalogWebp(file: {
   buffer: Buffer;
   mimetype: string;
 }): Promise<Buffer> {

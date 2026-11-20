@@ -1,4 +1,5 @@
 import {Injectable, Inject} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../category/category-names';
 import {AppException} from '../common/errors/app.exception';
 import {itemCountOf} from '../common/item-count';
 import {ErrorCode} from '../common/errors/error-codes';
@@ -2580,7 +2581,7 @@ export class OrderService {
         name: sql<string>`MAX(${orderItems.productName})`,
         code: sql<string | null>`MAX(${products.code})`,
         image: sql<string | null>`MAX(${products.image})`,
-        category: sql<string | null>`MAX(${categories.name})`,
+        category: sql<string | null>`MAX(${CATEGORY_NAME_SQL})`,
         unitsSold: sql<string>`COALESCE(SUM(${orderItems.quantity}), 0)`,
         revenue: sql<string>`COALESCE(SUM(${orderItems.lineTotal}), 0)`,
         // COGS from the per-sale snapshot (accurate after price changes). Falls

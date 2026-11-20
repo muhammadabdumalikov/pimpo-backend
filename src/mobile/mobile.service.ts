@@ -1,4 +1,5 @@
 import {Inject, Injectable} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../category/category-names';
 import {CACHE_MANAGER, Cache} from '@nestjs/cache-manager';
 import {
   and,
@@ -1015,7 +1016,7 @@ export class MobileService {
     if (branchId) {
       const res = await this.db
         .select({
-          category: sql<string | null>`MAX(${categories.name})`,
+          category: sql<string | null>`MAX(${CATEGORY_NAME_SQL})`,
           categoryId: products.categoryId,
           products: sql<number>`COUNT(*)::int`,
           units: sql<number>`SUM(${branchStock.quantity})::float8`,

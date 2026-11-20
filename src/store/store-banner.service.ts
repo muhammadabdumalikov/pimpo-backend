@@ -1,4 +1,5 @@
 import {Injectable} from '@nestjs/common';
+import {CATEGORY_NAME_SQL} from '../category/category-names';
 import {and, asc, eq, inArray} from 'drizzle-orm';
 import {businessDay} from '../common/business-time';
 import {AppException} from '../common/errors/app.exception';
@@ -345,7 +346,7 @@ export class StoreBannerService {
     }
     if (categoryIds.length > 0) {
       const found = await this.db
-        .select({id: categories.id, name: categories.name})
+        .select({id: categories.id, name: CATEGORY_NAME_SQL})
         .from(categories)
         .where(
           and(
@@ -354,7 +355,7 @@ export class StoreBannerService {
             eq(categories.isDeleted, false),
           ),
         );
-      for (const c of found) out.set(`category:${c.id}`, c.name);
+      for (const c of found) out.set(`category:${c.id}`, c.name ?? c.id);
     }
     return out;
   }

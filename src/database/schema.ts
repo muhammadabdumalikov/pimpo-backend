@@ -69,6 +69,16 @@ export const businesses = pgTable('businesses', {
   // Shops that had already sold when it shipped were set by the migration so
   // they never see it. Null = the card still shows until every step is done.
   onboardingDismissedAt: timestamp('onboarding_dismissed_at'),
+  // The setup wizard (AI-SOZLASH.md, 0120). `directions` = the store_directions
+  // keys the owner picked ("Nima sotasiz?", at most 3); `direction_text` = what
+  // they typed instead, kept verbatim so the team can grow the preset list.
+  // `setup_status` 'done' | 'skipped' | null (never finished nor skipped);
+  // `setup_step` = the last wizard step reached. Read by the console's
+  // "Sozlash" column; the wizard opens only while setup_status is null.
+  directions: text('directions').array(),
+  directionText: varchar('direction_text', {length: 200}),
+  setupStatus: varchar('setup_status', {length: 8}),
+  setupStep: varchar('setup_step', {length: 16}),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -419,16 +429,59 @@ export const categories = pgTable(
     businessId: varchar('business_id', {length: 36})
       .notNull()
       .references(() => businesses.id, {onDelete: 'cascade'}),
-    name: varchar('name', {length: 255}).notNull(),
+    // The shop's own name for its own category. NULL on a row that links a
+    // global category (global_key set): that name lives in global_categories
+    // and is read in the viewer's language — see category/category-names.ts.
+    name: varchar('name', {length: 255}),
     image: varchar('image', {length: 500}),
+    // A global category this shop uses (AI-SOZLASH.md §3, 0120). Such a row's
+    // id is `g-<key>`, so removing and re-adding it revives the same row and
+    // its products stay attached. NULL = the shop's own category.
+    globalKey: varchar('global_key', {length: 64}).references(
+      () => globalCategories.key,
+    ),
     isDeleted: boolean('is_deleted').default(false).notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
     pk: primaryKey({columns: [table.businessId, table.id]}),
+    businessGlobalKeyUnique: uniqueIndex('categories_business_global_key_uq')
+      .on(table.businessId, table.globalKey)
+      .where(sql`global_key IS NOT NULL`),
   }),
 );
+
+// The shared category list every shop can pick from (AI-SOZLASH.md §3, 0120).
+// Managed only from the platform console; never deleted — `is_hidden` stops
+// offering it to new shops while the shops that use it keep it.
+export const globalCategories = pgTable('global_categories', {
+  key: varchar('key', {length: 64}).primaryKey().notNull(),
+  nameUz: varchar('name_uz', {length: 120}).notNull(),
+  nameUzc: varchar('name_uzc', {length: 120}).notNull(),
+  nameRu: varchar('name_ru', {length: 120}).notNull(),
+  nameEn: varchar('name_en', {length: 120}).notNull(),
+  image: varchar('image', {length: 500}),
+  isHidden: boolean('is_hidden').default(false).notNull(),
+  sort: integer('sort').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// A line of trade ("Oziq-ovqat", "Kiyim-kechak") = a named, ordered set of
+// global categories. The wizard's "Nima sotasiz?" lists these.
+export const storeDirections = pgTable('store_directions', {
+  key: varchar('key', {length: 64}).primaryKey().notNull(),
+  nameUz: varchar('name_uz', {length: 120}).notNull(),
+  nameUzc: varchar('name_uzc', {length: 120}).notNull(),
+  nameRu: varchar('name_ru', {length: 120}).notNull(),
+  nameEn: varchar('name_en', {length: 120}).notNull(),
+  categoryKeys: text('category_keys').array().notNull().default(sql`'{}'::text[]`),
+  isHidden: boolean('is_hidden').default(false).notNull(),
+  sort: integer('sort').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
 
 export const users = pgTable(
   'users',
@@ -2146,6 +2199,8 @@ export type MxikClassifier = typeof mxikClassifier.$inferSelect;
 export type NewMxikClassifier = typeof mxikClassifier.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
+export type GlobalCategory = typeof globalCategories.$inferSelect;
+export type StoreDirection = typeof storeDirections.$inferSelect;
 export type Brand = typeof brands.$inferSelect;
 export type NewBrand = typeof brands.$inferInsert;
 export type User = typeof users.$inferSelect;

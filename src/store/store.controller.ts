@@ -16,6 +16,7 @@ import {
   parseStoreProductSort,
 } from './store.service';
 import { CategoryService } from '../category/category.service';
+import {ReqLocale, type CatalogLocale} from '../category/category-locale';
 import { OrderService } from '../order/order.service';
 import { OnlineOrderService } from '../order/online-order.service';
 import { storedPhone } from '../common/phone';
@@ -106,10 +107,11 @@ export class StoreController {
   @Get('categories')
   @ApiOperation({ summary: 'Get store categories (public)' })
   @ApiQuery({ name: 'store', required: false, type: String, description: 'Store subdomain slug' })
+  @ApiQuery({ name: 'locale', required: false, type: String, description: 'uz | uzc | ru | en (ready-made category names)' })
   @ApiResponse({ status: 200, description: 'List of categories' })
-  async getCategories(@Query('store') store?: string) {
+  async getCategories(@ReqLocale() locale: CatalogLocale, @Query('store') store?: string) {
     const businessId = await this.storeService.resolveBusinessId(store);
-    return this.categoryService.findAllForStore(businessId ?? undefined);
+    return this.categoryService.findAllForStore(businessId ?? undefined, locale);
   }
 
   @Get('orders/:id')
