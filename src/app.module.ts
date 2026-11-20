@@ -54,6 +54,7 @@ import {JwtModule} from '@nestjs/jwt';
 import {CacheModule} from '@nestjs/cache-manager';
 import {buildCacheOptions} from './cache/cache.store';
 import {DeviceModule} from './device/device.module';
+import {DeployNoticeModule} from './deploy-notice/deploy-notice.module';
 
 // Global module for JWT - makes JwtService available everywhere.
 // Uses registerAsync so the secret is read from ConfigService AFTER
@@ -143,6 +144,7 @@ class JwtGlobalModule {}
     DeviceModule,
     AssistantModule,
     OnboardingModule,
+    DeployNoticeModule,
   ],
   controllers: [AppController],
   providers: [AppService],

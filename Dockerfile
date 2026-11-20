@@ -27,6 +27,11 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle/*.sql ./drizzle/
 ENV PORT=3050
 EXPOSE 3050
+# The commit being deployed, for the Telegram deploy notice
+# (src/deploy-notice). Coolify passes it as a build arg when "Include Source
+# Commit in Build" is on. Declared last so it only busts this cheap layer.
+ARG SOURCE_COMMIT=
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 # Healthy = the server answers, which it only does after its migrations
 # applied. With Coolify's health check on, a deploy whose migration fails never
 # turns healthy, so the previous container keeps serving. start-period covers

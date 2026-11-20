@@ -65,13 +65,15 @@ export class TelegramSenderService {
   /**
    * Send a plain text message. Throws on failure so callers can react.
    * Pass `token` to send as a shop's own store bot instead of the platform bot;
-   * `buttons` are rows of link buttons shown under the message.
+   * `buttons` are rows of link buttons shown under the message. `html` parses
+   * `text` as Telegram HTML (caller escapes it) and turns link previews off.
    */
   async sendMessage(
     chatId: string,
     text: string,
     token?: string,
     buttons?: TelegramUrlButton[][],
+    options?: {html?: boolean},
   ): Promise<TelegramMessage> {
     if (!token && !this.token) {
       throw new AppException(ErrorCode.TELEGRAM_NOT_CONFIGURED);
@@ -83,6 +85,9 @@ export class TelegramSenderService {
         chat_id: chatId,
         text,
         ...(buttons?.length ? {reply_markup: {inline_keyboard: buttons}} : {}),
+        ...(options?.html
+          ? {parse_mode: 'HTML', link_preview_options: {is_disabled: true}}
+          : {}),
       }),
     });
     const data = (await res.json()) as TelegramApiResponse<TelegramMessage>;
