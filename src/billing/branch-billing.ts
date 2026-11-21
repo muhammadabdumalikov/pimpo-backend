@@ -104,6 +104,19 @@ export function isBranchClosed(
 }
 
 /**
+ * An extra store the renewal running at `at` may take (FILIAL-OBUNA.md Q9):
+ * the owner keeps renewing it and its free days are over — one still in
+ * them pays its share when they end. tryRenew picks its candidates with
+ * this, and the AI bot's reserve counts the stores with it (ai-usage.ts).
+ */
+export function renewsAt(
+  store: {renew: boolean; freeUntil: Date | string | null},
+  at: Date,
+): boolean {
+  return store.renew && !(store.freeUntil && asDate(store.freeUntil) > at);
+}
+
+/**
  * How many of the renewing stores a renewal takes, and for which cycle
  * (FILIAL-OBUNA.md §3, Q9). `totalFor(k)` is the month's total with k extra
  * stores. Nothing renews when the balance is short of the plan alone — the

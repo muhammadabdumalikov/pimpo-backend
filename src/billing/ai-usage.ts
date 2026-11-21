@@ -13,12 +13,14 @@ import {
 import {gateTier, tierAtLeast} from '../subscription/tier';
 import {
   REMINDER_DAYS,
+  asDate,
   computeMonthlyTotal,
   cycleTotal,
   tashkentDaysBetween,
   type BillingCycle,
   type DiscountTerm,
 } from './billing';
+import {renewsAt} from './branch-billing';
 
 /** Free answers of the online seller plan's signup trial, once. */
 export const TRIAL_FREE_ANSWERS = 500;
@@ -102,25 +104,38 @@ export function typicalAnswerCharge(
 /**
  * A month of the coming renewal as tryRenew prices it: the plan it will
  * charge (a scheduled downgrade's when there is one — a discount tied to the
- * current plan does not follow it), the extra stores kept renewing, the
+ * current plan does not follow it), the extra stores it will take, the
  * discounts in force. What renewalReserve holds back is built from this, by
  * the bot's gate and by the settlement alike, so the two cannot disagree.
+ *
+ * The stores are tryRenew's candidates (branch-billing.ts renewsAt): kept
+ * renewing and out of their free days when the renewal runs — taken as the
+ * end date, or now once that has passed (the renewal is then due at once).
+ * A store opened in the last days of the period is still free then, is not
+ * charged, and so is not held for.
  */
 export function renewalMonthlyTotal(input: {
   plan: {price: string | number; tier: string} | null;
   pendingPlan?: {price: string | number; tier: string} | null;
-  extraBranches: number;
+  /** The active extra (non-default) stores. */
+  stores: readonly {renew: boolean; freeUntil: Date | string | null}[];
+  endDate: Date | string | null;
   discounts: readonly DiscountTerm[];
   now?: Date;
 }): number {
   const plan = input.pendingPlan ?? input.plan;
   if (!plan) return 0;
+  const now = input.now ?? new Date();
+  const at =
+    input.endDate != null && asDate(input.endDate) > now
+      ? asDate(input.endDate)
+      : now;
   return computeMonthlyTotal({
     planPrice: Number(plan.price),
     planTier: plan.tier,
-    extraBranches: input.extraBranches,
+    extraBranches: input.stores.filter((s) => renewsAt(s, at)).length,
     discounts: input.discounts,
-    now: input.now,
+    now,
   }).total;
 }
 

@@ -77,6 +77,7 @@ import {
   branchBillingState,
   fitRenewal,
   isBranchClosed,
+  renewsAt,
   type BranchBillingState,
 } from './branch-billing';
 import {
@@ -834,9 +835,7 @@ export class BillingService {
       // every extra store the owner keeps renewing, except one still in its
       // free days — that one pays its share when they end.
       const stores = await this.extraStores(tx, businessId);
-      const candidates = stores.filter(
-        (b) => b.renew && !(b.freeUntil && asDate(b.freeUntil) > now),
-      );
+      const candidates = stores.filter((b) => renewsAt(b, now));
       // Short of the plan alone, nothing changes and the whole shop goes into
       // its grace (Q2). A wanted year the balance cannot cover falls back to a
       // month (OBUNA-TOLOV.md §9); a month takes as many stores as it covers.
@@ -1732,7 +1731,8 @@ export class BillingService {
         monthlyTotal: renewalMonthlyTotal({
           plan: sub.plan,
           pendingPlan,
-          extraBranches: ctx.extraBranches,
+          stores: await this.extraStores(tx, businessId),
+          endDate: sub.endDate,
           discounts: ctx.discounts,
           now,
         }),

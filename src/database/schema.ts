@@ -227,9 +227,8 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   // Extra branch seats already paid for this period (Q13): a branch opened
   // beyond this count is charged pro rata, one closed and reopened is not.
   paidExtraBranches: integer('paid_extra_branches').default(0).notNull(),
-  // Unused since 0125 (the AI bot add-on of 0109 is gone — its answers are
-  // billed as they are used). Kept until a later deploy drops the column.
-  aiAddon: boolean('ai_addon').default(false).notNull(),
+  // ai_addon (0109, the AI bot add-on, unused since 0125) is still in the
+  // database until a later deploy drops it: drizzle/pending-drops.txt.
   // 'month' | 'year' — the cycle this period was paid for (0110). Mid-period
   // charges prorate over the period at that cycle's price.
   billingCycle: varchar('billing_cycle', {length: 8}).default('month').notNull(),
@@ -2558,8 +2557,7 @@ export const billingProfiles = pgTable('billing_profiles', {
   inn: varchar('inn', {length: 20}),
   contractNumber: varchar('contract_number', {length: 50}),
   contractDate: timestamp('contract_date', {withTimezone: true}),
-  // Unused since 0125, like business_subscriptions.ai_addon.
-  aiAddon: boolean('ai_addon').default(false).notNull(),
+  // ai_addon: dropped later, like business_subscriptions' (pending-drops.txt).
   // The customer AI bot's answers not yet taken from the balance (0125): so'm
   // and how many answers that is. Settled once a day into one 'ai_usage'
   // ledger line (billing-ledger.ts settleAiUsage), so a busy bot does not

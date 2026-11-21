@@ -1,0 +1,9 @@
+# Columns still in the database but deliberately gone from schema.ts, because
+# a later deploy drops them (README.md, "Dropping a column"). One table.column
+# per line. `pnpm db:check` ignores exactly these on the migrations side, and
+# fails while one is still declared in schema.ts or no longer exists — remove
+# the line in the deploy that adds its DROP.
+
+# The AI bot add-on (0109), unused since 0125.
+billing_profiles.ai_addon
+business_subscriptions.ai_addon

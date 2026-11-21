@@ -226,8 +226,6 @@ export class SubscriptionService implements OnModuleInit {
         isTrial: businessSubscriptions.isTrial,
         pendingPlanId: businessSubscriptions.pendingPlanId,
         paidExtraBranches: businessSubscriptions.paidExtraBranches,
-        // Read only because the row type carries it; unused since 0125.
-        aiAddon: businessSubscriptions.aiAddon,
         billingCycle: businessSubscriptions.billingCycle,
         createdAt: businessSubscriptions.createdAt,
         updatedAt: businessSubscriptions.updatedAt,

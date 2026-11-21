@@ -191,40 +191,65 @@ describe('renewalReserve', () => {
 describe('renewalMonthlyTotal', () => {
   const pro = {price: '299000', tier: 'pro'};
   const proplus = {price: '499000', tier: 'proplus'};
+  const now = new Date('2026-11-21T07:00:00Z');
+  const inDays = (d: number) => new Date(now.getTime() + d * 86_400_000);
+  const base = {stores: [], endDate: inDays(3), discounts: [], now};
+  const kept = {renew: true, freeUntil: null};
 
   it('prices the plan the renewal charges: a scheduled downgrade', () => {
-    expect(
-      renewalMonthlyTotal({plan: proplus, extraBranches: 0, discounts: []}),
-    ).toBe(499_000);
+    expect(renewalMonthlyTotal({...base, plan: proplus})).toBe(499_000);
     expect(
       renewalMonthlyTotal({
+        ...base,
         plan: proplus,
         pendingPlan: pro,
-        extraBranches: 1,
-        discounts: [],
+        stores: [kept],
       }),
     ).toBe(299_000 + 150_000);
   });
 
   it("drops a discount tied to the plan the shop is leaving", () => {
     const discounts = [{percent: 50, planTier: 'proplus', validUntil: null}];
+    expect(renewalMonthlyTotal({...base, plan: proplus, discounts})).toBe(
+      249_500,
+    );
     expect(
-      renewalMonthlyTotal({plan: proplus, extraBranches: 0, discounts}),
-    ).toBe(249_500);
-    expect(
-      renewalMonthlyTotal({
-        plan: proplus,
-        pendingPlan: pro,
-        extraBranches: 0,
-        discounts,
-      }),
+      renewalMonthlyTotal({...base, plan: proplus, pendingPlan: pro, discounts}),
     ).toBe(299_000);
   });
 
-  it('is nothing without a plan', () => {
+  it('counts the stores tryRenew will take: renewing and out of their free days at the end', () => {
+    const stores = [
+      kept,
+      // Stopped by the owner.
+      {renew: false, freeUntil: null},
+      // Opened yesterday: still free on the end date, tomorrow.
+      {renew: true, freeUntil: inDays(2)},
+      // Its free days end before the end date: charged.
+      {renew: true, freeUntil: inDays(0.5)},
+    ];
     expect(
-      renewalMonthlyTotal({plan: null, extraBranches: 0, discounts: []}),
-    ).toBe(0);
+      renewalMonthlyTotal({...base, plan: pro, endDate: inDays(1), stores}),
+    ).toBe(
+      299_000 + 2 * 150_000,
+    );
+    // Past the end the renewal is due now: the store free until in 2 days is
+    // still free, one whose free days ended is charged.
+    expect(
+      renewalMonthlyTotal({
+        ...base,
+        plan: pro,
+        endDate: inDays(-1),
+        stores: [
+          {renew: true, freeUntil: inDays(2)},
+          {renew: true, freeUntil: inDays(-0.5)},
+        ],
+      }),
+    ).toBe(299_000 + 150_000);
+  });
+
+  it('is nothing without a plan', () => {
+    expect(renewalMonthlyTotal({...base, plan: null})).toBe(0);
   });
 });
 

@@ -58,7 +58,7 @@ deploy is marked failed. Fix the migration and push again.
 3. Make it **idempotent** (`IF NOT EXISTS`, guarded `DO` blocks) and
    **compatible with the code that is still running**. The old server keeps
    serving while the new one migrates, so add a column first and drop the old
-   one in a later deploy, never in the same one.
+   one in a later deploy, never in the same one (Dropping a column, below).
 4. Run `pnpm db:check` until it says the two agree.
 5. Commit the schema change and the SQL together.
 
@@ -74,3 +74,17 @@ Each statement waits at most 5 s for a table lock (`MIGRATE_LOCK_TIMEOUT`).
 Without that limit, an `ALTER TABLE` queued behind a long query would block
 every query after it, the till included. A timed-out deploy just fails;
 redeploy.
+
+## Dropping a column
+
+Two deploys, because the old server keeps serving while the new one migrates:
+
+1. Remove the column from `schema.ts` and from every query, and add
+   `table.column` to `drizzle/pending-drops.txt`. The new code's INSERTs leave
+   the column out, so it must be nullable or have a default; if not, this
+   deploy's migration adds one. `pnpm db:check` ignores the column on the
+   migrations side only, and fails if it is still declared in `schema.ts`.
+2. Only once deploy 1 is live everywhere: add the `DROP COLUMN IF EXISTS`
+   migration and remove the line from `pending-drops.txt` in the same commit.
+   `pnpm db:check` fails while a listed column is gone from the migrated
+   database, so the line can't be forgotten.

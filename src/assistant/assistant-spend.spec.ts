@@ -44,6 +44,9 @@ describe('botSpend', () => {
     expect(s.paidAnswerCount).toBe(2);
     expect(s.freeAnswerCount).toBe(5);
     expect(s.chargedUzs).toBe(30.42);
+    // The tokens of those same seven runs, the failed one included.
+    expect(s.tokensIn).toBe(6_000 + 9_000 + 3_000 + 3_000);
+    expect(s.tokensOut).toBe(300 + 450 + 150 + 150);
   });
 
   it('costs a paid run at what it was charged less the margin, an unpaid one at the rate', () => {
@@ -76,6 +79,8 @@ describe('botSpend', () => {
       answerCount: 0,
       paidAnswerCount: 0,
       freeAnswerCount: 0,
+      tokensIn: 0,
+      tokensOut: 0,
       chargedUzs: 0,
       costUsd: 0,
       costUzs: 0,
@@ -97,6 +102,8 @@ describe('botSummary', () => {
     expect(s.model).toBe(MODEL);
     expect(s.usdRate).toBe(12_000);
     expect(s.answerCount).toBe(9);
+    expect(s.tokensIn).toBe(4 * 3_000);
+    expect(s.tokensOut).toBe(4 * 150);
     expect(s.topBusinesses.map((b) => b.businessId)).toEqual(['b', 'a']);
     const a = s.topBusinesses[1];
     expect(a).toEqual({

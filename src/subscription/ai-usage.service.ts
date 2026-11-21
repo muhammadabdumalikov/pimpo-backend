@@ -1,7 +1,11 @@
 import {Injectable} from '@nestjs/common';
 import {and, eq, gte, isNotNull, sql} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
-import {billingProfiles, customerChatMessages} from '../database/schema';
+import {
+  billingProfiles,
+  branches,
+  customerChatMessages,
+} from '../database/schema';
 import {
   AI_PROVIDER_IDS,
   defaultModelFor,
@@ -162,12 +166,25 @@ export class AiUsageService {
     const pendingPlan = sub?.pendingPlanId
       ? await this.subscriptions.getPlanById(sub.pendingPlanId)
       : null;
+    // The extra stores as tryRenew reads them (their free days matter, which
+    // the cached billing view does not carry).
+    const stores = await this.db
+      .select({renew: branches.renew, freeUntil: branches.freeUntil})
+      .from(branches)
+      .where(
+        and(
+          eq(branches.businessId, businessId),
+          eq(branches.isActive, true),
+          eq(branches.isDefault, false),
+        ),
+      );
     const reserve = renewalReserve({
       endDate: sub?.endDate ?? null,
       monthlyTotal: renewalMonthlyTotal({
         plan: sub?.plan ?? null,
         pendingPlan,
-        extraBranches: billing.monthly.extraBranches,
+        stores,
+        endDate: sub?.endDate ?? null,
         discounts: billing.discounts,
       }),
       // Older cached views (before OBUNA-TOLOV.md §9) carry no cycle block.

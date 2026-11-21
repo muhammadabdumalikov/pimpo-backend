@@ -19,6 +19,9 @@ export interface PlatformAiBotSpend {
   paidAnswerCount: number;
   /** answerCount − paidAnswerCount: free allowance, failed runs, rows before 0125. */
   freeAnswerCount: number;
+  /** Tokens of those same runs, in and out (what costUsd prices). */
+  tokensIn: number;
+  tokensOut: number;
   /** So'm taken from shops: sum(cost_uzs). */
   chargedUzs: number;
   /** Every run's tokens at the provider's list price, no margin. */
@@ -98,6 +101,8 @@ export function botSpend(
 ): PlatformAiBotSpend {
   let answers = 0;
   let paidAnswers = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
   let charged = 0;
   let usd = 0;
   let paidCost = 0;
@@ -105,6 +110,8 @@ export function botSpend(
   for (const g of groups) {
     const runUsd = listCostUsd(g.model, g.tokensIn, g.tokensOut, opts.provider);
     answers += g.runs;
+    tokensIn += g.tokensIn;
+    tokensOut += g.tokensOut;
     charged += g.chargedUzs;
     usd += runUsd;
     if (g.paid) {
@@ -121,6 +128,8 @@ export function botSpend(
     answerCount: answers,
     paidAnswerCount: paidAnswers,
     freeAnswerCount: answers - paidAnswers,
+    tokensIn,
+    tokensOut,
     chargedUzs,
     costUsd: round6(usd),
     costUzs,

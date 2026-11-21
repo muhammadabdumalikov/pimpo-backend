@@ -6,7 +6,8 @@
 #   1. every migration, applied by the real runner (src/database/migrate.ts)
 #   2. the full DDL drizzle-kit generates from schema.ts
 # and diffs their indexes (full definition: WHERE, opclass, DESC, expressions),
-# columns and constraints. Any difference fails the check.
+# columns and constraints. Any difference fails the check — except a column
+# listed in drizzle/pending-drops.txt, see below.
 #
 # Needs initdb / pg_ctl / psql on PATH (brew install postgresql). Touches no
 # shared database: DATABASE_URL and .env are ignored.
@@ -61,10 +62,39 @@ CONSTRAINTS="SELECT conrelid::regclass || ' | ' || conname || ' | ' || pg_get_co
            FROM pg_constraint WHERE connamespace = 'public'::regnamespace ORDER BY 1"
 
 drift=0
+
+# drizzle/pending-drops.txt: columns still in the database but already gone
+# from schema.ts and the code, because a later deploy drops them (README.md,
+# "Dropping a column"). Only those, and only on the migrations side, are
+# ignored — and only while each really is in the migrated database and really
+# is gone from schema.ts, so a stale line cannot outlive its DROP.
+PENDING="$TMP/pending"
+{ sed -e 's/#.*//' -e 's/[[:space:]]//g' "$BE/drizzle/pending-drops.txt" 2>/dev/null || true; } \
+  | { grep -v '^$' || true; } | sort -u >"$PENDING"
+while IFS= read -r col; do
+  if [[ ! "$col" =~ ^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$ ]]; then
+    drift=1; echo; echo "✗ pending-drops.txt: '$col' is not table.column"; continue
+  fi
+  q="SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public'
+       AND table_name = '${col%%.*}' AND column_name = '${col#*.}'"
+  if [[ "$("${PSQL[@]}" -d migrations -At -c "$q")" != 1 ]]; then
+    drift=1; echo; echo "✗ pending-drops.txt: $col is not in the migrated database — dropped already? Remove the line."
+  fi
+  if [[ "$("${PSQL[@]}" -d fromschema -At -c "$q")" != 0 ]]; then
+    drift=1; echo; echo "✗ pending-drops.txt: $col is still declared in schema.ts"
+  fi
+done <"$PENDING"
+
 for kind in INDEXES COLUMNS CONSTRAINTS; do
   for db in migrations fromschema; do
     "${PSQL[@]}" -d "$db" -At -c "${!kind}" >"$TMP/$kind.$db"
   done
+  if [[ $kind == COLUMNS && -s "$PENDING" ]]; then
+    # Each line starts "table.column "; drop the pending ones.
+    awk 'NR == FNR { skip[$0] = 1; next } !(substr($0, 1, index($0, " ") - 1) in skip)' \
+      "$PENDING" "$TMP/COLUMNS.migrations" >"$TMP/COLUMNS.kept"
+    mv "$TMP/COLUMNS.kept" "$TMP/COLUMNS.migrations"
+  fi
   only_mig="$(comm -23 "$TMP/$kind.migrations" "$TMP/$kind.fromschema")"
   only_schema="$(comm -13 "$TMP/$kind.migrations" "$TMP/$kind.fromschema")"
   if [[ -n "$only_mig$only_schema" ]]; then
