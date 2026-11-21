@@ -6,6 +6,8 @@ import {CurrentBusiness} from '../business/decorators/current-business.decorator
 import {IBusiness} from '../business/types';
 import {OnboardingService} from './onboarding.service';
 import {SaveSetupWizardDto} from './dto/setup-wizard.dto';
+import {CreateWizardCashierDto} from './dto/wizard-cashier.dto';
+import {ReqLocale, type CatalogLocale} from '../category/category-locale';
 
 /**
  * The owner's "Boshlash" card on the dashboard: steps toward the first sale,
@@ -48,5 +50,21 @@ export class OnboardingController {
   @ApiResponse({status: 200, description: 'The checklist with the updated wizard state'})
   saveWizard(@CurrentBusiness() business: IBusiness, @Body() dto: SaveSetupWizardDto) {
     return this.onboarding.saveWizard(business, dto);
+  }
+
+  // The role is named in the Accept-Language the dashboard sends, like the
+  // wizard's category names.
+  @Post('wizard/cashier')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({summary: "Wizard seller step: a till account on a ready-made 'Kassir' role"})
+  @ApiResponse({status: 200, description: '{staff: {id, name, login}, role: {id, name}}'})
+  @ApiResponse({status: 400, description: 'SETUP_STEP_NOT_AVAILABLE for an online seller or a kitchen'})
+  @ApiResponse({status: 409, description: 'STAFF_LOGIN_EXISTS'})
+  addCashier(
+    @CurrentBusiness() business: IBusiness,
+    @Body() dto: CreateWizardCashierDto,
+    @ReqLocale() locale: CatalogLocale,
+  ) {
+    return this.onboarding.addCashier(business, dto, locale);
   }
 }

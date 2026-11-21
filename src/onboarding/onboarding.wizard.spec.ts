@@ -1,4 +1,10 @@
-import {buildWizardState, wizardAppliesTo} from './onboarding.wizard';
+import {
+  buildWizardState,
+  CASHIER_ROLE_NAMES,
+  isCashierRoleName,
+  staffStepAppliesTo,
+  wizardAppliesTo,
+} from './onboarding.wizard';
 
 const row = (over: Partial<Parameters<typeof buildWizardState>[0]> = {}) => ({
   businessType: 'retail',
@@ -44,5 +50,27 @@ describe('setup wizard state', () => {
       directions: ['grocery'],
       directionText: 'avto moy',
     });
+  });
+});
+
+describe('setup wizard seller step', () => {
+  it('is a shop step only', () => {
+    expect(staffStepAppliesTo('retail')).toBe(true);
+    expect(staffStepAppliesTo(null)).toBe(true);
+    expect(staffStepAppliesTo('online')).toBe(false);
+    expect(staffStepAppliesTo('food')).toBe(false);
+  });
+
+  it('names the cashier role in each dashboard language', () => {
+    expect(CASHIER_ROLE_NAMES).toEqual({uz: 'Kassir', uzc: 'Кассир', ru: 'Кассир', en: 'Cashier'});
+  });
+
+  it('recognises an existing cashier role by name, in any case', () => {
+    for (const n of ['Kassir', 'kassir', ' KASSIR ', 'Кассир', 'кассир', 'Cashier', 'CASHIER']) {
+      expect(isCashierRoleName(n)).toBe(true);
+    }
+    for (const n of ['Sotuvchi', 'Kassir 2', 'Bosh kassir', '']) {
+      expect(isCashierRoleName(n)).toBe(false);
+    }
   });
 });

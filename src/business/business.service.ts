@@ -6,11 +6,12 @@ import { DatabaseService } from '../database/database.service';
 import {
   businesses,
   businessSubscriptions,
+  staff,
   subscriptionPlans,
   type Business,
   type NewBusiness,
 } from '../database/schema';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, ne, or } from 'drizzle-orm';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/uuid';
 import type {BusinessType} from '../common/business-type';
@@ -119,7 +120,7 @@ export class BusinessService {
       .where(or(...clashConditions))
       .limit(1);
 
-    if (existing.length > 0) {
+    if (existing.length > 0 || (await this.isStaffLogin(data.login))) {
       throw new AppException(ErrorCode.EMAIL_OR_LOGIN_EXISTS);
     }
 
@@ -240,6 +241,20 @@ export class BusinessService {
     });
   }
 
+  /**
+   * Sign-in looks a login up among owners first and only then among staff,
+   * comparing it exactly — so an owner login equal to a staff login would lock
+   * that employee out for good. Owner logins must stay clear of staff ones.
+   */
+  private async isStaffLogin(login: string): Promise<boolean> {
+    const [member] = await this.dbService.db
+      .select({id: staff.id})
+      .from(staff)
+      .where(eq(staff.login, login))
+      .limit(1);
+    return !!member;
+  }
+
   async findByLogin(login: string): Promise<Business | null> {
     const [business] = await this.dbService.db
       .select()
@@ -281,6 +296,19 @@ export class BusinessService {
     const business = await this.findById(id);
     if (!business) {
       throw new AppException(ErrorCode.BUSINESS_NOT_FOUND);
+    }
+
+    // A new login must be free among the other owners and among staff, the
+    // same rule as at sign-up.
+    if (data.login !== undefined && data.login !== business.login) {
+      const [owner] = await this.dbService.db
+        .select({id: businesses.id})
+        .from(businesses)
+        .where(and(eq(businesses.login, data.login), ne(businesses.id, id)))
+        .limit(1);
+      if (owner || (await this.isStaffLogin(data.login))) {
+        throw new AppException(ErrorCode.EMAIL_OR_LOGIN_EXISTS);
+      }
     }
 
     // If password is being updated, hash it

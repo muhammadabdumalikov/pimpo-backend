@@ -1,8 +1,15 @@
 import {Injectable} from '@nestjs/common';
-import {eq, sql} from 'drizzle-orm';
+import {asc, eq, sql} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
-import {businesses} from '../database/schema';
+import {businesses, roles} from '../database/schema';
 import {IBusiness} from '../business/types';
+import {AppException} from '../common/errors/app.exception';
+import {ErrorCode} from '../common/errors/error-codes';
+import {RoleService} from '../role/role.service';
+import {StaffService} from '../staff/staff.service';
+import {BranchService} from '../branch/branch.service';
+import {CASHIER_PERMISSIONS} from '../permission/role-presets';
+import type {CatalogLocale} from '../category/category-locale';
 import {
   buildOnboardingState,
   OnboardingFacts,
@@ -13,16 +20,26 @@ import {QueriedStep, stepExists, storeFact} from './onboarding.conditions';
 import {GlobalCatalogService} from '../category/global-catalog.service';
 import {
   buildWizardState,
+  CASHIER_ROLE_NAMES,
+  isCashierRoleName,
   isSetupStatus,
   MAX_DIRECTIONS,
   SetupWizardState,
+  staffStepAppliesTo,
   wizardAppliesTo,
 } from './onboarding.wizard';
 import type {SaveSetupWizardDto} from './dto/setup-wizard.dto';
+import type {CreateWizardCashierDto} from './dto/wizard-cashier.dto';
 
 /** GET /onboarding: the "Boshlash" card plus the setup wizard's state. */
 export interface OnboardingView extends OnboardingState {
   wizard: SetupWizardState;
+}
+
+/** POST /onboarding/wizard/cashier: the seller made and the role it got. */
+export interface WizardCashierResult {
+  staff: {id: string; name: string; login: string};
+  role: {id: string; name: string};
 }
 
 @Injectable()
@@ -30,6 +47,9 @@ export class OnboardingService {
   constructor(
     private readonly dbService: DatabaseService,
     private readonly catalog: GlobalCatalogService,
+    private readonly roleService: RoleService,
+    private readonly staffService: StaffService,
+    private readonly branchService: BranchService,
   ) {}
 
   /**
@@ -88,6 +108,86 @@ export class OnboardingService {
         directionText: businesses.directionText,
       });
     return this.getState({...business, ...row});
+  }
+
+  /**
+   * "Sotuvchingiz bormi?": a seller who signs in with a login and password,
+   * on a ready-made cashier role, so the owner never opens the roles screen.
+   *
+   * The account goes through StaffService.create unchanged — seat limit, login
+   * uniqueness, password hashing and its error codes all apply as on
+   * POST /staff. It lands in the default branch: without `branch:all` a staff
+   * account is pinned to its own store anyway, and this makes that explicit.
+   *
+   * Not one transaction: RoleService and StaffService write on their own
+   * connection. A refused account (login taken, no seat) can leave the role
+   * behind with nobody on it; the next attempt reuses it by name.
+   */
+  async addCashier(
+    business: IBusiness,
+    dto: CreateWizardCashierDto,
+    locale: CatalogLocale,
+  ): Promise<WizardCashierResult> {
+    if (!staffStepAppliesTo(business.businessType)) {
+      throw new AppException(ErrorCode.SETUP_STEP_NOT_AVAILABLE, {step: 'staff'});
+    }
+    const role = await this.cashierRole(business.id, locale);
+    const branch = await this.branchService.ensureDefault(business.id);
+    const member = await this.staffService.create(business.id, {
+      name: dto.name,
+      hasAccount: true,
+      login: dto.login,
+      password: dto.password,
+      roleId: role.id,
+      position: role.name,
+      branchId: branch.id,
+    });
+    return {
+      staff: {id: member.id, name: member.name, login: member.login ?? dto.login},
+      role,
+    };
+  }
+
+  /**
+   * The shop's own cashier role if it keeps one (by name, in any of the
+   * dashboard languages — its permissions are the owner's and stay as they
+   * are), otherwise a new one in the request language with the cashier preset.
+   * A deactivated role is passed over: its staff could not sign in.
+   */
+  private async cashierRole(
+    businessId: string,
+    locale: CatalogLocale,
+  ): Promise<{id: string; name: string}> {
+    const existing = await this.findCashierRole(businessId);
+    if (existing) return existing;
+    try {
+      const role = await this.roleService.create(businessId, {
+        name: CASHIER_ROLE_NAMES[locale],
+        permissions: [...CASHIER_PERMISSIONS],
+      });
+      return {id: role.id, name: role.name};
+    } catch (err) {
+      // A double tap made it a moment ago: use that one.
+      if (err instanceof AppException && err.code === ErrorCode.ROLE_NAME_EXISTS) {
+        const raced = await this.findCashierRole(businessId);
+        if (raced) return raced;
+      }
+      throw err;
+    }
+  }
+
+  // Matched in code, not with SQL lower(): under a C locale that folds ASCII
+  // only ("Кассир" would miss), and a shop has a handful of roles.
+  private async findCashierRole(
+    businessId: string,
+  ): Promise<{id: string; name: string} | null> {
+    const rows = await this.dbService.db
+      .select({id: roles.id, name: roles.name, isActive: roles.isActive})
+      .from(roles)
+      .where(eq(roles.businessId, businessId))
+      .orderBy(asc(roles.createdAt));
+    const hit = rows.find((r) => r.isActive && isCashierRoleName(r.name));
+    return hit ? {id: hit.id, name: hit.name} : null;
   }
 
   /**

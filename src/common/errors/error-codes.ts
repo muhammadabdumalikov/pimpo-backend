@@ -209,6 +209,11 @@ export enum ErrorCode {
   STAFF_ACCOUNT_FIELDS_REQUIRED = 'STAFF_ACCOUNT_FIELDS_REQUIRED',
   STAFF_NO_ACCOUNT = 'STAFF_NO_ACCOUNT',
 
+  // ── Setup wizard (AI-SOZLASH.md §2) ────────────────────────────────────────
+  // A wizard step this kind of business does not have: the seller step on an
+  // online seller (a one-user plan) or on a kitchen (no wizard). params {step}.
+  SETUP_STEP_NOT_AVAILABLE = 'SETUP_STEP_NOT_AVAILABLE',
+
   // ── Payroll (Ish haqi) ─────────────────────────────────────────────────────
   PAYROLL_PERIOD_INVALID = 'PAYROLL_PERIOD_INVALID',
   PAYROLL_PERIOD_IN_FUTURE = 'PAYROLL_PERIOD_IN_FUTURE',
@@ -1150,6 +1155,12 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.STAFF_NO_ACCOUNT]: {
     status: HttpStatus.UNAUTHORIZED,
     message: 'This employee has no system account',
+  },
+
+  // Setup wizard
+  [ErrorCode.SETUP_STEP_NOT_AVAILABLE]: {
+    status: HttpStatus.BAD_REQUEST,
+    message: 'The {step} setup step is not available for this kind of business',
   },
 
   // Payroll (Ish haqi)

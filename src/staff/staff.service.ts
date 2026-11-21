@@ -7,6 +7,7 @@ import {
   staff,
   roles,
   branches,
+  businesses,
   type Staff,
   type NewStaff,
 } from '../database/schema';
@@ -224,6 +225,11 @@ export class StaffService {
     }
   }
 
+  /**
+   * A login is unique across staff AND shop owners: sign-in looks it up among
+   * owners first (exact match), so a staff login equal to any owner's — their
+   * own owner's included — could never sign in.
+   */
   private async assertLoginFree(login: string, excludeId?: string) {
     const [existing] = await this.db
       .select({id: staff.id})
@@ -231,6 +237,14 @@ export class StaffService {
       .where(eq(staff.login, login))
       .limit(1);
     if (existing && existing.id !== excludeId) {
+      throw new AppException(ErrorCode.STAFF_LOGIN_EXISTS);
+    }
+    const [owner] = await this.db
+      .select({id: businesses.id})
+      .from(businesses)
+      .where(eq(businesses.login, login))
+      .limit(1);
+    if (owner) {
       throw new AppException(ErrorCode.STAFF_LOGIN_EXISTS);
     }
   }

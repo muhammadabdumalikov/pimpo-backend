@@ -3,6 +3,7 @@
  * ready — what it sells, its categories, a seller, where its products are.
  * Pure helpers; OnboardingService reads and writes the business row.
  */
+import type {CatalogLocale} from '../category/category-locale';
 
 /** Wizard steps in order. `staff` is skipped for an online seller. */
 export const SETUP_WIZARD_STEPS = ['direction', 'categories', 'staff', 'products'] as const;
@@ -30,6 +31,31 @@ export interface SetupWizardState {
 /** A kitchen sets up its menu its own way (Q7); everyone else gets the wizard. */
 export function wizardAppliesTo(businessType: string | null | undefined): boolean {
   return businessType !== 'food';
+}
+
+/**
+ * "Sotuvchingiz bormi?" is a shop's question: an online seller's plan has a
+ * single user, and a kitchen has no wizard at all.
+ */
+export function staffStepAppliesTo(businessType: string | null | undefined): boolean {
+  return wizardAppliesTo(businessType) && businessType !== 'online';
+}
+
+/** The ready-made cashier role's name, in the language the owner set up in. */
+export const CASHIER_ROLE_NAMES: Record<CatalogLocale, string> = {
+  uz: 'Kassir',
+  uzc: 'Кассир',
+  ru: 'Кассир',
+  en: 'Cashier',
+};
+
+/**
+ * A role the owner already keeps under one of those names, in any case, is
+ * reused rather than a second one made next to it.
+ */
+export function isCashierRoleName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return Object.values(CASHIER_ROLE_NAMES).some((c) => c.toLowerCase() === n);
 }
 
 export function isSetupStatus(v: unknown): v is SetupStatus {

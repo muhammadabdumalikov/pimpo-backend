@@ -35,8 +35,9 @@ const row: Business = {
   createdAt: new Date('2026-11-17T09:05:00.000Z'),
 } as unknown as Business;
 
-// create(): login clash check → [], insert … returning → [row], trial plan → [] (skipped).
-const createResults = () => [[], [row], []];
+// create(): login clash check → [], staff login check → [], insert … returning
+// → [row], trial plan → [] (skipped).
+const createResults = () => [[], [], [row], []];
 
 const flush = () => new Promise((r) => setImmediate(r));
 
@@ -164,5 +165,40 @@ describe('signupAlertText', () => {
     expect(
       signupAlertText({name: 'x', phone: '+998', login: 'x', businessType: 'online', createdAt: null}),
     ).toContain('Turi: Onlayn sotuvchi');
+  });
+});
+
+// Sign-in tries owner logins before staff ones (exact match), so an owner
+// login equal to a staff login would lock that employee out.
+describe('owner login vs staff logins', () => {
+  const service = (results: unknown[][]) =>
+    new BusinessService(fakeDb(results), {get: jest.fn()} as unknown as ModuleRef);
+  const code = (p: Promise<unknown>) =>
+    p.then(
+      () => undefined,
+      (e: {code?: string}) => e.code,
+    );
+
+  it('refuses to register a login a staff member holds', async () => {
+    // owner clash → none, staff clash → found; nothing is inserted.
+    expect(await code(service([[], [{id: 's-1'}]]).create(input))).toBe('EMAIL_OR_LOGIN_EXISTS');
+  });
+
+  it("refuses to change an owner's login to a staff login or another owner's", async () => {
+    // findById → row, other owner → none, staff → found
+    expect(await code(service([[row], [], [{id: 's-1'}]]).update('b-1', {login: 'dilnoza'}))).toBe(
+      'EMAIL_OR_LOGIN_EXISTS',
+    );
+    // findById → row, other owner → found
+    expect(await code(service([[row], [{id: 'b-2'}]]).update('b-1', {login: 'other'}))).toBe(
+      'EMAIL_OR_LOGIN_EXISTS',
+    );
+  });
+
+  it('checks nothing when the login stays the same', async () => {
+    // findById → row, update … returning → row: no clash query in between.
+    await expect(
+      service([[row], [{...row, name: 'New'}]]).update('b-1', {login: 'bekmarket', name: 'New'}),
+    ).resolves.toMatchObject({name: 'New'});
   });
 });
