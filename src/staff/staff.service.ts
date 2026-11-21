@@ -90,6 +90,10 @@ export interface StaffWriteData {
   phone?: string | null;
   branchId?: string | null;
   hiredAt?: string | null;
+  address?: string | null;
+  /** 'YYYY-MM-DD'. */
+  birthDate?: string | null;
+  gender?: 'male' | 'female' | null;
   salaryType?: SalaryType;
   baseSalary?: number;
   salesPercent?: number;
@@ -257,6 +261,11 @@ export class StaffService {
       ...(data.hiredAt !== undefined && {
         hiredAt: data.hiredAt ? new Date(data.hiredAt) : null,
       }),
+      ...(data.address !== undefined && {
+        address: data.address?.trim() || null,
+      }),
+      ...(data.birthDate !== undefined && {birthDate: data.birthDate || null}),
+      ...(data.gender !== undefined && {gender: data.gender || null}),
     };
   }
 

@@ -14,6 +14,9 @@ const member = {
   branchId: 'br_1',
   branchName: 'Markaziy',
   hiredAt: null,
+  address: 'Chilonzor 9-kvartal',
+  birthDate: '1995-04-12',
+  gender: 'male',
   salaryType: 'mixed',
   baseSalary: '3000000.00',
   salesPercent: '2.500',
@@ -37,6 +40,10 @@ describe('redactStaff', () => {
     // A login is half a credential; a wage is nobody else's business.
     expect(view.login).toBeUndefined();
     expect(view.phone).toBeUndefined();
+    // Home address and birthday are personal details, not roster data.
+    expect(view.address).toBeUndefined();
+    expect(view.birthDate).toBeUndefined();
+    expect(view.gender).toBeUndefined();
     expect(view.roleId).toBeUndefined();
     expect(view.baseSalary).toBeUndefined();
     expect(view.salesPercent).toBeUndefined();
@@ -50,6 +57,9 @@ describe('redactStaff', () => {
     >;
     expect(view.login).toBe('aziz');
     expect(view.phone).toBe('+998901112233');
+    expect(view.address).toBe('Chilonzor 9-kvartal');
+    expect(view.birthDate).toBe('1995-04-12');
+    expect(view.gender).toBe('male');
     expect(view.baseSalary).toBeUndefined();
     expect(view.salesPercent).toBeUndefined();
     expect(view.salaryType).toBeUndefined();

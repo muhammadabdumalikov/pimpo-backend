@@ -85,6 +85,23 @@ export class UpdateStaffDto {
   @IsOptional()
   hiredAt?: string;
 
+  @ApiProperty({ description: 'Home address', required: false })
+  @IsString()
+  @MaxLength(255)
+  @IsOptional()
+  address?: string | null;
+
+  @ApiProperty({ description: 'Birth date (YYYY-MM-DD)', required: false })
+  @IsDateString({strict: true})
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  @IsOptional()
+  birthDate?: string | null;
+
+  @ApiProperty({ enum: ['male', 'female'], required: false })
+  @IsIn(['male', 'female'])
+  @IsOptional()
+  gender?: 'male' | 'female' | null;
+
   @ApiProperty({
     enum: ['none', 'fixed', 'percent', 'mixed'],
     description: 'Payroll shape',

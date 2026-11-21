@@ -146,6 +146,13 @@ export const staff = pgTable('staff', {
     onDelete: 'set null',
   }),
   hiredAt: timestamp('hired_at'),
+  // Home address, free text.
+  address: varchar('address', {length: 255}),
+  // A calendar day, not a moment: 'YYYY-MM-DD' strings, so no timezone shifts
+  // it by a day.
+  birthDate: date('birth_date'),
+  // 'male' | 'female'; null when not recorded.
+  gender: varchar('gender', {length: 10}),
   // ─── Payroll configuration ───────────────────────────────────────────────
   // 'none'    — not on payroll (excluded from accrual runs)
   // 'fixed'   — baseSalary only
