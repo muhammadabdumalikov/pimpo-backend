@@ -23,7 +23,7 @@ export function tierAtLeast(tier: string, min: Tier): boolean {
 /**
  * A plan row's tier as stored, which may also be a business-type plan: 'food'
  * is the fast-food kitchen plan (FASTFOOD.md Q14–Q15, 249k), 'online' the
- * online seller plan (ONLAYN-SOTUVCHI.md E2, 199k). Such a plan has its own
+ * online seller plan (ONLAYN-SOTUVCHI.md E2, 249k). Such a plan has its own
  * price and limits but GATES like a regular tier — every @MinTier check reads
  * it through gateTier(). 'online' gates like 'pro' because the storefront is a
  * pro module; its 1 branch / 1 user limits keep it a one-person plan.
@@ -51,7 +51,11 @@ export function planBusinessType(
   return planTier === 'food' || planTier === 'online' ? planTier : 'retail';
 }
 
-/** The plan the AI bot add-on is sold on (ONLAYN-SOTUVCHI.md D10). */
-export function sellsAiAddon(planTier: string | null | undefined): boolean {
-  return planTier === 'online';
+/**
+ * The plans that carry the customer AI bot and its inbox: Business+ and the
+ * online seller plan (ONLAYN-SOTUVCHI.md §11). The bot itself costs nothing
+ * extra — its answers are billed as they are used (billing/ai-usage.ts).
+ */
+export function includesAiBot(planTier: string | null | undefined): boolean {
+  return planTier === 'online' || tierAtLeast(gateTier(planTier), 'proplus');
 }

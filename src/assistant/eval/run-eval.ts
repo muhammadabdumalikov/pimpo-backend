@@ -228,7 +228,9 @@ async function main() {
   await seed(db.db);
 
   const tools = new AssistantToolsService(db, new StoreSettingsService(db, null as never));
-  const assistant = new AssistantService(db, tools, null as never, null as never, null as never, null as never);
+  const assistant = new AssistantService(
+    db, tools, null as never, null as never, null as never, null as never, null as never,
+  );
   const cases = EVAL_CASES.filter((c) => !only || c.cat === only);
 
   const results = await pool(cases, CONCURRENCY, async (c) => {

@@ -227,8 +227,8 @@ export const businessSubscriptions = pgTable('business_subscriptions', {
   // Extra branch seats already paid for this period (Q13): a branch opened
   // beyond this count is charged pro rata, one closed and reopened is not.
   paidExtraBranches: integer('paid_extra_branches').default(0).notNull(),
-  // The AI bot add-on is part of this period (paid, or given with the online
-  // trial) — the bot answers while it is true (0109).
+  // Unused since 0125 (the AI bot add-on of 0109 is gone — its answers are
+  // billed as they are used). Kept until a later deploy drops the column.
   aiAddon: boolean('ai_addon').default(false).notNull(),
   // 'month' | 'year' — the cycle this period was paid for (0110). Mid-period
   // charges prorate over the period at that cycle's price.
@@ -2558,9 +2558,16 @@ export const billingProfiles = pgTable('billing_profiles', {
   inn: varchar('inn', {length: 20}),
   contractNumber: varchar('contract_number', {length: 50}),
   contractDate: timestamp('contract_date', {withTimezone: true}),
-  // The owner wants the AI bot add-on next period: renewals add its price
-  // while this is on (0109, ONLAYN-SOTUVCHI.md E4).
+  // Unused since 0125, like business_subscriptions.ai_addon.
   aiAddon: boolean('ai_addon').default(false).notNull(),
+  // The customer AI bot's answers not yet taken from the balance (0125): so'm
+  // and how many answers that is. Settled once a day into one 'ai_usage'
+  // ledger line (billing-ledger.ts settleAiUsage), so a busy bot does not
+  // write a transaction per answer.
+  aiUnbilled: decimal('ai_unbilled', {precision: 14, scale: 2})
+    .notNull()
+    .default('0'),
+  aiUnbilledAnswers: integer('ai_unbilled_answers').default(0).notNull(),
   // 'month' | 'year' — the cycle the owner wants from the next renewal on
   // (0110, OBUNA-TOLOV.md §9).
   billingCycle: varchar('billing_cycle', {length: 8}).default('month').notNull(),
@@ -2611,7 +2618,8 @@ export const billingTransactions = pgTable(
     businessId: varchar('business_id', {length: 36})
       .notNull()
       .references(() => businesses.id, {onDelete: 'cascade'}),
-    // 'topup' | 'renewal' | 'plan_change' | 'branch' | 'addon' | 'adjustment'
+    // 'topup' | 'renewal' | 'plan_change' | 'branch' | 'addon' | 'ai_usage' |
+    // 'adjustment'
     type: varchar('type', {length: 20}).notNull(),
     amount: decimal('amount', {precision: 14, scale: 2}).notNull(),
     balanceAfter: decimal('balance_after', {precision: 14, scale: 2}).notNull(),
@@ -4438,10 +4446,13 @@ export const customerChatMessages = pgTable(
     flag: varchar('flag', {length: 12}),
     // The bot's tool calls for this answer (name, args, ok, ms) — debugging.
     toolCalls: jsonb('tool_calls'),
-    // Set on AI answers only: what the monthly allowance counts.
+    // Set on AI answers only: what the free allowance counts.
     model: varchar('model', {length: 64}),
     tokensIn: integer('tokens_in'),
     tokensOut: integer('tokens_out'),
+    // So'm this answer cost the shop: its tokens at list price plus our
+    // margin, at that day's rate (0125). 0 = a free answer; null = not AI.
+    costUzs: decimal('cost_uzs', {precision: 12, scale: 2}),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
   (table) => ({

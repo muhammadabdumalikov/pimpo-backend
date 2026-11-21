@@ -347,9 +347,6 @@ export enum ErrorCode {
   BRANCH_LOCKED = 'BRANCH_LOCKED',
   // The main store renews with the plan; it has no renewal switch of its own.
   BRANCH_MAIN_RENEW_FORBIDDEN = 'BRANCH_MAIN_RENEW_FORBIDDEN',
-  // The AI bot add-on is sold on the online seller plan only
-  // (ONLAYN-SOTUVCHI.md D10, E4).
-  AI_ADDON_NOT_AVAILABLE = 'AI_ADDON_NOT_AVAILABLE',
 
   // ── Billing (OBUNA-TOLOV.md §6) ─────────────────────────────────────────────
   // params {required, balance, shortfall}
@@ -1567,10 +1564,6 @@ export const ERROR_REGISTRY: Record<ErrorCode, ErrorDefinition> = {
   [ErrorCode.BRANCH_MAIN_RENEW_FORBIDDEN]: {
     status: HttpStatus.BAD_REQUEST,
     message: 'The main store renews with the plan',
-  },
-  [ErrorCode.AI_ADDON_NOT_AVAILABLE]: {
-    status: HttpStatus.FORBIDDEN,
-    message: 'The AI bot add-on is sold on the online seller plan only',
   },
 
   // Billing

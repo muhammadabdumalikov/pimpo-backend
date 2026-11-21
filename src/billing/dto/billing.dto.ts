@@ -151,17 +151,6 @@ export class PaymentRequisitesDto {
 export const PAYMENT_REQUEST_FILTERS = ['pending', 'resolved', 'all'] as const;
 export type PaymentRequestFilter = (typeof PAYMENT_REQUEST_FILTERS)[number];
 
-/** POST /subscriptions/ai-addon — the AI bot add-on on/off (ONLAYN-SOTUVCHI.md E6). */
-export class SetAiAddonDto {
-  @ApiProperty({
-    description:
-      'true charges the rest of the period and keeps it for the next; ' +
-      'false only stops the next renewal from billing it',
-  })
-  @IsBoolean()
-  enabled: boolean;
-}
-
 /** POST /subscriptions/billing-cycle — monthly or yearly from the next renewal (OBUNA-TOLOV.md §9). */
 export class SetBillingCycleDto {
   @ApiProperty({enum: ['month', 'year']})

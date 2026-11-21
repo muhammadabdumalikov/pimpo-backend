@@ -28,10 +28,10 @@ import {RequirePermission} from '../permission/permission.decorator';
 import {PlatformAdminGuard} from '../subscription/platform-admin.guard';
 import {TopUpBalanceDto} from '../subscription/dto/billing.dto';
 import {BillingService} from './billing.service';
+import {AiUsageService} from '../subscription/ai-usage.service';
 import {
   ChangePlanDto,
   CreatePaymentRequestDto,
-  SetAiAddonDto,
   SetBillingCycleDto,
   SetStoreRenewDto,
 } from './dto/billing.dto';
@@ -47,7 +47,10 @@ import {AllowWhenLocked} from '../subscription/allow-when-locked.decorator';
 // Open while the shop is locked: the lock screen reads and pays here.
 @AllowWhenLocked()
 export class BillingController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(
+    private readonly billing: BillingService,
+    private readonly usage: AiUsageService,
+  ) {}
 
   @Get('billing-status')
   @UseGuards(JwtAuthGuard)
@@ -126,35 +129,15 @@ export class BillingController {
     return this.billing.previewPlanChange(business, String(tier ?? ''));
   }
 
-  @Get('ai-addon/preview')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermission('settings:manage')
+  @Get('ai-usage')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({
-    summary: 'What turning the AI bot add-on on would charge right now',
-  })
-  @ApiResponse({status: 403, description: 'AI_ADDON_NOT_AVAILABLE'})
-  previewAiAddon(@CurrentBusiness() business: IBusiness) {
-    return this.billing.previewAiAddon(business.id);
-  }
-
-  @Post('ai-addon')
-  @UseGuards(JwtAuthGuard, PermissionsGuard)
-  @RequirePermission('settings:manage')
-  @ApiBearerAuth('JWT-auth')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary:
-      'AI bot add-on on (charges the rest of the period) or off (from the next renewal)',
+      "The customer AI bot's answers: free ones left, this month's spend, what the balance still covers",
   })
-  @ApiResponse({status: 409, description: 'BILLING_INSUFFICIENT_BALANCE'})
-  @ApiResponse({status: 403, description: 'AI_ADDON_NOT_AVAILABLE'})
-  setAiAddon(
-    @CurrentBusiness() business: IBusiness,
-    @CurrentAccount() account: IAccount,
-    @Body() dto: SetAiAddonDto,
-  ) {
-    return this.billing.setAiAddon(business.id, dto.enabled, account.id);
+  aiUsage(@CurrentBusiness() business: IBusiness) {
+    return this.usage.view(business.id);
   }
 
   @Get('stores')

@@ -12,6 +12,7 @@ import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {TelegramUpdateHooks} from '../telegram/telegram-update-hooks';
 import {AssistantTelegram} from './assistant-telegram';
+import {AiUsageService} from '../subscription/ai-usage.service';
 import {AssistantService} from './assistant.service';
 import {AssistantToolsService} from './assistant-tools';
 import type {LlmTurn} from '../ai/providers/llm-provider.interface';
@@ -43,6 +44,7 @@ export class AssistantSettingsService implements OnModuleInit {
     private readonly assistant: AssistantService,
     private readonly tools: AssistantToolsService,
     private readonly hooks: TelegramUpdateHooks,
+    private readonly usage: AiUsageService,
   ) {}
 
   private get db() {
@@ -81,10 +83,8 @@ export class AssistantSettingsService implements OnModuleInit {
         botUsername: bot?.username ?? null,
         botLink: bot?.username ? `https://t.me/${bot.username}` : null,
         hasOnlineStore: (await this.tools.storeBaseUrl(businessId)) !== null,
-        usage: {
-          thisMonth: await this.assistant.aiAnswersThisMonth(businessId),
-          limit: await this.assistant.monthlyLimitFor(businessId),
-        },
+        // Free answers left, this month's spend, what the balance covers.
+        usage: await this.usage.view(businessId),
       },
     };
   }

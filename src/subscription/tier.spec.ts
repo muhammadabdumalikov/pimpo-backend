@@ -1,4 +1,4 @@
-import {gateTier, planBusinessType, sellsAiAddon, tierAtLeast} from './tier';
+import {gateTier, includesAiBot, planBusinessType, tierAtLeast} from './tier';
 
 describe('plan tiers of business types', () => {
   it('gates the online plan like Business, the kitchen plan like Standard', () => {
@@ -15,10 +15,11 @@ describe('plan tiers of business types', () => {
     expect(planBusinessType('free')).toBe('retail');
   });
 
-  it('sells the AI add-on on the online plan only', () => {
-    expect(sellsAiAddon('online')).toBe(true);
-    expect(sellsAiAddon('pro')).toBe(false);
-    expect(sellsAiAddon('proplus')).toBe(false);
-    expect(sellsAiAddon(null)).toBe(false);
+  it('carries the AI bot on Business+ and the online seller plan', () => {
+    expect(includesAiBot('online')).toBe(true);
+    expect(includesAiBot('proplus')).toBe(true);
+    expect(includesAiBot('pro')).toBe(false);
+    expect(includesAiBot('food')).toBe(false);
+    expect(includesAiBot(null)).toBe(false);
   });
 });

@@ -21,11 +21,6 @@ export const URGENT_DAYS = 3;
 // "+150 000" extra-location line in the plan comparison table.
 export const EXTRA_BRANCH_PRICE = 150_000;
 
-// Monthly price of the AI bot add-on on the online seller plan
-// (ONLAYN-SOTUVCHI.md Q10, E5): 1 000 answers a month.
-export const AI_ADDON_PRICE = 149_000;
-export const AI_ADDON_MONTHLY_ANSWERS = 1_000;
-
 // Yearly billing (OBUNA-TOLOV.md §9): twelve months paid upfront, this much off.
 export const YEARLY_DISCOUNT_PERCENT = 20;
 
@@ -44,7 +39,7 @@ export function asBillingCycle(value: unknown): BillingCycle {
 
 /**
  * What a period of `cycle` costs for a month that costs `monthly` (the
- * computeMonthlyTotal total, discounts and add-on included): a year is twelve
+ * computeMonthlyTotal total, discounts included): a year is twelve
  * months less YEARLY_DISCOUNT_PERCENT, to the nearest 1 000.
  */
 export function cycleTotal(monthly: number, cycle: BillingCycle): number {
@@ -185,8 +180,6 @@ export interface MonthlyTotal {
   extraBranches: number;
   /** List price of the extra branches. */
   extraBranchesTotal: number;
-  /** The AI bot add-on (0 when not taken). No plan discount reaches it. */
-  aiAddon: number;
   /** List price of the month, before any discount. */
   subtotal: number;
   /** The percent off the plan alone (0–100) — what older readers show. */
@@ -244,31 +237,28 @@ function sharePercentOff(
 }
 
 /**
- * What a month costs (§2 "Oylik summa"): plan + extra branches × 150 000
- * (+ the AI add-on), less the discounts in force. One fixed order, whatever
- * order they were granted in:
+ * What a month costs (§2 "Oylik summa"): plan + extra branches × 150 000,
+ * less the discounts in force. One fixed order, whatever order they were
+ * granted in:
  *   1. a `price` replaces the list price of the plan / of each extra branch
  *      (the lowest one wins when there are several);
  *   2. the percents of a scope add up (capped at 100) and come off that price;
  *   3. the `amount`s come off what is left, never below zero.
- * The add-on is never re-priced or taken a percent off (ONLAYN-SOTUVCHI.md
- * E5); only a fixed `amount` can eat into it, as part of the whole month.
+ * The customer AI bot is not part of the month: its answers are billed as
+ * they are used (ai-usage.ts).
  */
 export function computeMonthlyTotal(input: {
   planPrice: number;
   /** The plan being priced — discounts tied to another plan do not apply. */
   planTier: string | null;
   extraBranches: number;
-  /** The AI bot add-on is billed this month. */
-  aiAddon?: boolean;
   discounts?: readonly DiscountTerm[];
   now?: Date;
 }): MonthlyTotal {
   const planPrice = Math.max(0, input.planPrice);
   const extraBranches = Math.max(0, input.extraBranches);
   const extraBranchesTotal = extraBranches * EXTRA_BRANCH_PRICE;
-  const aiAddon = input.aiAddon ? AI_ADDON_PRICE : 0;
-  const subtotal = planPrice + extraBranchesTotal + aiAddon;
+  const subtotal = planPrice + extraBranchesTotal;
   const live = discountsInForce(
     input.discounts ?? [],
     input.planTier,
@@ -317,7 +307,7 @@ export function computeMonthlyTotal(input: {
   sharePercentOff(branchOff, onBranches, add);
 
   // 3. Fixed sums off what is left.
-  let total = planBase - planOff + branchBase - branchOff + aiAddon;
+  let total = planBase - planOff + branchBase - branchOff;
   for (const d of live) {
     if (kindOf(d) !== 'amount') continue;
     const part = Math.min(total, Math.max(0, Number(d.amount ?? 0)));
@@ -329,7 +319,6 @@ export function computeMonthlyTotal(input: {
     planPrice,
     extraBranches,
     extraBranchesTotal,
-    aiAddon,
     subtotal,
     discountPercent: planPercent,
     discountAmount: subtotal - total,

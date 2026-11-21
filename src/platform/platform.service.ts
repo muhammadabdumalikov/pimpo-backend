@@ -634,7 +634,7 @@ export class PlatformService {
         used30: Number(one(assistantRows)?.c ?? 0),
       },
     };
-    // The online plan gets the bot only with the add-on (ONLAYN-SOTUVCHI.md E10).
+    // The bot is in Business+ and in the online seller plan (tier.ts includesAiBot).
     const assistantAllowed = await this.subscriptionService.aiAssistantAllowed(id);
     const modules = (Object.keys(MODULE_MIN_TIER) as ShopModuleKey[]).map(
       (key) => ({

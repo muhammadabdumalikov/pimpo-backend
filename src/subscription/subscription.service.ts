@@ -17,7 +17,7 @@ import {
 import { eq, and, asc, desc, count, isNotNull } from 'drizzle-orm';
 import { seedSubscriptionPlans } from './seed-plans';
 import { CacheKeys, TTL } from '../cache/cache.util';
-import {type Tier, gateTier, planBusinessType, sellsAiAddon, tierAtLeast} from './tier';
+import {type Tier, gateTier, includesAiBot, planBusinessType} from './tier';
 import {type BusinessType, isBusinessType} from '../common/business-type';
 import {
   EXTRA_BRANCH_PRICE,
@@ -29,8 +29,6 @@ import {
   type DiscountInput,
   type DiscountLine,
   type MonthlyTotal,
-  AI_ADDON_MONTHLY_ANSWERS,
-  AI_ADDON_PRICE,
   YEARLY_DISCOUNT_PERCENT,
   asBillingCycle,
   cycleTotal,
@@ -53,8 +51,6 @@ export type BillingInfo = {
     extraBranches: number;
     extraBranchPrice: number;
     extraBranchesTotal: number;
-    /** The AI bot add-on next month (0 when it is off). */
-    aiAddon: number;
     discountPercent: number;
     discountAmount: number;
     /** discountAmount split by discount (billing.ts computeMonthlyTotal). */
@@ -74,22 +70,6 @@ export type BillingInfo = {
     renewalTotal: number;
   };
   discounts: DiscountView[];
-};
-
-/** The AI bot add-on as the shop sees it (ONLAYN-SOTUVCHI.md §10.1). */
-export type AiAddonView = {
-  /** The add-on is sold on this plan (the online plan). */
-  available: boolean;
-  /** The plan has the bot built in (Business+). */
-  included: boolean;
-  /** The bot may answer right now. */
-  active: boolean;
-  /** The owner keeps it for the next period (renewals bill it). */
-  renews: boolean;
-  /** End of the period it is part of; null when it is not. */
-  until: string | null;
-  price: number;
-  monthlyLimit: number;
 };
 
 /** One discount as the shop page and the platform console list it. */
@@ -197,52 +177,17 @@ export class SubscriptionService implements OnModuleInit {
   }
 
   /**
-   * May the customer AI bot answer for this business (ONLAYN-SOTUVCHI.md E4):
-   * Business+ has it in the plan; the online plan has it while the add-on is
-   * part of the current period. The single gate for /assistant, /inbox and
-   * the bot itself.
+   * Does this business's plan carry the customer AI bot (ONLAYN-SOTUVCHI.md
+   * §11): Business+ or the online seller plan, while the subscription holds.
+   * The single gate for /assistant, /inbox and the bot itself. Whether an
+   * answer can be paid for is a separate question (AiUsageService).
    */
   async aiAssistantAllowed(businessId: string): Promise<boolean> {
     const subscription = await this.getBusinessSubscription(businessId);
     if (!subscription || !subscription.isActive || this.isExpired(subscription)) {
       return false;
     }
-    if (tierAtLeast(gateTier(subscription.plan.tier), 'proplus')) return true;
-    return sellsAiAddon(subscription.plan.tier) && !!subscription.aiAddon;
-  }
-
-  /** The bot's monthly answer allowance: the add-on's 1 000, else the plan's. */
-  async aiAssistantMonthlyLimit(
-    businessId: string,
-    planDefault: number,
-  ): Promise<number> {
-    const subscription = await this.getBusinessSubscription(businessId);
-    return subscription && sellsAiAddon(subscription.plan.tier)
-      ? AI_ADDON_MONTHLY_ANSWERS
-      : planDefault;
-  }
-
-  /** The add-on block of GET /subscriptions/current (§10.1). */
-  async aiAddonView(businessId: string): Promise<AiAddonView> {
-    const [subscription, profile, active] = await Promise.all([
-      this.getBusinessSubscription(businessId),
-      this.getBillingProfile(businessId),
-      this.aiAssistantAllowed(businessId),
-    ]);
-    const planTier = subscription?.plan.tier ?? null;
-    const available = sellsAiAddon(planTier);
-    return {
-      available,
-      included: !!planTier && tierAtLeast(gateTier(planTier), 'proplus'),
-      active,
-      renews: available && !!profile?.aiAddon,
-      until:
-        available && subscription?.aiAddon && subscription.endDate
-          ? asDate(subscription.endDate).toISOString()
-          : null,
-      price: AI_ADDON_PRICE,
-      monthlyLimit: AI_ADDON_MONTHLY_ANSWERS,
-    };
+    return includesAiBot(subscription.plan.tier);
   }
 
   async getPlanByTier(tier: string): Promise<SubscriptionPlan | null> {
@@ -281,6 +226,7 @@ export class SubscriptionService implements OnModuleInit {
         isTrial: businessSubscriptions.isTrial,
         pendingPlanId: businessSubscriptions.pendingPlanId,
         paidExtraBranches: businessSubscriptions.paidExtraBranches,
+        // Read only because the row type carries it; unused since 0125.
         aiAddon: businessSubscriptions.aiAddon,
         billingCycle: businessSubscriptions.billingCycle,
         createdAt: businessSubscriptions.createdAt,
@@ -444,7 +390,6 @@ export class SubscriptionService implements OnModuleInit {
         // The plan that lapsed, for the label only ("Standard · Tugagan");
         // gating still reads `tier`.
         planTier: subscription?.plan.tier ?? null,
-        aiAddon: await this.aiAddonView(businessId),
         isActive: true,
         isExpired: !!subscription,
         isTrial: false,
@@ -464,7 +409,6 @@ export class SubscriptionService implements OnModuleInit {
       // like ('food' → 'basic'); the plan itself is in `planTier`.
       tier: gateTier(subscription.plan.tier),
       planTier: subscription.plan.tier,
-      aiAddon: await this.aiAddonView(businessId),
       isActive: subscription.isActive,
       // From the column now, not "has a future endDate" — a paid month has one too.
       isTrial: subscription.isTrial ?? false,
@@ -681,9 +625,6 @@ export class SubscriptionService implements OnModuleInit {
       now,
       subscription,
       profile,
-      // The next renewal bills the add-on while the owner keeps it on (E4).
-      aiAddon:
-        !!profile?.aiAddon && sellsAiAddon(subscription?.plan.tier ?? null),
       planPrice: subscription ? Number(subscription.plan.price) : 0,
       planTier: subscription?.plan.tier ?? null,
       // The main store is in the plan; each extra one the owner keeps renewing
@@ -705,7 +646,6 @@ export class SubscriptionService implements OnModuleInit {
       planPrice: inputs.planPrice,
       planTier: inputs.planTier,
       extraBranches: inputs.extraBranches,
-      aiAddon: inputs.aiAddon,
       discounts: activeDiscounts,
       now,
     });
@@ -724,7 +664,6 @@ export class SubscriptionService implements OnModuleInit {
         extraBranches: monthly.extraBranches,
         extraBranchPrice: EXTRA_BRANCH_PRICE,
         extraBranchesTotal: monthly.extraBranchesTotal,
-        aiAddon: monthly.aiAddon,
         discountPercent: monthly.discountPercent,
         discountAmount: monthly.discountAmount,
         discountLines: monthly.discountLines,
@@ -867,7 +806,6 @@ export class SubscriptionService implements OnModuleInit {
         planPrice: inputs.planPrice,
         planTier: inputs.planTier,
         extraBranches: inputs.extraBranches,
-        aiAddon: inputs.aiAddon,
         discounts,
         now: inputs.now,
       });

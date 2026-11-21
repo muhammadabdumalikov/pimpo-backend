@@ -13,11 +13,11 @@ export const MIN_TIER_KEY = 'minTier';
  */
 export const MinTier = (tier: Tier) => SetMetadata(MIN_TIER_KEY, tier);
 
-export const AI_ADDON_KEY = 'orAiAddon';
+export const AI_BOT_PLAN_KEY = 'orAiBotPlan';
 
 /**
- * Lets the AI bot add-on stand in for the @MinTier on this route or controller
- * (ONLAYN-SOTUVCHI.md E4): the online plan with the add-on in its current
- * period passes like Business+ does. Used on /assistant and /inbox.
+ * Lets a plan that carries the customer AI bot stand in for the @MinTier on
+ * this route or controller (ONLAYN-SOTUVCHI.md §11): the online seller plan
+ * passes like Business+ does. Used on /assistant and /inbox.
  */
-export const OrAiAddon = () => SetMetadata(AI_ADDON_KEY, true);
+export const OrAiBotPlan = () => SetMetadata(AI_BOT_PLAN_KEY, true);

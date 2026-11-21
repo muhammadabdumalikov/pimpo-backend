@@ -39,7 +39,7 @@ const REASON_UZ: Record<string, string> = {
   unknown: 'bot javobni bilmaydi',
   photo: 'rasm yubordi',
   rate_limit: "juda ko'p savol",
-  quota: 'oylik AI limiti tugagan',
+  quota: "AI bot uchun balansda mablag' yo'q",
   haggle: 'narx kelishmoqchi',
   customer_asked: "operator so'radi",
   complaint: 'shikoyat',

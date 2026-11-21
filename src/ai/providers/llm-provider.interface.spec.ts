@@ -175,10 +175,10 @@ describe('estimateCostUsd', () => {
     );
   });
 
-  it('adds the 25% margin only on Pimpo-supplied tokens', () => {
+  it('adds the 30% margin only on Pimpo-supplied tokens', () => {
     const list = cost(1_000_000, 0);
     expect(list).toBeCloseTo(PRICE.input, 9);
-    expect(cost(1_000_000, 0, true)).toBeCloseTo(PRICE.input * 1.25, 9);
+    expect(cost(1_000_000, 0, true)).toBeCloseTo(PRICE.input * 1.3, 9);
     // BYOK is billed by the vendor directly, so we take nothing.
     expect(cost(1_000_000, 0, false)).toBe(list);
   });

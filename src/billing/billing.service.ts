@@ -40,13 +40,8 @@ import {TelegramNotifyService} from '../telegram/telegram-notify.service';
 import type {TelegramUrlButton} from '../telegram/telegram-sender.service';
 import {generateId} from '../utils/uuid';
 import {isBusinessType} from '../common/business-type';
-import {sellsAiAddon} from '../subscription/tier';
-import type {
-  AiAddonView,
-  BillingInfo,
-} from '../subscription/subscription.service';
+import type {BillingInfo} from '../subscription/subscription.service';
 import {
-  AI_ADDON_PRICE,
   asBillingCycle,
   cycleTotal,
   periodAmount,
@@ -70,10 +65,12 @@ import {
 import {
   lockBillingProfile,
   postBillingTransaction,
+  settleAiUsage,
   type BillingTransactionMeta,
   type BillingTransactionType,
   type Tx,
 } from './billing-ledger';
+import {renewalMonthlyTotal, renewalReserve} from './ai-usage';
 import {
   BRANCH_FREE_DAYS,
   BRANCH_FREE_MS,
@@ -291,15 +288,6 @@ export interface PlatformBillingSummary {
 }
 
 /** GET /mobile/home → attention.subscription (§6.1). */
-export interface AiAddonPreview {
-  /** Taken from the balance now (0 when it is free, see aiAddonQuote). */
-  charge: number;
-  daysRemaining: number;
-  balance: number;
-  shortfall: number;
-  monthlyPrice: number;
-}
-
 export interface BillingAttention {
   endDate: string | null;
   daysLeft: number | null;
@@ -326,8 +314,6 @@ interface BillingContext {
    * per plan in monthlyFor(), not once here.
    */
   discounts: DiscountTerm[];
-  /** The owner keeps the AI bot add-on for the next period (E4). */
-  aiAddonWanted: boolean;
   /** The cycle the next renewal is for, as the owner set it (OBUNA-TOLOV.md §9). */
   cycleWanted: BillingCycle;
   now: Date;
@@ -347,7 +333,7 @@ const DISCOUNT_TERM_COLUMNS = {
 
 /** What a month on `plan` costs this shop, with its discounts. */
 function monthlyFor(
-  ctx: Pick<BillingContext, 'discounts' | 'aiAddonWanted' | 'now'>,
+  ctx: Pick<BillingContext, 'discounts' | 'now'>,
   plan: {tier: string; price: string | number} | null,
   extraBranches: number,
 ): MonthlyTotal {
@@ -355,9 +341,6 @@ function monthlyFor(
     planPrice: plan ? Number(plan.price) : 0,
     planTier: plan?.tier ?? null,
     extraBranches,
-    // Billed only on the plan that sells it: a shop moved off the online
-    // plan stops paying for it even if the flag is still on.
-    aiAddon: ctx.aiAddonWanted && sellsAiAddon(plan?.tier),
     discounts: ctx.discounts,
     now: ctx.now,
   });
@@ -472,16 +455,12 @@ export class BillingService {
       .orderBy(asc(subscriptionDiscounts.createdAt));
 
     const [profile] = await tx
-      .select({
-        aiAddon: billingProfiles.aiAddon,
-        billingCycle: billingProfiles.billingCycle,
-      })
+      .select({billingCycle: billingProfiles.billingCycle})
       .from(billingProfiles)
       .where(eq(billingProfiles.businessId, businessId));
 
     return {
       balance,
-      aiAddonWanted: !!profile?.aiAddon,
       cycleWanted: asBillingCycle(profile?.billingCycle),
       sub: subRow ? {...subRow.sub, plan: subRow.plan} : null,
       activeBranches: branchRows.length,
@@ -524,7 +503,6 @@ export class BillingService {
           planPrice: Number(pending.price),
           planTier: pending.tier,
           extraBranches: billing.monthly.extraBranches,
-          aiAddon: billing.monthly.aiAddon > 0 && sellsAiAddon(pending.tier),
           discounts: billing.discounts,
         }).total;
       }
@@ -534,7 +512,6 @@ export class BillingService {
           planPrice: Number(renewPlan.price),
           planTier: renewPlan.tier,
           extraBranches: 0,
-          aiAddon: billing.monthly.aiAddon > 0 && sellsAiAddon(renewPlan.tier),
           discounts: billing.discounts,
         }).total
       : 0;
@@ -895,7 +872,6 @@ export class BillingService {
           periodEnd: period.end.toISOString(),
           extraBranches: monthly.extraBranches,
           discountPercent: monthly.discountPercent,
-          ...(monthly.aiAddon > 0 && {aiAddon: monthly.aiAddon}),
           ...(monthly.discountAmount > 0 && {
             discountAmount: monthly.discountAmount,
           }),
@@ -927,8 +903,6 @@ export class BillingService {
         isTrial: false,
         pendingPlanId: null,
         paidExtraBranches: monthly.extraBranches,
-        // Paid for in this charge, so the bot answers the whole new period.
-        aiAddon: monthly.aiAddon > 0,
         billingCycle: cycle,
       });
       if (renewedStores.length) {
@@ -948,6 +922,12 @@ export class BillingService {
           .set({paidUntil: now, updatedAt: now})
           .where(inArray(branches.id, startWarning.map((b) => b.id)));
       }
+      // The bot's answers come out after the renewal, not before: the coming
+      // month has first call on the balance (ai-usage.ts renewalReserve), so
+      // the bot can never be what leaves it short. What the rest does not
+      // cover stays owed and keeps the bot off until a top-up. No reserve
+      // here — the next end is a whole period away.
+      const settled = await settleAiUsage(tx, businessId);
       return {
         plan,
         monthly,
@@ -955,7 +935,7 @@ export class BillingService {
         cycle,
         yearlyFellBack: ctx.cycleWanted === 'year' && cycle === 'month',
         period,
-        balanceAfter: posted.balanceAfter,
+        balanceAfter: settled?.balanceAfter ?? posted.balanceAfter,
         storesLeftOut: leftOut.map((b) => b.name),
       };
     });
@@ -1714,95 +1694,57 @@ export class BillingService {
     return out;
   }
 
-  // ─── AI bot add-on (ONLAYN-SOTUVCHI.md E4–E7) ──────────────────────────────
+  // ─── AI bot answers (ONLAYN-SOTUVCHI.md §11, ai-usage.ts) ─────────────────
 
-  /**
-   * What switching the add-on on costs now: the rest of a running paid
-   * period at the list price. Free while it is already part of the period,
-   * on the trial, on an admin-granted open-ended plan, and past the end (the
-   * renewal then bills it in full).
-   */
-  private aiAddonQuote(ctx: BillingContext, now: Date): AiAddonPreview {
-    const sub = ctx.sub;
-    if (!sub || !sellsAiAddon(sub.plan.tier)) {
-      throw new AppException(ErrorCode.AI_ADDON_NOT_AVAILABLE);
-    }
-    const running =
-      sub.endDate != null && !sub.isTrial && !isPastEnd(sub.endDate, now);
-    const chargeable = running && !sub.aiAddon;
-    const days =
-      chargeable && sub.endDate != null
-        ? periodDays(sub.startDate, sub.endDate, now)
-        : {daysRemaining: 0, periodDays: 1};
-    const charge = chargeable
-      ? prorate({
-          monthlyAmount: periodAmount(
-            AI_ADDON_PRICE,
-            asBillingCycle(sub.billingCycle),
-          ),
-          ...days,
-        })
-      : 0;
-    return {
-      charge,
-      daysRemaining: days.daysRemaining,
-      balance: ctx.balance,
-      shortfall: Math.max(0, charge - ctx.balance),
-      monthlyPrice: AI_ADDON_PRICE,
-    };
-  }
-
-  /** GET /subscriptions/ai-addon/preview — what turning it on costs now. */
-  async previewAiAddon(businessId: string): Promise<AiAddonPreview> {
-    const now = new Date();
-    return this.aiAddonQuote(await this.readContext(businessId, now), now);
+  /** Shops with bot answers waiting to be taken from the balance. */
+  async aiUsageCandidates(): Promise<string[]> {
+    const rows = await this.db
+      .select({businessId: billingProfiles.businessId})
+      .from(billingProfiles)
+      .where(sql`${billingProfiles.aiUnbilled} >= 1`);
+    return rows.map((r) => r.businessId);
   }
 
   /**
-   * POST /subscriptions/ai-addon. On: charge the rest of the period (refused
-   * whole on a short balance), make it part of this period and keep it for
-   * the next. Off: only the next renewal drops it — the paid period runs out
-   * with the bot still answering, and nothing is refunded (E6).
+   * Take a shop's accrued bot answers from its balance as one ledger line,
+   * leaving the coming renewal's money alone (the same reserve the bot's
+   * spending is held to). Safe to call at any time and from two instances at
+   * once: it runs under the profile lock and takes only what is still owed.
    */
-  async setAiAddon(
+  async settleAiUsage(
     businessId: string,
-    enabled: boolean,
-    createdBy: string,
-  ): Promise<AiAddonView> {
-    const now = new Date();
-    await this.db.transaction(async (tx) => {
+    now: Date = new Date(),
+  ): Promise<{settled: boolean}> {
+    const taken = await this.db.transaction(async (tx) => {
       const ctx = await this.loadContext(tx, businessId, now, true);
       const sub = ctx.sub;
-      if (enabled) {
-        const q = this.aiAddonQuote(ctx, now);
-        if (q.charge > 0 && sub?.endDate) {
-          await postBillingTransaction(tx, businessId, {
-            type: 'addon',
-            amount: -q.charge,
-            meta: {
-              aiAddon: AI_ADDON_PRICE,
-              days: q.daysRemaining,
-              periodEnd: asDate(sub.endDate).toISOString(),
-            },
-            createdBy,
-          });
-        }
-        if (sub && !sub.aiAddon) {
-          await tx
-            .update(businessSubscriptions)
-            .set({aiAddon: true, updatedAt: now})
-            .where(eq(businessSubscriptions.id, sub.id));
-        }
-      } else if (!sub || !sellsAiAddon(sub.plan.tier)) {
-        throw new AppException(ErrorCode.AI_ADDON_NOT_AVAILABLE);
-      }
-      await tx
-        .update(billingProfiles)
-        .set({aiAddon: enabled, updatedAt: now})
-        .where(eq(billingProfiles.businessId, businessId));
+      if (!sub) return settleAiUsage(tx, businessId);
+      // The plan the renewal will charge: a scheduled downgrade's, like tryRenew.
+      const [pendingPlan] = sub.pendingPlanId
+        ? await tx
+            .select()
+            .from(subscriptionPlans)
+            .where(eq(subscriptionPlans.id, sub.pendingPlanId))
+            .limit(1)
+        : [];
+      const reserve = renewalReserve({
+        endDate: sub.endDate,
+        monthlyTotal: renewalMonthlyTotal({
+          plan: sub.plan,
+          pendingPlan,
+          extraBranches: ctx.extraBranches,
+          discounts: ctx.discounts,
+          now,
+        }),
+        cycleWanted: ctx.cycleWanted,
+        balance: ctx.balance,
+        now,
+      });
+      return settleAiUsage(tx, businessId, reserve);
     });
+    if (!taken) return {settled: false};
     await this.invalidate(businessId);
-    return this.subscriptions.aiAddonView(businessId);
+    return {settled: true};
   }
 
   // ─── Billing cycle (OBUNA-TOLOV.md §9) ────────────────────────────────────
@@ -2112,7 +2054,6 @@ export class BillingService {
           .select({
             businessId: billingProfiles.businessId,
             balance: billingProfiles.balance,
-            aiAddon: billingProfiles.aiAddon,
           })
           .from(billingProfiles),
         // The extra stores the renewal bills (FILIAL-OBUNA.md).
@@ -2160,9 +2101,6 @@ export class BillingService {
     const balance = new Map(
       profiles.map((p) => [p.businessId, Number(p.balance)]),
     );
-    const wantsAiAddon = new Set(
-      profiles.filter((p) => p.aiAddon).map((p) => p.businessId),
-    );
     const branchCount = new Map(
       branchCounts.map((b) => [b.businessId, Number(b.c)]),
     );
@@ -2184,7 +2122,6 @@ export class BillingService {
         : undefined) ?? {price: s.planPrice, tier: s.planTier};
       const pricing = {
         discounts: discountsBy.get(s.businessId) ?? [],
-        aiAddonWanted: wantsAiAddon.has(s.businessId),
         now,
       };
       const total = monthlyFor(

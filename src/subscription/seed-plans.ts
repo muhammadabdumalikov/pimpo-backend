@@ -89,12 +89,14 @@ export async function seedSubscriptionPlans(dbService: DatabaseService) {
       id: generateId(),
       // The online seller plan (ONLAYN-SOTUVCHI.md Q10, E2): a one-person
       // seller on Instagram/Telegram — no shop, no till. Sold to online
-      // businesses only; gates like `pro` (the storefront is a pro module),
-      // the AI bot is a +149 000 add-on (billing.ts AI_ADDON_PRICE).
+      // businesses only; gates like `pro` (the storefront is a pro module).
+      // The customer AI bot is part of the plan; its answers are billed as
+      // they are used (billing/ai-usage.ts), which is why this is 249k and
+      // not the 199k + 149k add-on it started as.
       tier: 'online',
       name: 'Online seller',
       description: 'For a seller on Instagram and Telegram',
-      price: '199000',
+      price: '249000',
       isActive: true,
       debtsLimit: null,
       productsLimit: null,

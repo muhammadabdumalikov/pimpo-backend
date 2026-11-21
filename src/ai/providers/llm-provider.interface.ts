@@ -183,7 +183,7 @@ export interface LlmModelOption {
  * than the shop's. BYOK questions are quoted at bare list price — the shop is
  * billed by the vendor directly and we take nothing.
  */
-export const SYSTEM_TOKEN_MARKUP = 0.25;
+export const SYSTEM_TOKEN_MARKUP = 0.3;
 
 /**
  * Estimated USD cost of one question. Returns 0 for an unpriced model, so the

@@ -27,8 +27,8 @@ const RENEW_UNTIL_HOUR = 22;
 const RESTRICTED_NOTICE_WINDOW_MS = 2 * DAY_MS;
 
 /**
- * The billing schedules (OBUNA-TOLOV.md §4). `BILLING_CRON=off` disables both
- * — for a local server pointed at a shared database.
+ * The billing schedules (OBUNA-TOLOV.md §4). `BILLING_CRON=off` disables them
+ * all — for a local server pointed at a shared database.
  */
 @Injectable()
 export class BillingCronService {
@@ -85,6 +85,29 @@ export class BillingCronService {
       }
     } catch (e) {
       this.logger.error(`Store sweep failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * 00:10 Tashkent: the day's bot answers leave each balance as one ledger
+   * line (ONLAYN-SOTUVCHI.md §11). A shop short of the sum keeps the rest
+   * owed; its bot waits for a top-up (ai-usage.ts botFunds).
+   */
+  @Cron('10 0 * * *', {name: 'billing-ai-usage', timeZone: 'Asia/Tashkent'})
+  async settleAiUsage(): Promise<void> {
+    if (!this.enabled) return;
+    try {
+      for (const id of await this.billing.aiUsageCandidates()) {
+        try {
+          await this.billing.settleAiUsage(id);
+        } catch (e) {
+          this.logger.error(
+            `AI usage settlement failed for ${id}: ${(e as Error).message}`,
+          );
+        }
+      }
+    } catch (e) {
+      this.logger.error(`AI usage settlement failed: ${(e as Error).message}`);
     }
   }
 

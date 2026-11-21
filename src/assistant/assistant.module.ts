@@ -16,6 +16,8 @@ import {
   AssistantSettingsController,
   AssistantWebhookController,
 } from './assistant.controller';
+import {AssistantPlatformController} from './assistant-platform.controller';
+import {AssistantSpendService} from './assistant-spend.service';
 
 /** AI yordamchi — see AI-YORDAMCHI.md. */
 @Module({
@@ -27,7 +29,12 @@ import {
     TelegramModule,
     OrderModule,
   ],
-  controllers: [AssistantWebhookController, AssistantSettingsController, InboxController],
+  controllers: [
+    AssistantWebhookController,
+    AssistantSettingsController,
+    InboxController,
+    AssistantPlatformController,
+  ],
   providers: [
     AssistantService,
     AssistantToolsService,
@@ -35,6 +42,7 @@ import {
     AssistantSettingsService,
     AssistantTelegram,
     InboxService,
+    AssistantSpendService,
   ],
 })
 export class AssistantModule {}

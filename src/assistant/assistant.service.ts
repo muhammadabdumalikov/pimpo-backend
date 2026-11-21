@@ -14,13 +14,10 @@ import {
 import {generateId} from '../utils/uuid';
 import {FeatureService} from '../feature/feature.service';
 import {SubscriptionService} from '../subscription/subscription.service';
+import {AiUsageService, assistantModel} from '../subscription/ai-usage.service';
+import type {BotFunds} from '../billing/ai-usage';
 import {createProvider} from '../ai/providers/provider.factory';
-import {
-  AI_PROVIDER_IDS,
-  defaultModelFor,
-  type AiProviderId,
-  type LlmTurn,
-} from '../ai/providers/llm-provider.interface';
+import type {AiProviderId, LlmTurn} from '../ai/providers/llm-provider.interface';
 import type {TgMessage, TgUpdate} from '../telegram/telegram-update-hooks';
 import {
   AssistantToolsService,
@@ -35,8 +32,6 @@ import {SHOP_TIME_ZONE} from '../branch/working-hours';
 
 /** Q13: AI answers per customer per hour. */
 const PER_CUSTOMER_HOURLY = 20;
-/** Q11: AI answers per shop per month (env-tunable until the price is set). */
-const monthlyLimit = () => Number(process.env.AI_ASSISTANT_MONTHLY_LIMIT) || 2000;
 const HISTORY_MESSAGES = 20;
 const MAX_ITERATIONS = 5;
 const RUN_TIMEOUT_MS = 45_000;
@@ -68,6 +63,7 @@ export class AssistantService {
     private readonly tg: AssistantTelegram,
     private readonly features: FeatureService,
     private readonly subscriptions: SubscriptionService,
+    private readonly usage: AiUsageService,
   ) {}
 
   private get db() {
@@ -89,7 +85,7 @@ export class AssistantService {
     this.chains.set(key, next);
   }
 
-  /** Flag on, assistant switched on, Business+ or the add-on — else the bot stays silent. */
+  /** Flag on, assistant switched on, a plan that carries the bot — else it stays silent. */
   async activeSettings(businessId: string): Promise<AiAssistantSettings | null> {
     const [settings] = await this.db
       .select()
@@ -157,14 +153,13 @@ export class AssistantService {
       return;
     }
 
-    // Q13: per-customer hourly cap, Q11: monthly allowance.
-    const limitReason =
-      (await this.aiAnswersSince(chat.id, null, 60 * 60 * 1000)) >= PER_CUSTOMER_HOURLY
-        ? 'rate_limit'
-        : (await this.aiAnswersThisMonth(businessId)) >=
-            (await this.monthlyLimitFor(businessId))
-          ? 'quota'
-          : null;
+    // Q13: per-customer hourly cap. Q11: an answer is free while the plan has
+    // free ones left, then paid from the balance; with neither, a person
+    // answers (billing/ai-usage.ts).
+    const overHourly =
+      (await this.aiAnswersSince(chat.id, null, 60 * 60 * 1000)) >= PER_CUSTOMER_HOURLY;
+    const funds: BotFunds = overHourly ? 'blocked' : await this.usage.funds(businessId);
+    const limitReason = overHourly ? 'rate_limit' : funds === 'blocked' ? 'quota' : null;
     if (limitReason) {
       if (await this.hasOpenHandoff(chat.id, limitReason)) {
         await this.handoff.forwardToHuman(businessId, chat, token, text, null);
@@ -181,11 +176,11 @@ export class AssistantService {
     const answer = await this.runModel(businessId, settings, history, text!);
 
     if (answer.outcome.ignore) {
-      await this.saveBotRow(chat, answer, null);
+      await this.saveBotRow(chat, answer, null, funds);
       return;
     }
     if (answer.outcome.handoff || answer.failed || !answer.text.trim()) {
-      await this.saveBotRow(chat, answer, null);
+      await this.saveBotRow(chat, answer, null, funds);
       await this.handoff.create({
         businessId,
         chat,
@@ -199,7 +194,7 @@ export class AssistantService {
 
     const buttons = this.orderButtons(answer.outcome, locale);
     await this.tg.sendMessage(chat.telegramChatId, answer.text.trim(), {token, buttons});
-    await this.saveBotRow(chat, answer, answer.text.trim());
+    await this.saveBotRow(chat, answer, answer.text.trim(), funds);
   }
 
   /**
@@ -292,9 +287,7 @@ export class AssistantService {
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private providerConfig(): {provider: AiProviderId; model: string; key: string | undefined} {
-    const raw = (process.env.AI_ASSISTANT_PROVIDER || 'gemini').trim() as AiProviderId;
-    const provider = AI_PROVIDER_IDS.includes(raw) ? raw : 'gemini';
-    const model = process.env.AI_ASSISTANT_MODEL?.trim() || defaultModelFor(provider);
+    const {provider, model} = assistantModel();
     const key = {
       gemini: process.env.GEMINI_API_KEY,
       anthropic: process.env.ANTHROPIC_API_KEY,
@@ -312,7 +305,23 @@ export class AssistantService {
     ]);
   }
 
-  private async saveBotRow(chat: CustomerChat, a: ModelAnswer, text: string | null) {
+  /**
+   * Store one model run and, when it is a paid one, add its cost to what the
+   * shop owes. Every run that used tokens is billed — a question the model
+   * decided to hand over cost us the same — except a failed one: the shop
+   * does not pay for our outage. Nor does a failed run use up a free answer:
+   * it is stored without `model`, which is what the free allowance (and the
+   * month's count, and the hourly cap) count — a missing key or a provider
+   * outage would otherwise burn the trial's answers one message at a time.
+   * Its tokens stay on the row for our own spend.
+   */
+  private async saveBotRow(
+    chat: CustomerChat,
+    a: ModelAnswer,
+    text: string | null,
+    funds: BotFunds,
+  ) {
+    const cost = funds === 'paid' && !a.failed ? await this.usage.price(a) : 0;
     await this.db.insert(customerChatMessages).values({
       id: generateId(),
       businessId: chat.businessId,
@@ -320,10 +329,12 @@ export class AssistantService {
       role: 'bot',
       text,
       toolCalls: a.toolCalls.length ? a.toolCalls : null,
-      model: a.model,
+      model: a.failed ? null : a.model,
       tokensIn: a.tokensIn,
       tokensOut: a.tokensOut,
+      costUzs: a.failed ? null : cost.toFixed(2),
     });
+    await this.usage.accrue(chat.businessId, cost);
     await this.db
       .update(customerChats)
       .set({lastMessageAt: new Date()})
@@ -396,26 +407,6 @@ export class AssistantService {
         ),
       );
     return n;
-  }
-
-  async aiAnswersThisMonth(businessId: string): Promise<number> {
-    const [{n}] = await this.db
-      .select({n: sql<number>`count(*)::int`})
-      .from(customerChatMessages)
-      .where(
-        and(
-          eq(customerChatMessages.businessId, businessId),
-          eq(customerChatMessages.role, 'bot'),
-          isNotNull(customerChatMessages.model),
-          sql`${customerChatMessages.createdAt} >= date_trunc('month', now() AT TIME ZONE ${SHOP_TIME_ZONE}) AT TIME ZONE ${SHOP_TIME_ZONE}`,
-        ),
-      );
-    return n;
-  }
-
-  /** The month's answer allowance: the add-on's 1 000, Business+'s env value. */
-  monthlyLimitFor(businessId: string): Promise<number> {
-    return this.subscriptions.aiAssistantMonthlyLimit(businessId, monthlyLimit());
   }
 
   private async hasOpenHandoff(chatId: string, reason: string): Promise<boolean> {

@@ -237,9 +237,6 @@ export class BusinessService {
       // Plan changes are free during the trial and its reminders read
       // "continue" (OBUNA-TOLOV.md Q15).
       isTrial: true,
-      // The online trial includes the AI bot (Q10). billing_profiles.ai_addon
-      // stays off, so the first paid month does not bill it unasked (E7).
-      aiAddon: businessType === 'online',
     });
   }
 

@@ -1,9 +1,10 @@
-import {eq} from 'drizzle-orm';
+import {eq, sql} from 'drizzle-orm';
 import {DatabaseService} from '../database/database.service';
 import {billingProfiles, billingTransactions} from '../database/schema';
 import {AppException} from '../common/errors/app.exception';
 import {ErrorCode} from '../common/errors/error-codes';
 import {generateId} from '../utils/uuid';
+import {settlement} from './ai-usage';
 
 export type Tx = Parameters<
   Parameters<DatabaseService['db']['transaction']>[0]
@@ -15,6 +16,7 @@ export type BillingTransactionType =
   | 'plan_change'
   | 'branch'
   | 'addon'
+  | 'ai_usage'
   | 'adjustment';
 
 /** What a ledger line may explain (OBUNA-TOLOV.md §3); shown to the shop. */
@@ -30,8 +32,10 @@ export interface BillingTransactionMeta {
   discountAmount?: number;
   days?: number;
   branchName?: string;
-  /** The AI bot add-on in this charge (ONLAYN-SOTUVCHI.md E5). */
+  /** Old lines only: the AI bot add-on of 0109, gone since 0125. */
   aiAddon?: number;
+  /** An 'ai_usage' line: how many bot answers it pays for. */
+  aiAnswers?: number;
   /** 'year' on a yearly renewal (OBUNA-TOLOV.md §9); absent = a month. */
   cycle?: 'month' | 'year';
   /** So'm the yearly price saved against twelve months. */
@@ -109,4 +113,48 @@ export async function postBillingTransaction(
     createdAt: now,
   });
   return {id, balanceAfter};
+}
+
+/**
+ * Take the bot answers accrued so far from the balance as one 'ai_usage' line
+ * (ai-usage.ts settlement: whole so'm, never below `reserve`, so never below
+ * zero). Runs inside the caller's transaction and takes the profile lock, like
+ * every balance move. Returns what was taken, or null when there was nothing
+ * to take.
+ */
+export async function settleAiUsage(
+  tx: Tx,
+  businessId: string,
+  reserve = 0,
+): Promise<{amount: number; answers: number; balanceAfter: number} | null> {
+  const balance = await lockBillingProfile(tx, businessId);
+  const [row] = await tx
+    .select({
+      unbilled: billingProfiles.aiUnbilled,
+      answers: billingProfiles.aiUnbilledAnswers,
+    })
+    .from(billingProfiles)
+    .where(eq(billingProfiles.businessId, businessId));
+  const take = settlement({
+    unsettled: Number(row?.unbilled ?? 0),
+    answers: row?.answers ?? 0,
+    balance,
+    reserve,
+  });
+  if (take.amount <= 0) return null;
+
+  const posted = await postBillingTransaction(tx, businessId, {
+    type: 'ai_usage',
+    amount: -take.amount,
+    meta: {aiAnswers: take.answers},
+    createdBy: 'system',
+  });
+  await tx
+    .update(billingProfiles)
+    .set({
+      aiUnbilled: sql`${billingProfiles.aiUnbilled} - ${take.amount.toFixed(2)}::numeric`,
+      aiUnbilledAnswers: sql`${billingProfiles.aiUnbilledAnswers} - ${take.answers}`,
+    })
+    .where(eq(billingProfiles.businessId, businessId));
+  return {...take, balanceAfter: posted.balanceAfter};
 }
